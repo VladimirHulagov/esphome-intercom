@@ -1,3 +1,20 @@
+# **This is the `dev` branch -- experimental, use at your own risk**
+
+> This branch contains work-in-progress changes being tested based on user feedback from GitHub Issues.
+> It may break at any time. **Do not use in production.**
+>
+> To test it, point your YAML to this branch:
+>
+> ```yaml
+> external_components:
+>   - source: github://n-IA-hane/intercom-api@dev
+>     components: [intercom_api, i2s_audio_duplex, esp_aec]
+> ```
+>
+> Please report any issues or feedback directly on the relevant GitHub Issue.
+
+---
+
 # ESPHome Intercom API
 
 From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.

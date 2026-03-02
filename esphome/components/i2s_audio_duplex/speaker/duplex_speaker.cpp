@@ -62,13 +62,8 @@ void I2SAudioDuplexSpeaker::stop() {
 }
 
 void I2SAudioDuplexSpeaker::finish() {
-  int wait_count = 0;
-  while (this->has_buffered_data() && wait_count < 100) {
-    vTaskDelay(pdMS_TO_TICKS(10));
-    wait_count++;
-  }
-
-  this->stop();
+  // Non-blocking: set flag, loop() will call stop() once buffer is drained
+  this->finishing_ = true;
 }
 
 size_t I2SAudioDuplexSpeaker::play(const uint8_t *data, size_t length) {
@@ -90,6 +85,13 @@ bool I2SAudioDuplexSpeaker::has_buffered_data() const {
 
 void I2SAudioDuplexSpeaker::set_volume(float volume) {
   speaker::Speaker::set_volume(volume);
+
+#ifdef USE_AUDIO_DAC
+  // When audio_dac is present, the DAC handles hardware volume.
+  // Skip software volume scaling to avoid double attenuation.
+  if (this->audio_dac_ != nullptr)
+    return;
+#endif
 
   if (!this->mute_state_) {
     this->parent_->set_speaker_volume(volume);
@@ -139,6 +141,11 @@ void I2SAudioDuplexSpeaker::loop() {
       break;
 
     case speaker::STATE_RUNNING:
+      // Non-blocking finish: drain buffer then stop
+      if (this->finishing_ && !this->has_buffered_data()) {
+        this->finishing_ = false;
+        this->stop();
+      }
       break;
 
     case speaker::STATE_STOPPING:

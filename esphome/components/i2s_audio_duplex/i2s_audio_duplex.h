@@ -6,7 +6,9 @@
 #include "esphome/core/ring_buffer.h"
 
 #include <driver/i2s_std.h>
+#if SOC_I2S_SUPPORTS_TDM
 #include <driver/i2s_tdm.h>
+#endif
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -115,6 +117,18 @@ class I2SAudioDuplex : public Component {
   void set_dout_pin(int pin) { this->dout_pin_ = pin; }
   void set_sample_rate(uint32_t rate) { this->sample_rate_ = rate; }
   void set_output_sample_rate(uint32_t rate) { this->output_sample_rate_ = rate; }
+  void set_bits_per_sample(uint8_t bps) { this->bits_per_sample_ = bps; }
+  uint8_t get_bits_per_sample() const { return this->bits_per_sample_; }
+  void set_correct_dc_offset(bool enabled) { this->correct_dc_offset_ = enabled; }
+  void set_num_channels(uint8_t ch) { this->num_channels_ = ch; }
+  uint8_t get_num_channels() const { return this->num_channels_; }
+  void set_i2s_mode_secondary(bool secondary) { this->i2s_mode_secondary_ = secondary; }
+  void set_use_apll(bool use) { this->use_apll_ = use; }
+  void set_i2s_num(uint8_t num) { this->i2s_num_ = num; }
+  void set_mclk_multiple(uint32_t mult) { this->mclk_multiple_ = mult; }
+  void set_i2s_comm_fmt(uint8_t fmt) { this->i2s_comm_fmt_ = fmt; }
+  void set_mic_channel_right(bool right) { this->mic_channel_right_ = right; }
+  void set_slot_bit_width(uint8_t sbw) { this->slot_bit_width_ = sbw; }
 
   // AEC setter
   void set_aec(esp_aec::EspAec *aec);
@@ -206,6 +220,16 @@ class I2SAudioDuplex : public Component {
   int dout_pin_{-1};  // Speaker data out
 
   uint32_t sample_rate_{16000};
+  uint8_t bits_per_sample_{16};        // I2S bus bit depth: 16 or 32
+  bool correct_dc_offset_{false};      // IIR high-pass filter to remove mic DC bias
+  uint8_t num_channels_{1};            // Speaker TX channels: 1 (mono) or 2 (stereo)
+  bool i2s_mode_secondary_{false};     // false = master (primary), true = slave (secondary)
+  bool use_apll_{false};               // Use APLL clock source (ESP32 original only)
+  uint8_t i2s_num_{0};                 // I2S port number (0 or 1)
+  uint32_t mclk_multiple_{256};        // MCLK multiple: 128, 256, 384, or 512
+  uint8_t i2s_comm_fmt_{0};            // 0=philips, 1=msb, 2=pcm_short, 3=pcm_long
+  bool mic_channel_right_{false};      // RX mono slot: false=LEFT, true=RIGHT
+  uint8_t slot_bit_width_{0};          // 0 = auto (match bits_per_sample), or 16/24/32
   uint32_t output_sample_rate_{0};     // 0 = use sample_rate_ (no decimation)
   uint32_t decimation_ratio_{1};       // sample_rate_ / output_sample_rate_ (computed in setup)
 
