@@ -1,6 +1,6 @@
 # ESPHome Intercom API
 
-From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.
+From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, intercom, and ready-to-flash configs for tested ESP32 hardware.
 
 ![Dashboard Preview](readme-img/dashboard.png)
 
