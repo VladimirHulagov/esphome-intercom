@@ -793,7 +793,7 @@ The Voice Assistant and Intercom coexist seamlessly on the same hardware: shared
 - **Barge-in**: Say the wake word during a TTS response to interrupt and ask a new question
 - **Intercom calls**: Call other devices or Home Assistant with one tap; incoming calls ring with audio + visual feedback
 - **Weather at a glance**: Current conditions, temperature, and 5-day forecast updated automatically (touch displays)
-- **Mood-aware responses**: The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply
+- **Mood-aware responses**: The assistant shows different expressions (happy, neutral, angry) based on the tone of its reply. Requires instructing your LLM to prepend an ASCII emoticon (`:-)` `:-(` `:-|`) to each response based on its tone
 
 ### AEC Best Practices
 
