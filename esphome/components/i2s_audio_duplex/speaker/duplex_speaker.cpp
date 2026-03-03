@@ -90,14 +90,17 @@ void I2SAudioDuplexSpeaker::set_volume(float volume) {
   speaker::Speaker::set_volume(volume);
 
 #ifdef USE_AUDIO_DAC
-  // When audio_dac is present, the DAC handles hardware volume.
-  // Skip software volume scaling to avoid double attenuation.
-  if (this->audio_dac_ != nullptr)
-    return;
+  if (this->audio_dac_ != nullptr) {
+    if (volume > 0.0f) {
+      this->audio_dac_->set_mute_off();
+    }
+    this->audio_dac_->set_volume(volume);
+  } else
 #endif
-
-  if (!this->mute_state_) {
-    this->parent_->set_speaker_volume(volume);
+  {
+    if (!this->mute_state_) {
+      this->parent_->set_speaker_volume(volume);
+    }
   }
 }
 
@@ -105,16 +108,20 @@ void I2SAudioDuplexSpeaker::set_mute_state(bool mute_state) {
   speaker::Speaker::set_mute_state(mute_state);
 
 #ifdef USE_AUDIO_DAC
-  // When audio_dac is present, the base class handles hardware mute.
-  // Skip software volume to avoid double attenuation.
-  if (this->audio_dac_ != nullptr)
-    return;
+  if (this->audio_dac_ != nullptr) {
+    if (mute_state) {
+      this->audio_dac_->set_mute_on();
+    } else {
+      this->audio_dac_->set_mute_off();
+    }
+  } else
 #endif
-
-  if (mute_state) {
-    this->parent_->set_speaker_volume(0.0f);
-  } else {
-    this->parent_->set_speaker_volume(this->volume_);
+  {
+    if (mute_state) {
+      this->parent_->set_speaker_volume(0.0f);
+    } else {
+      this->parent_->set_speaker_volume(this->volume_);
+    }
   }
 }
 
