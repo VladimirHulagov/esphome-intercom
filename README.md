@@ -1,20 +1,3 @@
-# **This is the `dev` branch -- experimental, use at your own risk**
-
-> This branch contains work-in-progress changes being tested based on user feedback from GitHub Issues.
-> It may break at any time. **Do not use in production.**
->
-> To test it, point your YAML to this branch:
->
-> ```yaml
-> external_components:
->   - source: github://n-IA-hane/intercom-api@dev
->     components: [intercom_api, i2s_audio_duplex, esp_aec]
-> ```
->
-> Please report any issues or feedback directly on the relevant GitHub Issue.
-
----
-
 # ESPHome Intercom API
 
 From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, and ready-to-flash configs for tested ESP32 hardware.
@@ -346,6 +329,18 @@ text_sensor:
       - intercom_api.set_contacts:
           id: intercom
           contacts_csv: !lambda 'return x;'
+
+# Example: call a specific room from HA automation
+# or use in YAML lambda with intercom_api.set_contact
+button:
+  - platform: template
+    name: "Call Kitchen"
+    on_press:
+      - intercom_api.set_contact:
+          id: intercom
+          contact: "Kitchen"
+      - intercom_api.start:
+          id: intercom
 ```
 
 ### 3. Lovelace Card
@@ -494,6 +489,9 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `intercom_api.next_contact` | Select next contact (Full mode) |
 | `intercom_api.prev_contact` | Select previous contact (Full mode) |
 | `intercom_api.set_contacts` | Update contact list from CSV |
+| `intercom_api.set_contact` | Select a specific contact by name |
+| `intercom_api.set_volume` | Set speaker volume (float, 0.0–1.0) |
+| `intercom_api.set_mic_gain_db` | Set microphone gain (float, -20.0 to +20.0 dB) |
 
 ### Conditions
 
@@ -1035,6 +1033,12 @@ Working configs tested on real hardware are included in the repository:
 - **P4 split-screen UI**: Portrait 800x1280 display divided into two halves: top is a swipeable LVGL tileview (weather page with current conditions, MDI icons, and 5-day forecast via `weather.get_forecasts` action; intercom page with contacts, call controls, and dynamic state groups), bottom is a touch-to-talk Voice Assistant area with animated avatar (20-frame idle animation), per-state images (listening, thinking, error), and mood-based replying backgrounds (happy/neutral/angry parsed from LLM emoticon prefix). Full overlay pages for no-WiFi, no-HA, and timer states.
 
 - **Ringtone on incoming calls**: Devices now play a looping ringtone sound (`sounds/ringtone.flac`) while in ringing state. Ringtone stops automatically when the call is answered, declined, or times out.
+
+- **New actions**: `intercom_api.set_contact` selects a contact by name (useful for HA automations and voice commands). `intercom_api.set_volume` and `intercom_api.set_mic_gain_db` allow programmatic control of audio levels from YAML lambdas or automations.
+
+- **Card v2.1.2**: Error messages now persist across DOM rebuilds (stored in `_errorMsg` property). `disconnectedCallback()` properly cleans up mic, AudioContext, and WS subscriptions when the card is removed from DOM. Auto-bridge only matches destination against intercom devices (prevents false matches with non-intercom entities sharing the same name).
+
+- **Display logic unification**: Xiaozhi and P4 YAML configs now share the same display update pattern: all intercom triggers use `backlight_timer` script (instead of direct `light.turn_on`), robust `on_end` waits for TTS drain before restoring display, `ha_active_devices.on_value` updates display via `draw_display` script (not direct LVGL calls). Animation stop (`lv_anim_del`) before page switch prevents split-screen glitch during incoming calls.
 
 - **LVGL image format fix (P4)**: Assistant animation images changed from `type: RGB` to `type: RGB565` with `byte_order: little_endian` to match the display's `LV_COLOR_DEPTH=16`. RGB (24-bit) with 16-bit color depth caused LVGL to assign `LV_IMG_CF_RGB888`, which the built-in decoder cannot open, resulting in "No data" placeholder.
 

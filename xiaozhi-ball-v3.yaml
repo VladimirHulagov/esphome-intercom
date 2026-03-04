@@ -63,6 +63,10 @@ substitutions:
   # Voice assistant phase IDs
   ai_animation: yawn
 
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
   voice_assist_idle_phase_id: "1"
   voice_assist_listening_phase_id: "2"
   voice_assist_thinking_phase_id: "3"
@@ -163,7 +167,7 @@ psram:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source: esphome/components
+  - source: github://n-IA-hane/intercom-api
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -432,6 +436,8 @@ micro_wake_word:
         wake_word: !lambda return wake_word;
   models:
     - model: "wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
 
 voice_assistant:
   id: va
