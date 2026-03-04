@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "2.1.2-dev";
+const INTERCOM_CARD_VERSION = "2.1.2";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -492,64 +492,18 @@ class IntercomCard extends HTMLElement {
 
     this._source = this._audioContext.createMediaStreamSource(this._mediaStream);
 
-    // Try AudioWorklet first, fall back to ScriptProcessorNode
-    if (this._audioContext.audioWorklet) {
-      try {
-        await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
-        this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
-        this._workletNode.port.onmessage = (e) => {
-          if (e.data.type === "audio") this._sendAudio(new Int16Array(e.data.buffer));
-        };
-        this._source.connect(this._workletNode);
-      } catch (_) {
-        this._setupScriptProcessor();
-      }
-    } else {
-      this._setupScriptProcessor();
-    }
+    await this._audioContext.audioWorklet.addModule(`/intercom-native/intercom-processor.js?v=${INTERCOM_CARD_VERSION}`);
+    this._workletNode = new AudioWorkletNode(this._audioContext, "intercom-processor");
+    this._workletNode.port.onmessage = (e) => {
+      if (e.data.type === "audio") this._sendAudio(new Int16Array(e.data.buffer));
+    };
+    this._source.connect(this._workletNode);
 
     // Setup speaker
     this._playbackContext = new (window.AudioContext || window.webkitAudioContext)();
     this._gainNode = this._playbackContext.createGain();
     this._gainNode.gain.value = 1.0;
     this._gainNode.connect(this._playbackContext.destination);
-  }
-
-  _setupScriptProcessor() {
-    // ScriptProcessorNode fallback for browsers without AudioWorklet (older Android WebView)
-    const bufferSize = 4096;
-    const targetRate = 16000;
-    const inputRate = this._audioContext.sampleRate;
-    const ratio = inputRate / targetRate;
-    let resampleAccum = 0;
-    let pcmBuffer = [];
-    const targetSamples = 1024; // 64ms chunks @ 16kHz
-
-    this._scriptProcessor = this._audioContext.createScriptProcessor(bufferSize, 1, 1);
-    this._scriptProcessor.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0);
-      // Resample to 16kHz (same algorithm as AudioWorklet)
-      for (let i = 0; i < input.length; i++) {
-        resampleAccum += 1;
-        if (resampleAccum >= ratio) {
-          pcmBuffer.push(input[i]);
-          resampleAccum -= ratio;
-        }
-      }
-      while (pcmBuffer.length >= targetSamples) {
-        const chunk = pcmBuffer.splice(0, targetSamples);
-        const int16 = new Int16Array(chunk.length);
-        for (let i = 0; i < chunk.length; i++) {
-          const s = Math.max(-1, Math.min(1, chunk[i]));
-          int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-        }
-        this._sendAudio(int16);
-      }
-      // Output silence (required for ScriptProcessorNode to keep processing)
-      e.outputBuffer.getChannelData(0).fill(0);
-    };
-    this._source.connect(this._scriptProcessor);
-    this._scriptProcessor.connect(this._audioContext.destination);
   }
 
   async _startP2P(deviceInfo) {
