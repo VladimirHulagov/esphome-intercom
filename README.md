@@ -1065,7 +1065,21 @@ Working configs tested on real hardware are included in the repository:
 
 ## Version History
 
-### v2.1.2 (Current)
+### v2.1.3 (Current)
+
+- **Non-admin user fix**: Replaced event bus audio delivery (`hass.bus.async_fire("intercom_audio")`) with custom WS subscription command (`intercom_native/subscribe_audio`). Non-admin HA users can now use the intercom card. Card v2.1.3.
+
+- **i2s_audio_duplex deep audit**: Major refactor of the real-time audio task for correctness, maintainability, and performance. The monolithic `audio_task_()` (800+ lines) is now split into an `AudioTaskCtx` struct (groups all buffers, sizes, invariants, per-frame snapshots) and three focused processing functions: `process_rx_path_()`, `process_aec_and_callbacks_()`, `process_tx_path_()`. Cross-thread `float` variables (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`, `aec_ref_volume_`) converted to `std::atomic<float>` (fixes technically undefined behavior). A **snapshot pattern** loads all atomics once per 16ms frame into local `ctx` fields, eliminating hundreds of redundant `.load()` in sample loops. AEC buffers use `heap_caps_aligned_alloc(16, ...)` for ESP-SR SIMD safety. New YAML options `task_priority`, `task_core`, `task_stack_size` for per-device tuning (with single-core SoC validation). `duplex_microphone` pre-allocates `audio_buffer_` to avoid RT heap allocation. Callback typedefs documented with real-time constraints.
+
+- **Code audit fixes**: Shared `scale_sample()` extracted to `esp_aec/audio_utils.h`. Stack VLAs replaced with heap buffers in `intercom_api`. S3 Audio LED `transition_length: 0ms` (RMT blocking fix).
+
+- **DC offset aligned to upstream**: musicdsp.org DC-block filter in Q31 space. In 16-bit space, `>>10` truncates to 0 making the filter unstable — must use `<<16` to Q31 first.
+
+- **MWW reliability**: All devices switched to `mic_raw` (`pre_aec: true`). Added `alexa` as second wake word model. Template `Wake Word` switch on all YAMLs. Audio buffers kept `MALLOC_CAP_INTERNAL` (PSRAM broke MWW). Priority stays at 19 (12 was below lwIP, starved MWW).
+
+- **P4 UI polish**: Noto Sans with `GF_Latin_Core` (fixes missing curly quotes). VA layout: image at bottom, text above. Remove Refresh Contacts button. S3 Audio LED fixes.
+
+### v2.1.2
 
 - **Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 support**: Full VA + MWW + Intercom on the ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM) with 10.1" MIPI DSI capacitive touch display (GT9271), ES8311 DAC + ES7210 4-ch ADC, WiFi via ESP32-C6 co-processor (SDIO). Ready-to-flash YAML config included (`waveshare-p4-touch-lcd-va-intercom.yaml`).
 

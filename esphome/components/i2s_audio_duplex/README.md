@@ -89,7 +89,8 @@ graph TD
 
 ## Requirements
 
-- **ESP32** or **ESP32-S3** (tested on S3)
+- **ESP32**, **ESP32-S3**, or **ESP32-P4** (tested on S3 and P4). Single-core SoCs (C3, C5, C6, H2, S2) supported but cannot pin `task_core` to Core 1.
+- AEC requires PSRAM (S3/P4). TDM requires `SOC_I2S_SUPPORTS_TDM` (S3, P4, C3, C5, C6, H2).
 - Audio codec with shared I2S bus (ES8311 recommended)
 - ESP-IDF framework
 
@@ -150,6 +151,9 @@ speaker:
 | `tdm_total_slots` | int | 4 | Number of TDM slots (2-8) |
 | `tdm_mic_slot` | int | 0 | TDM slot index for voice microphone |
 | `tdm_ref_slot` | int | 1 | TDM slot index for AEC reference (e.g. MIC3 capturing DAC output) |
+| `task_priority` | int | 19 | FreeRTOS priority of the audio task (1-24). Default 19 is above lwIP (18), below WiFi (23). |
+| `task_core` | int | 0 | Core affinity: 0 or 1 for pinned, -1 for unpinned. Default 0 follows Espressif AEC pattern. |
+| `task_stack_size` | int | 8192 | Audio task stack size in bytes (4096-32768). Increase if you see stack overflow warnings. |
 
 ### Microphone Options
 
@@ -538,10 +542,11 @@ binary_sensor:
 - **Sample Format**: 16-bit signed PCM, mono TX / stereo RX (ES8311 feedback mode)
 - **DMA Buffers**: 8 buffers x 512 frames for smooth streaming (~256ms total)
 - **Speaker Buffer**: 8192 bytes ring buffer (~256ms at 16kHz mono), scales with decimation ratio (24576 bytes at 48kHz)
-- **Task Priority**: 19 (matches ESPHome stock i2s_audio speaker; above lwIP at 18, below WiFi at 23)
-- **Core Affinity**: Pinned to Core 0 (canonical Espressif AEC pattern; frees Core 1 for MWW inference and LVGL)
+- **Task Priority**: 19 (above lwIP at 18, below WiFi at 23). Configurable via `task_priority` YAML option.
+- **Core Affinity**: Pinned to Core 0 (canonical Espressif AEC pattern; frees Core 1 for MWW inference and LVGL). Configurable via `task_core` YAML option.
 - **AEC Gating**: Processes AEC only when speaker had real audio within last 250ms
-- **Thread Safety**: All cross-thread flags use `std::atomic` with `memory_order_relaxed` (safe on ESP32-S3 cache-coherent architecture, avoids unnecessary MEMW fence instructions). Ring buffer resets use atomic request flags (`request_speaker_reset_`, `request_ref_prefill_`) to avoid concurrent access between main thread and audio task.
+- **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed` — including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`, `aec_ref_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`, `request_ref_prefill_`) to avoid concurrent access between main thread and audio task.
+- **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
 
 ## Troubleshooting
 
