@@ -656,20 +656,30 @@ void IntercomApi::set_active_(bool on) {
   bool was = this->active_.exchange(on, std::memory_order_acq_rel);
   if (was == on) return;  // No change
 
+  ESP_LOGI(TAG, "set_active_(%s) — heap: free=%lu largest=%lu",
+           on ? "true" : "false",
+           (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
   if (on) {
     // Starting - clear any pending stop request and start hardware
     this->speaker_stop_requested_.store(false, std::memory_order_release);
 
 #ifdef USE_MICROPHONE
     if (this->microphone_source_) {
+      ESP_LOGI(TAG, "Starting microphone...");
       this->microphone_source_->start();
     }
 #endif
 #ifdef USE_SPEAKER
     if (this->speaker_) {
+      ESP_LOGI(TAG, "Starting speaker...");
       this->speaker_->start();
     }
 #endif
+    ESP_LOGI(TAG, "set_active_(true) done — heap: free=%lu largest=%lu",
+             (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     this->start_trigger_.trigger();
   } else {
     // Stopping - use single-owner model for speaker to avoid race conditions
@@ -701,6 +711,11 @@ void IntercomApi::set_active_(bool on) {
 }
 
 void IntercomApi::set_streaming_(bool on) {
+  ESP_LOGI(TAG, "set_streaming_(%s) — heap: free=%lu largest=%lu",
+           on ? "true" : "false",
+           (unsigned long) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned long) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+
   this->client_.streaming.store(on, std::memory_order_release);
   this->state_ = on ? ConnectionState::STREAMING : ConnectionState::CONNECTED;
   if (on) {
@@ -1504,11 +1519,6 @@ void IntercomApi::accept_client_() {
   // Set socket options
   int opt = 1;
   setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
-
-  // Increase send/receive buffer sizes for better throughput
-  int buf_size = 32768;  // 32KB buffer
-  setsockopt(client_sock, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
-  setsockopt(client_sock, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 
   // Set non-blocking for async operation
   int flags = fcntl(client_sock, F_GETFL, 0);

@@ -34,8 +34,8 @@
 # =============================================================================
 
 substitutions:
-  name: waveshare-s3-audio-test
-  friendly_name: Waveshare S3 Audio Test
+  name: waveshare-s3-audio
+  friendly_name: Waveshare S3 Audio
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
@@ -103,8 +103,13 @@ esp32:
       # PSRAM optimizations for wake word performance
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
-      # Network
-      CONFIG_LWIP_MAX_SOCKETS: "16"
+      # Network — tuned for concurrent media HTTP + intercom TCP + API WS
+      CONFIG_LWIP_MAX_SOCKETS: "24"
+      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "16384"
+      CONFIG_LWIP_TCP_WND_DEFAULT: "16384"
+      CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT: "5000"
+      CONFIG_LWIP_TCP_MSL: "10000"
+      CONFIG_LWIP_MAX_ACTIVE_TCP: "20"
 
 psram:
   mode: octal
@@ -131,7 +136,9 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source: github://n-IA-hane/intercom-api
+  - source:
+      type: local
+      path: esphome/components
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -231,13 +238,13 @@ speaker:
     source_speakers:
       - id: media_speaker_mix       # Music/radio streams (duckable)
         timeout: 10s
-        buffer_duration: 500ms
+        buffer_duration: 100ms
       - id: tts_speaker_mix         # VA TTS announcements (never ducked)
         timeout: 10s
-        buffer_duration: 500ms
+        buffer_duration: 100ms
       - id: intercom_speaker_mix    # Intercom audio
         timeout: 10s
-        buffer_duration: 500ms
+        buffer_duration: 100ms
 
   # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
   - platform: resampler
@@ -263,6 +270,7 @@ media_player:
     id: speaker_media_player
     name: Media Player
     internal: false
+    buffer_size: 65536  # 64KB (default 1MB — troppo per concurrent media+VA+intercom)
     media_pipeline:
       speaker: media_speaker
       sample_rate: 48000
@@ -288,22 +296,24 @@ media_player:
                 blue: 0%
                 brightness: 100%
                 effect: "Spin"
-      # Restart MWW for barge-in support during TTS
+      # Restart MWW for barge-in support during TTS (but NOT during intercom calls)
       - if:
           condition:
             and:
               - switch.is_off: mute
+              - intercom_api.is_idle: intercom
               - not:
                   voice_assistant.is_running:
           then:
             - micro_wake_word.start:
     on_idle:
       - script.execute: restore_led
-      # Restart MWW after media finishes
+      # Restart MWW after media finishes (but NOT during intercom calls)
       - if:
           condition:
             and:
               - switch.is_off: mute
+              - intercom_api.is_idle: intercom
               - not:
                   voice_assistant.is_running:
           then:
@@ -454,6 +464,7 @@ intercom_api:
   ringing_timeout: 30s
 
   on_outgoing_call:
+    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
@@ -463,6 +474,7 @@ intercom_api:
         effect: "Calling"
 
   on_ringing:
+    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
@@ -474,6 +486,7 @@ intercom_api:
 
   on_streaming:
     - script.stop: intercom_ringing_loop
+    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
