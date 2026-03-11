@@ -390,11 +390,15 @@ voice_assistant:
           not:
             media_player.is_announcing:
         timeout: 30s
-    # Restore media volume after VA finishes
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 0
-        duration: 500ms
+    # Restore media volume after VA finishes — but only if no intercom call active
+    - if:
+        condition:
+          intercom_api.is_idle: intercom
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
     # Restart MWW (resilience: always restart unless muted)
     - if:
         condition:
@@ -404,11 +408,15 @@ voice_assistant:
     - script.execute: restore_led
 
   on_error:
-    # Restore media volume on error
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 0
-        duration: 300ms
+    # Restore media volume on error — but only if no intercom call active
+    - if:
+        condition:
+          intercom_api.is_idle: intercom
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 300ms
     - light.turn_on:
         id: status_led
         red: 100%
@@ -446,19 +454,30 @@ intercom_api:
   ringing_timeout: 30s
 
   on_outgoing_call:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - light.turn_on:
         id: status_led
         effect: "Calling"
 
   on_ringing:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - light.turn_on:
         id: status_led
         effect: "Ringing"
-    - media_player.stop:
     - script.execute: intercom_ringing_loop
 
   on_streaming:
     - script.stop: intercom_ringing_loop
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - light.turn_on:
         id: status_led
         red: 30%
@@ -469,6 +488,16 @@ intercom_api:
 
   on_idle:
     - script.stop: intercom_ringing_loop
+    # Restore media volume — but only if VA isn't still ducking
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
     - script.execute: restore_led
     # Restart MWW when intercom call ends (resilience)
     - if:
@@ -479,10 +508,30 @@ intercom_api:
 
   on_hangup:
     - script.stop: intercom_ringing_loop
+    # Restore media volume — but only if VA isn't still ducking
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
     - script.execute: restore_led
 
   on_call_failed:
     - script.stop: intercom_ringing_loop
+    # Restore media volume — but only if VA isn't still ducking
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
     - light.turn_on:
         id: status_led
         red: 100%
