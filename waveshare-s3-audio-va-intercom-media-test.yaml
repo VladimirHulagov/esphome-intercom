@@ -311,7 +311,9 @@ media_player:
     on_play:
       - script.execute: restore_led
     on_pause:
-      - script.execute: restore_led
+      # PAUSED holds 5KB+3KB internal RAM (read_task+decode_task) + HTTP connection.
+      # Stop immediately to free resources — HA can re-send URL if needed.
+      - media_player.stop:
     on_idle:
       - script.execute: restore_led
       # Restart MWW after media finishes (but NOT during intercom calls)
@@ -516,12 +518,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - script.execute: restore_led
     - if:
         condition:
@@ -540,12 +536,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - script.execute: restore_led
     - if:
         condition:
@@ -564,12 +554,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - light.turn_on:
         id: status_led
         red: 100%

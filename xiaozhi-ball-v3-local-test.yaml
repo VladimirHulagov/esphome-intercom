@@ -427,8 +427,29 @@ media_player:
             - script.execute: draw_display
     on_play:
       - script.execute: backlight_timer
+      # Show neutral mood image during media playback (like old announcement behavior)
+      - if:
+          condition:
+            and:
+              - intercom_api.is_idle: intercom
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - lambda: |-
+                // Clear old VA text, show neutral mood image
+                id(wrapped_lines_reply).clear();
+                id(reply_total_pages) = 1;
+                id(reply_page_index) = 0;
+                lv_img_set_src(id(mood_bg), id(mood_neutral));
+            - script.execute: update_replying_text
+            - globals.set:
+                id: voice_assistant_phase
+                value: '${voice_assist_replying_phase_id}'
+            - script.execute: draw_display
     on_pause:
-      - script.execute: backlight_timer
+      # PAUSED holds 5KB+3KB internal RAM (read_task+decode_task) + HTTP connection.
+      # Stop immediately to free resources — HA can re-send URL if needed.
+      - media_player.stop:
     on_idle:
       - script.execute: backlight_timer
       # Restart MWW after media finishes (but NOT during intercom calls)
@@ -821,12 +842,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - light.turn_off: led
     - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
     - if:
@@ -858,12 +873,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - if:
         condition:
           switch.is_off: mute
@@ -884,12 +893,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    # Free PAUSED media pipeline resources (20KB internal read_task stack)
-    - if:
-        condition:
-          media_player.is_paused:
-        then:
-          - media_player.stop:
     - if:
         condition:
           switch.is_off: mute
