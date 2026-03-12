@@ -122,14 +122,13 @@ esp32:
   board: esp32-p4-evboard
   variant: esp32p4
   flash_size: 32MB
-  cpu_frequency: 360MHz
   framework:
     type: esp-idf
     advanced:
       enable_idf_experimental_features: true
     sdkconfig_options:
-      CONFIG_LWIP_MAX_SOCKETS: "20"
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
   mode: hex
@@ -2541,8 +2540,8 @@ switch:
 # NUMBERS
 # =============================================================================
 number:
-  - platform: intercom_api
-    intercom_api_id: intercom
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     mic_gain:
       name: Mic Gain
 

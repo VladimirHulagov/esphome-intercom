@@ -51,7 +51,7 @@
 
 substitutions:
   name: palletta
-  friendly_name: Xiaozhi Ball V3 LVGL
+  friendly_name: Palletta
 
   # Local image/animation files for each VA state
   loading_illustration_file: images/assistant/loading.png
@@ -145,25 +145,10 @@ esphome:
 esp32:
   board: esp32-s3-devkitc-1
   flash_size: 16MB
-  cpu_frequency: 240MHz
   framework:
     type: esp-idf
     sdkconfig_options:
-      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_FREERTOS_HZ: "1000"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
-      # mbedTLS buffers in PSRAM (frees ~20KB internal per TLS connection)
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      # Network — tuned for concurrent media HTTP + intercom TCP + API WS
-      CONFIG_LWIP_MAX_SOCKETS: "10"
-      CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "16384"
-      CONFIG_LWIP_TCP_WND_DEFAULT: "16384"
-      CONFIG_LWIP_TCP_FIN_WAIT_TIMEOUT: "5000"
-      CONFIG_LWIP_TCP_MSL: "10000"
-      CONFIG_LWIP_MAX_ACTIVE_TCP: "10"
 
 psram:
   mode: octal
@@ -1922,8 +1907,8 @@ switch:
 # NUMBERS
 # =============================================================================
 number:
-  - platform: intercom_api
-    intercom_api_id: intercom
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     mic_gain:
       id: mic_gain
       name: "Mic Gain"

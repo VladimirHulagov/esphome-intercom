@@ -99,6 +99,42 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _final_validate(config):
+    """Cross-component validation: warn about conflicts with i2s_audio_duplex."""
+    from esphome.core import CORE
+    full_config = CORE.config or {}
+
+    # Check if i2s_audio_duplex is also configured
+    duplex_configs = full_config.get("i2s_audio_duplex", [])
+    if not duplex_configs:
+        return config
+
+    # If duplex exists, check for AEC conflict
+    if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
+        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+            if isinstance(duplex, dict) and "aec_id" in duplex and duplex["aec_id"] is not None:
+                raise cv.Invalid(
+                    "Both intercom_api and i2s_audio_duplex have aec_id configured. "
+                    "This causes a race condition on the AEC processor. "
+                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
+                )
+
+    # Warn about DC offset double-filtering
+    if config.get(CONF_DC_OFFSET_REMOVAL, False):
+        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+            if isinstance(duplex, dict) and duplex.get("correct_dc_offset", False):
+                raise cv.Invalid(
+                    "Both intercom_api.dc_offset_removal and i2s_audio_duplex.correct_dc_offset are enabled. "
+                    "Double DC-block filtering causes instability. "
+                    "Use correct_dc_offset on i2s_audio_duplex only."
+                )
+
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
+
+
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)

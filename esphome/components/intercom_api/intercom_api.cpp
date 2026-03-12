@@ -312,19 +312,26 @@ void IntercomApi::load_settings_() {
   if (this->settings_pref_.load(&stored) && stored.version == SETTINGS_VERSION) {
     this->suppress_save_ = true;  // Don't save while loading
 
-    // Apply volume - must also call speaker_->set_volume() to actually apply it!
+    // Apply volume only if intercom_api owns the speaker_volume number entity.
+    // When speaker_volume is a template number (Waveshare/P4/Xiaozhi), the template
+    // handles DAC + AEC ref sync via its own restore + on_boot lambda.
     this->volume_ = stored.volume_pct / 100.0f;
+    if (this->volume_number_ != nullptr) {
 #ifdef USE_SPEAKER
-    if (this->speaker_ != nullptr) {
-      this->speaker_->set_volume(this->volume_);
-    }
+      if (this->speaker_ != nullptr) {
+        this->speaker_->set_volume(this->volume_);
+      }
 #endif
-    ESP_LOGD(TAG, "Loaded volume: %d%%", stored.volume_pct);
+      ESP_LOGD(TAG, "Loaded volume: %d%%", stored.volume_pct);
+    }
 
-    // Apply mic gain
+    // Apply mic gain only if intercom_api owns the mic_gain number entity.
+    // When i2s_audio_duplex provides mic_gain, it handles its own persistence.
     this->mic_gain_db_ = stored.mic_gain_db;
-    this->mic_gain_ = std::pow(10.0f, this->mic_gain_db_ / 20.0f);
-    ESP_LOGD(TAG, "Loaded mic_gain: %.1fdB", this->mic_gain_db_);
+    if (this->mic_gain_number_ != nullptr) {
+      this->mic_gain_ = std::pow(10.0f, this->mic_gain_db_ / 20.0f);
+      ESP_LOGD(TAG, "Loaded mic_gain: %.1fdB", this->mic_gain_db_);
+    }
 
     // NOTE: auto_answer and AEC are handled by switch restore_mode, not here
     // This avoids conflicts between two persistence mechanisms
@@ -1610,7 +1617,10 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
   static constexpr size_t MAX_SAMPLES = 512;
   const int16_t *src = reinterpret_cast<const int16_t *>(data);
   size_t num_samples = std::min(len / sizeof(int16_t), MAX_SAMPLES);
-  bool needs_processing = this->mic_gain_ != 1.0f || this->dc_offset_removal_;
+  // Only apply mic_gain if intercom owns the mic_gain number entity.
+  // When i2s_audio_duplex provides mic_gain, it's already applied in the audio task.
+  float effective_gain = (this->mic_gain_number_ != nullptr) ? this->mic_gain_ : 1.0f;
+  bool needs_processing = effective_gain != 1.0f || this->dc_offset_removal_;
 
   // RingBuffer is thread-safe, no mutex needed
   if (needs_processing) {
@@ -1621,7 +1631,7 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
         this->dc_offset_ += (s - this->dc_offset_) >> 10;
         s = s - this->dc_offset_;
       }
-      this->mic_converted_[i] = scale_sample(static_cast<int16_t>(s), this->mic_gain_);
+      this->mic_converted_[i] = scale_sample(static_cast<int16_t>(s), effective_gain);
     }
 
     this->mic_buffer_->write(this->mic_converted_, num_samples * sizeof(int16_t));

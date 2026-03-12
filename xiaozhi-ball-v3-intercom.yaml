@@ -73,11 +73,7 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      # Default is 10, increased for: TCP server + API + OTA + web_server
-      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
     components:
       # Required for AEC (esp_aec component)
       - espressif/esp-sr^2.3.0
@@ -153,7 +149,7 @@ audio_dac:
 esp_aec:
   id: aec_component
   sample_rate: 16000
-  filter_length: 8     # 8 = 128ms tail (max value, covers most latency scenarios)
+  filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
   mode: voip_high_perf # High performance AEC for better echo cancellation
 
 # ==============================================================================
@@ -410,8 +406,8 @@ switch:
 # NUMBERS (native platform - mic_gain only, speaker uses ES8311)
 # ==============================================================================
 number:
-  - platform: intercom_api
-    intercom_api_id: intercom
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
     mic_gain:
       id: mic_gain
       name: "Mic Gain"

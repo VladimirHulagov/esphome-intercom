@@ -34,9 +34,9 @@ async def to_code(config):
         conf = config[CONF_MIC_GAIN]
         var = await number.new_number(
             conf,
-            min_value=0.0,
-            max_value=2.0,
-            step=0.1,
+            min_value=-20.0,
+            max_value=20.0,
+            step=1.0,
         )
         await cg.register_component(var, conf)
         cg.add(var.set_parent(parent))

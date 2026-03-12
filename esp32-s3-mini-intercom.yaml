@@ -44,11 +44,7 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240: "y"
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      # Default is 10, increased for: TCP server + API + OTA + web_server
-      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
   mode: quad    # Mini has quad PSRAM

@@ -239,6 +239,21 @@ def _final_validate(config):
             f"task_core={task_core} not available on {variant} (single-core SoC)"
         )
 
+    # Cross-component validation: check for AEC conflict with intercom_api
+    from esphome.core import CORE
+    full_config = CORE.config or {}
+
+    intercom_configs = full_config.get("intercom_api", [])
+    if intercom_configs:
+        has_duplex_aec = CONF_AEC_ID in config and config.get(CONF_AEC_ID) is not None
+        for ic in (intercom_configs if isinstance(intercom_configs, list) else [intercom_configs]):
+            if isinstance(ic, dict) and ic.get("aec_id") is not None and has_duplex_aec:
+                raise cv.Invalid(
+                    "Both i2s_audio_duplex and intercom_api have aec_id configured. "
+                    "This causes a race condition on the AEC processor. "
+                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
+                )
+
     return config
 
 
