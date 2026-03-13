@@ -54,10 +54,8 @@ substitutions:
   friendly_name: Palletta
 
   # ---- Remote mode (for users, just download and flash) ----
-  # source_base: "github://n-IA-hane/intercom-api"
   # assets_base: "https://github.com/n-IA-hane/intercom-api/raw/dev/"
   # ---- Local mode (for development, clone repo first) ----
-  source_base: "esphome/components"
   assets_base: ""
 
   # AI avatar folder (${assets_base}images/assistant/<ai_avatar>/)
@@ -161,8 +159,15 @@ psram:
 # =============================================================================
 # EXTERNAL COMPONENTS
 # =============================================================================
+# Remote:
+# external_components:
+#   - source: github://n-IA-hane/intercom-api@dev
+#     components: [intercom_api, i2s_audio_duplex, esp_aec]
+# Local:
 external_components:
-  - source: ${source_base}
+  - source:
+      type: local
+      path: esphome/components
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
