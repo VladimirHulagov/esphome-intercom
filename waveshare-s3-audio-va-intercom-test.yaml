@@ -92,6 +92,7 @@ esphome:
           float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
           id(es8311_dac).set_volume(vol);
           id(i2s_duplex).set_aec_reference_volume(vol);
+      - micro_wake_word.stop:
       - delay: 1s
       - micro_wake_word.start:
 
@@ -265,7 +266,7 @@ speaker:
 media_player:
   - platform: speaker
     id: speaker_media_player
-    name: Media Player
+    name: None
     internal: false
     buffer_size: 524288  # 512KB (default 1MB)
     media_pipeline:
@@ -277,6 +278,8 @@ media_player:
       sample_rate: 48000
       format: FLAC
     files:
+      - id: timer_finished_sound
+        file: sounds/timer_finished.flac
       - id: intercom_ringing_sound
         file: sounds/ringtone.flac
     on_announcement:
@@ -390,13 +393,37 @@ voice_assistant:
         effect: none
 
   on_end:
-    # Wait for TTS to finish playing
+    # Wait for TTS to start playing (if any)
     - wait_until:
         condition:
-          not:
-            media_player.is_announcing:
+          - media_player.is_announcing:
+        timeout: 0.5s
+    # Wait for TTS to finish
+    - wait_until:
+        condition:
+          and:
+            - not:
+                media_player.is_announcing:
+            - not:
+                speaker.is_playing:
+                    id: tts_speaker
         timeout: 30s
-    # Restore media volume after VA finishes — but only if no intercom call active
+    # Fallback: force cleanup if stuck
+    - if:
+        condition:
+          or:
+            - media_player.is_announcing:
+            - speaker.is_playing:
+                id: tts_speaker
+        then:
+          - logger.log:
+              level: WARN
+              format: "VA on_end: timeout waiting for TTS drain, forcing cleanup"
+          - media_player.stop:
+              announcement: true
+    - delay: 100ms
+    - voice_assistant.stop:
+    # Restore media volume after VA finishes (only if no intercom call active)
     - if:
         condition:
           intercom_api.is_idle: intercom
@@ -414,7 +441,7 @@ voice_assistant:
     - script.execute: restore_led
 
   on_error:
-    # Restore media volume on error — but only if no intercom call active
+    # Restore media volume on error (only if no intercom call active)
     - if:
         condition:
           intercom_api.is_idle: intercom
@@ -430,16 +457,23 @@ voice_assistant:
         blue: 0%
         brightness: 70%
         effect: none
-    - delay: 1s
-    # Restart MWW after error (resilience)
     - if:
         condition:
-          switch.is_off: mute
+          lambda: return !id(init_in_progress);
         then:
-          - micro_wake_word.start:
-    - script.execute: restore_led
+          - delay: 2s
+          # Restart MWW after error (resilience)
+          - if:
+              condition:
+                switch.is_off: mute
+              then:
+                - micro_wake_word.start:
+          - script.execute: restore_led
 
   on_client_connected:
+    - globals.set:
+        id: init_in_progress
+        value: 'false'
     - if:
         condition:
           switch.is_off: mute
@@ -468,6 +502,16 @@ intercom_api:
     - light.turn_on:
         id: status_led
         effect: "Calling"
+    - if:
+        condition:
+          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+        then:
+          - homeassistant.event:
+              event: esphome.intercom_call
+              data:
+                caller: !lambda 'return App.get_friendly_name();'
+                destination: "Home Assistant"
+                type: "doorbell"
 
   on_ringing:
     - micro_wake_word.stop:
@@ -530,6 +574,9 @@ intercom_api:
           switch.is_off: mute
         then:
           - micro_wake_word.start:
+    - logger.log:
+        format: "Hangup: %s"
+        args: ['reason.c_str()']
 
   on_call_failed:
     - script.stop: intercom_ringing_loop
@@ -542,6 +589,11 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - light.turn_on:
         id: status_led
         red: 100%
@@ -551,11 +603,34 @@ intercom_api:
         effect: none
     - delay: 2s
     - script.execute: restore_led
+    - logger.log:
+        format: "Call failed: %s"
+        args: ['reason.c_str()']
+
+# =============================================================================
+# Globals
+# =============================================================================
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "true"
 
 # =============================================================================
 # Scripts
 # =============================================================================
 script:
+  # Wake word management (guarded: won't start during active VA session)
+  - id: start_wake_word
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - switch.is_off: mute
+          then:
+            - micro_wake_word.start:
   # Restore LED to correct base state based on priority:
   # Both muted > Mic muted > Speaker muted > In call > Media playing > Off
   # Ringing/Calling LEDs are set by their own handlers, not here.
@@ -843,7 +918,7 @@ switch:
           format: "Mic mute OFF — microphone active, MWW started"
       - microphone.unmute: mic_aec
       - microphone.unmute: mic_raw
-      - micro_wake_word.start:
+      - script.execute: start_wake_word
       - light.turn_on:
           id: status_led
           red: 0%

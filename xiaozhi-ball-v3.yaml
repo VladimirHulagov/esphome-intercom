@@ -35,9 +35,9 @@
 #                                                ├── AEC → mic_aec → VA / Intercom TX
 #                                                └── mic_raw (pre-AEC) → MWW
 #
-#   TTS/media (16kHz) → va_speaker (resampler 16→48k) ───┐
-#                                                        ├── mixer (48kHz) → hw_speaker → ES8311
-#   Intercom RX (16kHz) → intercom_speaker (resampler) ──┘
+#   Music/radio → media_speaker (resampler) ───────────┐
+#   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311
+#   Intercom RX → intercom_speaker (resampler) ────────┘
 #
 # GPIO0 Button Behavior (page-aware):
 #   VA idle:           Click=start VA | Long press(1-3s)=switch to intercom
@@ -148,6 +148,8 @@ esp32:
     sdkconfig_options:
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
@@ -174,11 +176,9 @@ external_components:
 api:
   on_client_connected:
     - lambda: |-
-        static bool published = false;
-        if (!published) {
-          published = true;
-          id(intercom).publish_entity_states();
-        }
+        id(intercom).publish_entity_states();
+        // Force media_player to re-publish volume to HA (prevents stale slider)
+        id(speaker_media_player).publish_state();
     - script.execute: draw_display
   on_client_disconnected:
     - script.execute: draw_display
@@ -335,48 +335,75 @@ speaker:
     num_channels: 1
     task_stack_in_psram: true
     source_speakers:
-      - id: va_speaker_mix
+      - id: media_speaker_mix       # Music/radio streams (duckable)
         timeout: 10s
         buffer_duration: 500ms
-      - id: intercom_speaker_mix
+      - id: tts_speaker_mix         # VA TTS announcements (never ducked)
+        timeout: 10s
+        buffer_duration: 500ms
+      - id: intercom_speaker_mix    # Intercom audio
         timeout: 10s
         buffer_duration: 500ms
 
+  # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
   - platform: resampler
-    id: va_speaker
-    output_speaker: va_speaker_mix
+    id: media_speaker              # Music/radio → 48kHz
+    output_speaker: media_speaker_mix
     task_stack_in_psram: true
 
   - platform: resampler
-    id: intercom_speaker
+    id: tts_speaker                # VA TTS → 48kHz
+    output_speaker: tts_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: intercom_speaker           # Intercom RX (16kHz) → 48kHz
     output_speaker: intercom_speaker_mix
     task_stack_in_psram: true
 
 # =============================================================================
-# MEDIA PLAYER (VA TTS output through va_speaker)
+# MEDIA PLAYER (separate pipelines: media vs TTS announcement)
 # =============================================================================
 media_player:
   - platform: speaker
     name: None
     id: speaker_media_player
-    volume_min: 0.0
-    volume_max: 1.0
+    internal: false
+    buffer_size: 524288  # 512KB (default 1MB)
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 48000
+      format: FLAC
     announcement_pipeline:
-      speaker: va_speaker
+      speaker: tts_speaker
       format: FLAC
       sample_rate: 48000
-      num_channels: 1
     files:
       - id: timer_finished_sound
         file: ${assets_base}sounds/timer_finished.flac
       - id: intercom_ringing_sound
         file: ${assets_base}sounds/ringtone.flac
     on_announcement:
-      # Restart MWW during TTS for barge-in (interrupt by saying wake word).
-      # MWW uses mic_raw (pre-AEC) so it hears voice even while speaker plays.
+      # Only show LED for announcements when intercom is idle
+      # During intercom calls, keep current intercom LED state
       - if:
           condition:
-            switch.is_off: mute
+            intercom_api.is_idle: intercom
+          then:
+            - light.turn_on:
+                id: led
+                brightness: 100%
+                red: 0.00
+                green: 0.00
+                blue: 1.00
+      # Restart MWW for barge-in support during TTS (but NOT during intercom calls)
+      - if:
+          condition:
+            and:
+              - switch.is_off: mute
+              - intercom_api.is_idle: intercom
+              - not:
+                  voice_assistant.is_running:
           then:
             - micro_wake_word.start:
       # Set replying phase for non-VA announcements (e.g., timer sound)
@@ -390,16 +417,50 @@ media_player:
                 value: '${voice_assist_replying_phase_id}'
             - script.execute: update_replying_text
             - script.execute: draw_display
+    on_play:
+      - script.execute: backlight_timer
+      # Show neutral mood image during media playback (like old announcement behavior)
+      - if:
+          condition:
+            and:
+              - intercom_api.is_idle: intercom
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - lambda: |-
+                // Clear old VA text, show neutral mood image
+                id(wrapped_lines_reply).clear();
+                id(reply_total_pages) = 1;
+                id(reply_page_index) = 0;
+                lv_img_set_src(id(mood_bg), id(mood_neutral));
+            - script.execute: update_replying_text
+            - globals.set:
+                id: voice_assistant_phase
+                value: '${voice_assist_replying_phase_id}'
+            - script.execute: draw_display
+    on_pause:
+      # PAUSED holds 5KB+3KB internal RAM (read_task+decode_task) + HTTP connection.
+      # Stop immediately to free resources — HA can re-send URL if needed.
+      - media_player.stop:
     on_idle:
+      - script.execute: backlight_timer
+      # Restart MWW after media finishes (but NOT during intercom calls)
+      - if:
+          condition:
+            and:
+              - switch.is_off: mute
+              - intercom_api.is_idle: intercom
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - micro_wake_word.start:
       - if:
           condition:
             and:
               - not:
                   voice_assistant.is_running:
-              - intercom_api.is_idle:
-                  id: intercom
+              - intercom_api.is_idle: intercom
           then:
-            - script.execute: start_wake_word
             - script.execute: set_idle_or_mute_phase
             - script.execute: draw_display
 
@@ -418,13 +479,17 @@ micro_wake_word:
   microphone: mic_raw    # Pre-AEC: hears voice through TTS echo
   on_wake_word_detected:
     - script.execute: backlight_timer
+    # Duck media audio so mic hears user clearly
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     # Barge-in: if TTS is playing, interrupt it and restart VA
     - if:
         condition:
           media_player.is_announcing:
         then:
           - media_player.stop:
-              announcement: true
           - voice_assistant.stop:
           - delay: 100ms
     - voice_assistant.start:
@@ -541,7 +606,7 @@ voice_assistant:
                 media_player.is_announcing:
             - not:
                 speaker.is_playing:
-                    id: va_speaker
+                    id: tts_speaker
         timeout: 30s
     # Fallback: if states stayed stuck despite component fix, force cleanup
     - if:
@@ -549,7 +614,7 @@ voice_assistant:
           or:
             - media_player.is_announcing:
             - speaker.is_playing:
-                id: va_speaker
+                id: tts_speaker
         then:
           - logger.log:
               level: WARN
@@ -558,8 +623,21 @@ voice_assistant:
               announcement: true
     - delay: 100ms
     - voice_assistant.stop:
-    - lambda: id(va).set_use_wake_word(false);
-    - micro_wake_word.start:
+    # Restore media volume after VA finishes — but only if no intercom call active
+    - if:
+        condition:
+          intercom_api.is_idle: intercom
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
+    # Restart MWW (resilience: always restart unless muted)
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - script.stop: reply_pagination_timer
     - script.execute: backlight_timer
     - text_sensor.template.publish:
@@ -581,6 +659,15 @@ voice_assistant:
               value: '1'
     - script.execute: draw_display
   on_error:
+    # Restore media volume on error — but only if no intercom call active
+    - if:
+        condition:
+          intercom_api.is_idle: intercom
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 300ms
     - light.turn_on:
         id: led
         brightness: 70%
@@ -596,17 +683,27 @@ voice_assistant:
               value: '${voice_assist_error_phase_id}'
           - script.execute: draw_display
           - delay: 2s
+          # Restart MWW after error (resilience)
+          - if:
+              condition:
+                switch.is_off: mute
+              then:
+                - micro_wake_word.start:
           - script.execute: set_idle_or_mute_phase
           - script.execute: draw_display
   on_client_connected:
     - globals.set:
         id: init_in_progress
         value: 'false'
-    - script.execute: start_wake_word
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
   on_client_disconnected:
-    - script.execute: stop_wake_word
+    - micro_wake_word.stop:
     - globals.set:
         id: voice_assistant_phase
         value: '${voice_assist_not_ready_phase_id}'
@@ -640,6 +737,11 @@ intercom_api:
   ringing_timeout: 30s
 
   on_outgoing_call:
+    - micro_wake_word.stop:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - lambda: |-
         id(peer_name) = id(intercom).get_current_destination();
         id(previous_mode) = id(current_mode);
@@ -666,6 +768,11 @@ intercom_api:
                 type: "doorbell"
 
   on_ringing:
+    - micro_wake_word.stop:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - lambda: |-
         id(peer_name) = id(intercom).get_caller();
         id(previous_mode) = id(current_mode);
@@ -676,8 +783,6 @@ intercom_api:
     - lvgl.label.update:
         id: ic_ringing_in_peer_label
         text: !lambda 'return id(peer_name);'
-    - media_player.stop:
-        announcement: true
     - script.execute: draw_display
     - script.execute: intercom_ringing_loop
     - light.turn_on:
@@ -689,8 +794,11 @@ intercom_api:
 
   on_streaming:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
+    - micro_wake_word.stop:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
     - script.execute: backlight_timer
     - light.turn_on:
         id: led
@@ -717,10 +825,22 @@ intercom_api:
 
   on_idle:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
     - light.turn_off: led
     - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     # Restore previous mode after call ends
     - if:
         condition:
@@ -736,16 +856,40 @@ intercom_api:
 
   on_hangup:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - logger.log:
         format: "Hangup: %s"
         args: ['reason.c_str()']
 
   on_call_failed:
     - script.stop: intercom_ringing_loop
-    - media_player.stop:
-        announcement: true
+    - if:
+        condition:
+          not:
+            voice_assistant.is_running:
+        then:
+          - mixer_speaker.apply_ducking:
+              id: media_speaker_mix
+              decibel_reduction: 0
+              duration: 500ms
+    - if:
+        condition:
+          switch.is_off: mute
+        then:
+          - micro_wake_word.start:
     - logger.log:
         format: "Call failed: %s"
         args: ['reason.c_str()']
@@ -1128,10 +1272,11 @@ script:
     then:
       - if:
           condition:
-            not:
-              - voice_assistant.is_running:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - switch.is_off: mute
           then:
-            - lambda: id(va).set_use_wake_word(false);
             - micro_wake_word.start:
 
   - id: stop_wake_word
@@ -1142,15 +1287,26 @@ script:
     then:
       - if:
           condition:
-            switch.is_off: mute
+            switch.is_on: mute
           then:
             - globals.set:
                 id: voice_assistant_phase
-                value: '${voice_assist_idle_phase_id}'
-          else:
-            - globals.set:
-                id: voice_assistant_phase
                 value: '${voice_assist_muted_phase_id}'
+          else:
+            - if:
+                condition:
+                  media_player.is_playing:
+                then:
+                  # Music playing — show neutral mood screen instead of idle animation
+                  - lambda: |-
+                      lv_img_set_src(id(mood_bg), id(mood_neutral));
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_replying_phase_id}'
+                else:
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_idle_phase_id}'
 
   # Mode switching scripts
   - id: switch_to_va
@@ -1297,9 +1453,17 @@ script:
               - intercom_api.is_ringing: intercom
               - intercom_api.is_incoming: intercom
           then:
-            - media_player.speaker.play_on_device_media_file:
-                media_file: intercom_ringing_sound
-                announcement: true
+            # Ringtone only when media pipeline is fully idle (no resources allocated).
+            # PAUSED still holds 20KB internal read_task stack — starting a 2nd
+            # pipeline with insufficient RAM leaves it in a broken state that
+            # freezes the main loop on hangup.
+            - if:
+                condition:
+                  media_player.is_idle:
+                then:
+                  - media_player.speaker.play_on_device_media_file:
+                      media_file: intercom_ringing_sound
+                      announcement: true
             - delay: 3s
 
   # Backlight timer
