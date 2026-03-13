@@ -683,12 +683,12 @@ This repo also provides **[i2s_audio_duplex](esphome/components/i2s_audio_duplex
 - **True full-duplex** on a single I2S bus
 - **Built-in AEC integration**: stereo digital feedback, TDM hardware reference, or ring buffer
 - **Dual mic paths**: raw (pre-AEC) for wake word + AEC-processed for voice assistant
-- **FIR decimation**: run the bus at 48kHz (codec native) while processing at 16kHz
+- **FIR decimation**: the bus runs at 48kHz (codec native) for full-quality speaker output; microphone audio is decimated to 16kHz only for components that require it (AEC, Voice Assistant STT, Intercom)
 - **Reference counting**: multiple consumers share the same mic safely
 
 ### Audio Pipeline
 
-The I2S bus runs at a higher rate for better DAC/ADC quality, with internal FIR decimation to produce 16kHz for processing:
+The I2S bus runs at 48kHz for full-quality audio playback (TTS, media, intercom). Microphone output is decimated to 16kHz via FIR filter only because AEC, Voice Assistant STT, and Intercom are hardcoded to 16kHz:
 
 | Parameter | Value |
 |-----------|-------|
@@ -722,7 +722,7 @@ i2s_audio_duplex:
   i2s_din_pin: GPIO10
   i2s_dout_pin: GPIO8
   sample_rate: 48000           # I2S bus rate (codec native)
-  output_sample_rate: 16000    # Mic/AEC/MWW/VA rate (FIR decimation ×3)
+  output_sample_rate: 16000    # Mic output rate for AEC/VA/Intercom (FIR decimation x3)
 
 microphone:
   - platform: i2s_audio_duplex
