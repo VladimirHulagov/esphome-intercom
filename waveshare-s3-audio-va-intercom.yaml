@@ -513,7 +513,6 @@ intercom_api:
   ringing_timeout: 30s
 
   on_outgoing_call:
-    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
@@ -533,7 +532,6 @@ intercom_api:
                 type: "doorbell"
 
   on_ringing:
-    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
@@ -545,7 +543,6 @@ intercom_api:
 
   on_streaming:
     - script.stop: intercom_ringing_loop
-    - micro_wake_word.stop:
     - mixer_speaker.apply_ducking:
         id: media_speaker_mix
         decibel_reduction: 20
@@ -570,11 +567,6 @@ intercom_api:
               decibel_reduction: 0
               duration: 500ms
     - script.execute: restore_led
-    - if:
-        condition:
-          switch.is_off: mute
-        then:
-          - micro_wake_word.start:
 
   on_hangup:
     - script.stop: intercom_ringing_loop
@@ -588,11 +580,6 @@ intercom_api:
               decibel_reduction: 0
               duration: 500ms
     - script.execute: restore_led
-    - if:
-        condition:
-          switch.is_off: mute
-        then:
-          - micro_wake_word.start:
     - logger.log:
         format: "Hangup: %s"
         args: ['reason.c_str()']
@@ -608,11 +595,6 @@ intercom_api:
               id: media_speaker_mix
               decibel_reduction: 0
               duration: 500ms
-    - if:
-        condition:
-          switch.is_off: mute
-        then:
-          - micro_wake_word.start:
     - light.turn_on:
         id: status_led
         red: 100%
