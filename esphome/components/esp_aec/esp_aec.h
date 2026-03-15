@@ -38,8 +38,8 @@ class EspAec : public Component, public AecProcessor {
   aec_handle_t *handle_{nullptr};
   int sample_rate_{16000};
   int filter_length_{4};
-  int cached_frame_size_{512};
-  aec_mode_t mode_{AEC_MODE_VOIP_LOW_COST};
+  int cached_frame_size_{512};  // Overwritten by aec_get_chunksize() in setup()
+  aec_mode_t mode_{AEC_MODE_SR_LOW_COST};
 };
 
 // Action: esp_aec.set_mode

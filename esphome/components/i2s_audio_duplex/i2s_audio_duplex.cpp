@@ -652,13 +652,12 @@ void I2SAudioDuplex::audio_task_() {
   // AEC buffers use 16-byte alignment (ESP-SR may use SIMD internally)
   static constexpr size_t AEC_ALIGN = 16;
 
-  // DMA buffers MUST be in internal RAM (I2S DMA controller requirement).
-  // Non-DMA buffers use PSRAM when buffers_in_psram_ is set (saves ~15KB internal RAM,
-  // enables SR_LOW_COST AEC mode with 512-sample frames on memory-constrained devices).
+  // ESP-IDF new I2S driver manages its own internal DMA ring buffers.
+  // i2s_channel_read/write use memcpy to/from user buffers (verified in i2s_common.c:1337,1387).
+  // User buffers do NOT need MALLOC_CAP_DMA — they can safely be in PSRAM.
+  // With buffers_in_psram=true, all buffers go to PSRAM (~28KB internal heap saved).
+  // Required for sr_low_cost AEC mode (512-sample frames = larger buffers).
   const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
-
-  // ESP-IDF new I2S driver uses memcpy between internal DMA buffers and user buffers.
-  // User buffers do NOT need MALLOC_CAP_DMA — verified in i2s_common.c:1337,1387.
   ctx.rx_buffer = static_cast<int16_t *>(
       heap_caps_malloc(ctx.rx_frame_bytes, buf_caps));
 

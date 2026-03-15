@@ -977,7 +977,7 @@ void IntercomApi::tx_task_() {
     // AEC Processing: accumulate samples, process when full frame ready
     if (this->aec_enabled_ && this->aec_ != nullptr && this->aec_mic_ != nullptr) {
       const int16_t *mic_samples = reinterpret_cast<const int16_t *>(audio_chunk);
-      size_t num_samples = AUDIO_CHUNK_SIZE / sizeof(int16_t);  // 256 samples per chunk
+      size_t num_samples = AUDIO_CHUNK_SIZE / sizeof(int16_t);  // = SAMPLES_PER_CHUNK
 
       // Copy mic samples to accumulator
       size_t samples_to_copy = std::min(num_samples,

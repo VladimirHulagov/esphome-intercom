@@ -164,7 +164,7 @@ speaker:
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `pre_aec` | bool | false | If true, receives raw mic audio (before AEC). Use for MWW. |
+| `pre_aec` | bool | false | If true, receives raw mic audio (before AEC). Mainly for diagnostics; with `sr_low_cost` AEC, MWW works on post-AEC mic. |
 
 ### AEC with Voice Assistant + MWW
 
@@ -346,7 +346,7 @@ esp_aec:
   id: aec_component
   sample_rate: 16000           # AEC always operates on 16kHz audio
   filter_length: 4
-  mode: voip_low_cost
+  mode: sr_low_cost      # Linear AEC — preserves spectral features for MWW
 ```
 
 #### Speaker Path: ResamplerSpeaker + Mixer

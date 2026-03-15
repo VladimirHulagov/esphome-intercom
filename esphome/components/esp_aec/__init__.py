@@ -42,7 +42,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(EspAec),
             cv.Optional(CONF_SAMPLE_RATE, default=16000): cv.int_range(min=16000, max=16000),
             cv.Optional(CONF_FILTER_LENGTH, default=4): cv.int_range(min=1, max=8),
-            cv.Optional(CONF_MODE, default="voip_low_cost"): cv.enum(AEC_MODES, lower=True),
+            cv.Optional(CONF_MODE, default="sr_low_cost"): cv.enum(AEC_MODES, lower=True),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_esp32_variant,

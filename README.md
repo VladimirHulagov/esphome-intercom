@@ -794,16 +794,11 @@ microphone:
     id: mic_aec                    # AEC-processed: for VA STT + intercom TX
     i2s_audio_duplex_id: i2s_duplex
 
-  - platform: i2s_audio_duplex
-    id: mic_raw                    # Raw: for MWW (pre-AEC, hears through TTS)
-    i2s_audio_duplex_id: i2s_duplex
-    pre_aec: true
-
 micro_wake_word:
-  microphone: mic_raw              # Raw mic for best wake word detection
+  microphone: mic_aec              # Post-AEC: SR linear AEC preserves spectral features
 
 voice_assistant:
-  microphone: mic_aec              # AEC mic for clean STT
+  microphone: mic_aec              # Post-AEC: clean STT without speaker echo
 ```
 
 See the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md) for full details.
@@ -857,16 +852,21 @@ The Voice Assistant and Intercom coexist seamlessly on the same hardware: shared
 
 AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU cost per frame (~7ms out of 16ms budget). The difference is primarily in memory allocation and adaptive filter quality.
 
-**Recommended: `voip_low_cost`** for devices with integrated codecs (ES8311, ES8388). This is more than sufficient for echo cancellation in voice calls and intercom, while keeping CPU free for Voice Assistant, MWW, and display rendering.
+**Recommended: `sr_low_cost`** for VA + MWW setups. Linear-only AEC preserves spectral features for neural wake word detection (10/10 vs 2/10 with VOIP modes). Also uses ~60% less CPU. Requires `buffers_in_psram: true` on ESP32-S3.
 
 ```yaml
 esp_aec:
   sample_rate: 16000
   filter_length: 4       # 64ms tail, sufficient for integrated codecs
-  mode: voip_low_cost    # Light on resources, good echo cancellation
+  mode: sr_low_cost      # Linear AEC — best for MWW + VA, lowest CPU
+
+i2s_audio_duplex:
+  # ... pins ...
+  aec_id: aec_component
+  buffers_in_psram: true  # Required for sr_low_cost (512-sample frames)
 ```
 
-If you are **not** using a display or AEC-heavy workloads, and want to experiment with better cancellation quality, you can try `voip_high_perf` with `filter_length: 8`. But `voip_low_cost` is the safe default.
+Use `voip_low_cost` only if you don't need wake word detection and want more aggressive echo suppression for VoIP-only use cases.
 
 **Avoid `sr_high_perf`**: It allocates very large DMA buffers that can exhaust memory on ESP32-S3, causing SPI errors and instability.
 
