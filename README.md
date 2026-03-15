@@ -659,7 +659,6 @@ sequenceDiagram
 | Device | YAML | Microphone | Speaker | I2S Mode | AEC | VA/MWW |
 |--------|------|------------|---------|----------|-----|--------|
 | **Generic ESP32-S3** | `generic-esp32-s3-intercom.yaml` | Any MEMS | Any I2S amp | Dual bus | VOIP (intercom_api) | Intercom only |
-| **Generic ESP32-S3** | `generic-esp32-s3-va-intercom.yaml` | Any MEMS | Any I2S amp | Dual bus | VOIP (intercom_api) | VA + MWW + Intercom |
 | **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
 | **Waveshare S3-AUDIO** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
 | **Waveshare P4-Touch-LCD** | `waveshare-p4-touch-lcd-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
