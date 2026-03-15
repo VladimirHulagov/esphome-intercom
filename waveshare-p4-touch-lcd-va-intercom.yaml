@@ -2382,6 +2382,12 @@ script:
             - globals.set:
                 id: restart_intent
                 value: "false"
+            # Wait for VA to reach IDLE — start() is silently ignored if not IDLE
+            - wait_until:
+                condition:
+                  not:
+                    voice_assistant.is_running:
+                timeout: 2s
             - voice_assistant.start:
           else:
             - mixer_speaker.apply_ducking:
