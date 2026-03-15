@@ -762,7 +762,10 @@ void I2SAudioDuplex::audio_task_() {
 
     // Snapshot AEC gate state right before AEC decision for timing precision
     ctx.aec_enabled = this->aec_enabled_.load(std::memory_order_relaxed);
-    ctx.aec_ref_volume = this->aec_ref_volume_.load(std::memory_order_relaxed);
+    // aec_ref_volume only used in mono software-ref mode (not TDM, not stereo)
+    if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
+      ctx.aec_ref_volume = this->aec_ref_volume_.load(std::memory_order_relaxed);
+    }
     ctx.now_ms = millis();
 
     this->process_aec_and_callbacks_(ctx);
