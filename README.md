@@ -1025,6 +1025,8 @@ mode: single
 
 ## Example Dashboard
 
+Each device section includes the intercom card plus all available controls: volume, mic gain, AEC on/off, AEC mode select (SR/VOIP runtime switching), auto answer, wake word selection, wake word on/off, mic mute, and speaker mute.
+
 ```yaml
 title: Intercom
 views:
@@ -1034,11 +1036,12 @@ views:
     type: sections
     max_columns: 2
     sections:
+      # --- VA + Intercom device (i2s_audio_duplex with AEC mode select) ---
       - type: grid
         cards:
           - type: custom:intercom-card
             entity_id: <your_device_id>
-            name: Waveshare S3 Audio
+            name: My Device
             mode: full
           - type: entities
             entities:
@@ -1047,6 +1050,7 @@ views:
               - entity: number.<your_device>_mic_gain
                 name: Mic gain
               - entity: switch.<your_device>_echo_cancellation
+              - entity: select.<your_device>_aec_mode
               - entity: switch.<your_device>_auto_answer
               - entity: button.<your_device>_restart
               - entity: sensor.<your_device>_contacts
@@ -1054,11 +1058,12 @@ views:
               - entity: switch.<your_device>_wake_word
               - entity: switch.<your_device>_mic_mute
               - entity: switch.<your_device>_speaker_mute
+      # --- Intercom-only device (no VA, no wake word, no AEC mode select) ---
       - type: grid
         cards:
           - type: custom:intercom-card
             entity_id: <your_device_id>
-            name: Xiaozhi Ball V3
+            name: My Intercom
             mode: full
           - type: entities
             entities:
@@ -1069,29 +1074,6 @@ views:
               - entity: switch.<your_device>_echo_cancellation
               - entity: switch.<your_device>_auto_answer
               - entity: button.<your_device>_restart
-              - entity: sensor.<your_device>_contacts
-              - entity: select.<your_device>_wake_word
-              - entity: switch.<your_device>_wake_word
-              - entity: switch.<your_device>_mic_mute
-              - entity: switch.<your_device>_speaker_mute
-      - type: grid
-        cards:
-          - type: custom:intercom-card
-            entity_id: <your_device_id>
-            name: Waveshare P4 Touch
-            mode: full
-          - type: entities
-            entities:
-              - entity: number.<your_device>_speaker_volume
-                name: Volume
-              - entity: number.<your_device>_mic_gain
-                name: Mic gain
-              - entity: switch.<your_device>_echo_cancellation
-              - entity: switch.<your_device>_auto_answer
-              - entity: button.<your_device>_restart
-              - entity: sensor.<your_device>_contacts
-              - entity: select.<your_device>_wake_word
-              - entity: switch.<your_device>_wake_word
               - entity: switch.<your_device>_mic_mute
               - entity: switch.<your_device>_speaker_mute
 ```
