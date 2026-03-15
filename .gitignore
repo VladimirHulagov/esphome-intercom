@@ -21,13 +21,11 @@ images/assistant/f_off_*.png
 images/assistant/idle_off.mp4
 images/assistant/idle.mp4
 
-# Private YAML configs (WIP / local-only)
-xiaozhi-ball-v3-local.yaml
-waveshare-p4-touch-lcd-va-intercom-local.yaml
-
-# Debug/JTAG configs
-esp32s3-builtin-jtag.cfg
-debug.gdb
+# Private/local YAML configs (not published)
+*-local.yaml
+*-local-*.yaml
+*-test.yaml
+*-test-*.yaml
 
 # Brand images (submitted to home-assistant/brands repo)
 brands/
