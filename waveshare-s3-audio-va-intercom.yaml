@@ -1056,6 +1056,46 @@ number:
           id(i2s_duplex).set_aec_reference_volume(es8311_vol);
 
 # =============================================================================
+# Select Entities
+# =============================================================================
+select:
+  - platform: template
+    name: AEC Mode
+    id: aec_mode_select
+    icon: mdi:tune-vertical
+    options:
+      - "sr_low_cost"
+      - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "sr_low_cost"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - if:
+          condition:
+            lambda: 'return id(init_in_progress);'
+          then:
+            - logger.log: "AEC mode select: skipping during boot"
+          else:
+            - logger.log:
+                format: "Switching AEC mode to %s"
+                args: ['x.c_str()']
+            - lambda: |-
+                int mode = 0;
+                if (x == "sr_low_cost") mode = 0;
+                else if (x == "sr_high_perf") mode = 1;
+                else if (x == "voip_low_cost") mode = 3;
+                else if (x == "voip_high_perf") mode = 4;
+                id(i2s_duplex).stop();
+                id(aec_processor).reinit(static_cast<aec_mode_t>(mode));
+                id(i2s_duplex).start();
+            # Restart MWW — duplex stop resets mic_ref_count, MWW must re-register
+            - micro_wake_word.stop:
+            - delay: 300ms
+            - micro_wake_word.start:
+
+# =============================================================================
 # WS2812 RGB LED Ring (7 LEDs)
 # =============================================================================
 light:

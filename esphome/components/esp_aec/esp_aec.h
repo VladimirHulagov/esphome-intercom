@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aec_processor.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 
 #ifdef USE_ESP32
@@ -26,6 +27,11 @@ class EspAec : public Component, public AecProcessor {
   int get_frame_size() const override;
   void process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size) override;
 
+  /// Destroy and recreate AEC with a new mode. Returns true on success.
+  /// Caller must stop audio processing before calling this (frame size may change).
+  bool reinit(aec_mode_t new_mode);
+  aec_mode_t get_mode() const { return this->mode_; }
+
   ~EspAec() override;
 
  protected:
@@ -34,6 +40,16 @@ class EspAec : public Component, public AecProcessor {
   int filter_length_{4};
   int cached_frame_size_{512};
   aec_mode_t mode_{AEC_MODE_VOIP_LOW_COST};
+};
+
+// Action: esp_aec.set_mode
+template<typename... Ts>
+class SetModeAction : public Action<Ts...>, public Parented<EspAec> {
+ public:
+  TEMPLATABLE_VALUE(int, mode)
+  void play(const Ts &...x) override {
+    this->parent_->reinit(static_cast<aec_mode_t>(this->mode_.value(x...)));
+  }
 };
 
 }  // namespace esp_aec

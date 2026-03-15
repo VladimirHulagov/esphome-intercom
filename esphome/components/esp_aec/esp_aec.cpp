@@ -49,6 +49,29 @@ int EspAec::get_frame_size() const {
   return this->cached_frame_size_;
 }
 
+bool EspAec::reinit(aec_mode_t new_mode) {
+  ESP_LOGI(TAG, "Reinitializing AEC: mode %d → %d", (int)this->mode_, (int)new_mode);
+
+  if (this->handle_ != nullptr) {
+    aec_destroy(this->handle_);
+    this->handle_ = nullptr;
+  }
+
+  this->mode_ = new_mode;
+  this->handle_ = aec_create(this->sample_rate_, this->filter_length_, 1, this->mode_);
+
+  if (this->handle_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to recreate AEC instance");
+    return false;
+  }
+
+  this->cached_frame_size_ = aec_get_chunksize(this->handle_);
+  ESP_LOGI(TAG, "AEC reinitialized: mode=%d, frame_size=%d samples (%dms)",
+           (int)this->mode_, this->cached_frame_size_,
+           this->cached_frame_size_ * 1000 / this->sample_rate_);
+  return true;
+}
+
 void EspAec::process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out, int frame_size) {
   if (this->handle_ == nullptr) {
     // Passthrough if not initialized
