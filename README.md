@@ -126,8 +126,8 @@ graph TB
 | Sample Rate | 16000 Hz |
 | Bit Depth | 16-bit signed PCM |
 | Channels | Mono |
-| ESP Chunk Size | 512 bytes (256 samples = 16ms) |
-| Browser Chunk Size | 2048 bytes (1024 samples = 64ms) |
+| ESP Chunk Size | 1024 bytes (512 samples = 32ms) |
+| Browser Chunk Size | 1024 bytes (512 samples = 32ms) |
 
 ### TCP Protocol (Port 6054)
 
@@ -656,13 +656,13 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | Microphone | Speaker | I2S Mode | Component | AEC Reference | VA/MWW | Tested by |
-|--------|------------|---------|----------|-----------|---------------|--------|-----------|
-| ESP32-S3 Mini | SPH0645 | MAX98357A | Dual bus | `i2s_audio` | Ring buffer | Yes (mixer speaker) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Xiaozhi Ball V3 | ES8311 | ES8311 | Single bus | `i2s_audio_duplex` | ES8311 digital feedback (stereo) | Yes (SR AEC) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Waveshare ESP32-S3-AUDIO | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3, 30dB) | Yes (SR AEC) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 | ES7210 (4-ch) | ES8311 | Single bus TDM | `i2s_audio_duplex` | ES7210 TDM analog (MIC3, 30dB) | Yes (SR AEC, LVGL touch display) | [@n-IA-hane](https://github.com/n-IA-hane) |
-| [Onju Voice](https://github.com/justLV/onju-voice) | MEMS (dual) | DAC + mute GPIO | Single bus | `i2s_audio_duplex` | Ring buffer | Yes (SR AEC) | [@rmeissn](https://github.com/rmeissn) |
+| Device | YAML | Microphone | Speaker | I2S Mode | AEC | VA/MWW |
+|--------|------|------------|---------|----------|-----|--------|
+| **Generic ESP32-S3** | `generic-esp32-s3-intercom.yaml` | Any MEMS | Any I2S amp | Dual bus | VOIP (intercom_api) | Intercom only |
+| **Generic ESP32-S3** | `generic-esp32-s3-va-intercom.yaml` | Any MEMS | Any I2S amp | Dual bus | VOIP (intercom_api) | VA + MWW + Intercom |
+| **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
+| **Waveshare S3-AUDIO** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
+| **Waveshare P4-Touch-LCD** | `waveshare-p4-touch-lcd-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
