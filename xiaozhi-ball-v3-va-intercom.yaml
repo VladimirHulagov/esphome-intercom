@@ -1696,6 +1696,7 @@ binary_sensor:
 # =============================================================================
 touchscreen:
   - platform: cst816
+    id: touch
     display: s3_box_lcd
     i2c_id: touchscreen_i2c_bus
     transform:
