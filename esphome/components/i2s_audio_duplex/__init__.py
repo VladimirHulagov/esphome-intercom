@@ -11,7 +11,7 @@ If output_sample_rate is omitted, no decimation occurs (backward compatible).
 import esphome.codegen as cg
 import esphome.config_validation as cv
 import esphome.final_validate as fv
-from esphome import pins
+from esphome import automation, pins
 from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
 from esphome.components.esp32 import get_esp32_variant
 from esphome.components.esp32.const import (
@@ -37,7 +37,6 @@ CONF_I2S_DIN_PIN = "i2s_din_pin"
 CONF_I2S_DOUT_PIN = "i2s_dout_pin"
 CONF_OUTPUT_SAMPLE_RATE = "output_sample_rate"
 CONF_AEC_ID = "aec_id"
-CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
@@ -58,10 +57,13 @@ CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 CONF_TASK_PRIORITY = "task_priority"
 CONF_TASK_CORE = "task_core"
 CONF_TASK_STACK_SIZE = "task_stack_size"
+CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
+StartAction = i2s_audio_duplex_ns.class_("StartAction", automation.Action)
+StopAction = i2s_audio_duplex_ns.class_("StopAction", automation.Action)
 
 # AecProcessor abstract interface (defined in esp_aec/aec_processor.h)
 # Both esp_aec::EspAec and future esp_afe::EspAfe inherit from this.
@@ -173,6 +175,7 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_CORRECT_DC_OFFSET, default=False): cv.boolean,
         cv.Optional(CONF_NUM_CHANNELS, default=1): cv.one_of(1, 2, int=True),
         cv.Optional(CONF_MIC_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
+        cv.Optional(CONF_TX_CHANNEL, default="left"): cv.one_of("left", "right", lower=True),
         cv.Optional(CONF_I2S_MODE, default="primary"): cv.one_of("primary", "secondary", lower=True),
         cv.Optional(CONF_USE_APLL, default=False): cv.boolean,
         cv.Optional(CONF_I2S_NUM, default=0): cv.int_range(min=0, max=2),
@@ -184,10 +187,8 @@ CONFIG_SCHEMA = cv.All(
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
         cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
-        # AEC reference delay: 80ms for separate I2S, 20-40ms for integrated codecs like ES8311
-        cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
-        # Pre-AEC mic attenuation: 0.1 = -20dB (for hot mics like ES8311 that overdrive)
-        cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=1.0),
+        # Pre-AEC mic gain/attenuation: <1.0 attenuates (hot mics), >1.0 amplifies (weak mics)
+        cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=32.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
         # Requires ES8311 register 0x44 bits[6:4]=4 (ADCDAT_SEL=DACL+ADC)
         cv.Optional(CONF_USE_STEREO_AEC_REF, default=False): cv.boolean,
@@ -243,6 +244,14 @@ def _final_validate(config):
             f"task_core={task_core} not available on {variant} (single-core SoC)"
         )
 
+    # APLL is only available on ESP32, ESP32-S2, and ESP32-P4
+    APLL_VARIANTS = {VARIANT_ESP32, VARIANT_ESP32S2, VARIANT_ESP32P4}
+    if config.get(CONF_USE_APLL, False) and variant not in APLL_VARIANTS:
+        raise cv.Invalid(
+            f"use_apll is not supported on {variant}. "
+            f"APLL clock source is only available on ESP32, ESP32-S2, and ESP32-P4."
+        )
+
     # Cross-component validation: check for AEC conflict with intercom_api
     from esphome.core import CORE
     full_config = CORE.config or {}
@@ -292,6 +301,9 @@ async def to_code(config):
     # Mic channel selection (for mono RX: which I2S slot to capture)
     cg.add(var.set_mic_channel_right(config[CONF_MIC_CHANNEL] == "right"))
 
+    # TX channel selection (for mono TX: which I2S slot to output)
+    cg.add(var.set_tx_slot_right(config[CONF_TX_CHANNEL] == "right"))
+
     # Slot bit width: 0 = auto (match bits_per_sample)
     sbw = config[CONF_SLOT_BIT_WIDTH]
     cg.add(var.set_slot_bit_width(0 if sbw == "auto" else sbw))
@@ -299,9 +311,6 @@ async def to_code(config):
     # Set output sample rate if specified (enables decimation)
     if CONF_OUTPUT_SAMPLE_RATE in config:
         cg.add(var.set_output_sample_rate(config[CONF_OUTPUT_SAMPLE_RATE]))
-
-    # Set AEC reference delay (must be set BEFORE set_aec for buffer sizing)
-    cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
 
     # Set mic attenuation for hot mics (applied BEFORE AEC)
     cg.add(var.set_mic_attenuation(config[CONF_MIC_ATTENUATION]))
@@ -331,3 +340,21 @@ async def to_code(config):
         cg.add(var.set_aec(aec))
         # Enable AEC compilation in i2s_audio_duplex
         cg.add_define("USE_ESP_AEC")
+
+
+# === Actions ===
+I2S_AUDIO_DUPLEX_ACTION_SCHEMA = automation.maybe_simple_id(
+    {cv.GenerateID(): cv.use_id(I2SAudioDuplex)}
+)
+
+
+@automation.register_action(
+    "i2s_audio_duplex.start", StartAction, I2S_AUDIO_DUPLEX_ACTION_SCHEMA, synchronous=True
+)
+@automation.register_action(
+    "i2s_audio_duplex.stop", StopAction, I2S_AUDIO_DUPLEX_ACTION_SCHEMA, synchronous=True
+)
+async def i2s_audio_duplex_action_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    return var

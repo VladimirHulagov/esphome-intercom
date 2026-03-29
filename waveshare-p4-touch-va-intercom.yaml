@@ -45,12 +45,18 @@
 substitutions:
   name: waveshare-p4-touch
   friendly_name: Waveshare P4 Touch
+  mic_id: mic_aec
+
+  # ---- Remote mode (for users, just download and flash) ----
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Local mode (for development, clone repo first) ----
+  # assets_base: ""
 
   # Display dimensions (portrait)
   display_width: "800"
   display_height: "1280"
 
-  # AI avatar folder (images/assistant/<ai_avatar>/)
+  # AI avatar folder (${assets_base}images/assistant/<ai_avatar>/)
   ai_avatar: troiaio
 
   # Wake word sensitivity (per-device tuning)
@@ -66,6 +72,8 @@ substitutions:
   voice_assist_muted_phase_id: "12"
   voice_assist_timer_finished_phase_id: "20"
 
+packages:
+  core: !include packages/va_intercom.yaml
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -73,7 +81,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2026.2.0
   on_boot:
     - priority: 600
       then:
@@ -127,6 +134,7 @@ esp32:
     advanced:
       enable_idf_experimental_features: true
     sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "16"
       CONFIG_CACHE_L2_CACHE_256KB: "y"
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
@@ -183,10 +191,6 @@ wifi:
 
 api:
   on_client_connected:
-    - lambda: |-
-        id(intercom).publish_entity_states();
-        // Force media_player to re-publish volume to HA (prevents stale slider)
-        id(speaker_media_player).publish_state();
     - script.execute: set_idle_or_mute_phase
     - script.execute: draw_display
     - delay: 5s
@@ -218,7 +222,10 @@ time:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
+  - source:
+      type: git
+      url: https://github.com/n-IA-hane/esphome-intercom
+      ref: main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
@@ -334,7 +341,7 @@ media_player:
     name: None
     id: speaker_media_player
     internal: false
-    buffer_size: 524288  # 512KB
+    task_stack_in_psram: true
     media_pipeline:
       speaker: media_speaker
       sample_rate: 48000
@@ -345,10 +352,11 @@ media_player:
       sample_rate: 48000
     files:
       - id: timer_finished_sound
-        file: sounds/timer_finished.flac
+        file: ${assets_base}sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: sounds/ringtone.flac
+        file: ${assets_base}sounds/ringtone.flac
     on_announcement:
+      - script.execute: update_status
       - if:
           condition:
             intercom_api.is_idle: intercom
@@ -365,6 +373,7 @@ media_player:
                 value: '${voice_assist_replying_phase_id}'
             - script.execute: draw_display
     on_play:
+      - script.execute: update_status
       - script.execute: backlight_timer
       # Show neutral mood image during media playback
       - if:
@@ -381,20 +390,24 @@ media_player:
                 value: '${voice_assist_replying_phase_id}'
             - script.execute: draw_display
     on_pause:
-      # PAUSED holds 5KB+3KB internal RAM + HTTP connection. Stop immediately.
+      # Must stop (paused pipeline blocks all audio including TTS).
+      # on_idle won't fire (is_paused_ stuck bug), so handle display here.
       - media_player.stop:
+      - delay: 500ms
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_idle_phase_id}'
+      - script.execute: update_status
+      - script.execute: draw_display
+      - script.execute: backlight_timer
     on_idle:
       - delay: 200ms
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_idle_phase_id}'
+      - script.execute: update_status
+      - script.execute: draw_display
       - script.execute: backlight_timer
-      - if:
-          condition:
-            and:
-              - not:
-                  voice_assistant.is_running:
-              - intercom_api.is_idle: intercom
-          then:
-            - script.execute: set_idle_or_mute_phase
-            - script.execute: draw_display
 
 # =============================================================================
 # Micro Wake Word
@@ -403,30 +416,6 @@ micro_wake_word:
   id: mww
   microphone: mic_aec
   stop_after_detection: false
-  on_wake_word_detected:
-    - script.execute: backlight_timer
-    # Acquire audio focus: duck media
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 20
-        duration: 200ms
-    # Barge-in: if VA/TTS active, stop and let va_end_handler restart VA
-    - if:
-        condition:
-          or:
-            - media_player.is_announcing:
-            - voice_assistant.is_running:
-        then:
-          - globals.set:
-              id: restart_intent
-              value: "true"
-          - voice_assistant.stop:
-          - media_player.stop:
-              announcement: true
-        else:
-          # Fresh start (no VA running)
-          - voice_assistant.start:
-              wake_word: !lambda return wake_word;
   models:
     - model: "wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
@@ -444,118 +433,6 @@ voice_assistant:
   noise_suppression_level: 2
   auto_gain: 31dBFS
   volume_multiplier: 2.0
-
-  on_listening:
-    - script.execute: backlight_timer
-    - globals.set:
-        id: current_mode
-        value: '0'
-    - globals.set:
-        id: voice_assistant_phase
-        value: '${voice_assist_listening_phase_id}'
-    - text_sensor.template.publish:
-        id: text_request
-        state: "..."
-    - text_sensor.template.publish:
-        id: text_response
-        state: "..."
-    - script.execute: draw_display
-
-  on_stt_vad_end:
-    - globals.set:
-        id: voice_assistant_phase
-        value: '${voice_assist_thinking_phase_id}'
-    - script.execute: draw_display
-
-  on_stt_end:
-    - text_sensor.template.publish:
-        id: text_request
-        state: !lambda return x;
-    - script.execute: draw_display
-
-  on_tts_start:
-    # Parse emoticon prefix, set mood background, strip from displayed text
-    - lambda: |-
-        std::string text = x;
-        esphome::image::Image *mood = id(mood_neutral);
-        if (text.size() >= 3) {
-          std::string prefix = text.substr(0, 3);
-          if (prefix == ":-)") {
-            mood = id(mood_happy);
-          } else if (prefix == ":-(") {
-            mood = id(mood_angry);
-          } else if (prefix == ":-|") {
-            // neutral (default)
-          }
-          if (prefix == ":-)" || prefix == ":-(" || prefix == ":-|") {
-            text = text.substr(3);
-            if (!text.empty() && text[0] == ' ') text = text.substr(1);
-          }
-        }
-        lv_img_set_src(id(mood_bg), mood);
-        id(text_response).publish_state(text);
-    - script.stop: backlight_timer
-    - light.turn_on:
-        id: display_backlight
-        brightness: 100%
-    - globals.set:
-        id: voice_assistant_phase
-        value: '${voice_assist_replying_phase_id}'
-    - script.execute: draw_display
-
-  on_end:
-    - script.execute: va_end_handler
-
-  on_error:
-    # Always release audio focus on error
-    - globals.set:
-        id: restart_intent
-        value: "false"
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 0
-        duration: 300ms
-    - if:
-        condition:
-          lambda: return !id(init_in_progress);
-        then:
-          - globals.set:
-              id: voice_assistant_phase
-              value: '${voice_assist_error_phase_id}'
-          - script.execute: draw_display
-          - delay: 2s
-          - script.execute: set_idle_or_mute_phase
-          - script.execute: draw_display
-
-  on_client_connected:
-    - globals.set:
-        id: init_in_progress
-        value: 'false'
-    - if:
-        condition:
-          and:
-            - switch.is_off: mute
-            - not:
-                lambda: 'return id(mww).is_running();'
-        then:
-          - micro_wake_word.start:
-    - script.execute: set_idle_or_mute_phase
-    - script.execute: draw_display
-    # Boost MWW task priority (default 3 → 8) after task is created.
-    - delay: 1s
-    - lambda: |-
-        TaskHandle_t mww_task = xTaskGetHandle("mww");
-        if (mww_task) {
-          vTaskPrioritySet(mww_task, 8);
-        }
-
-  on_client_disconnected:
-    - micro_wake_word.stop:
-    - globals.set:
-        id: voice_assistant_phase
-        value: '${voice_assist_not_ready_phase_id}'
-    - script.execute: draw_display
-
   on_timer_started:
     - script.execute: update_timer_state
   on_timer_cancelled:
@@ -566,6 +443,9 @@ voice_assistant:
     - script.execute: update_timer_state
   on_timer_finished:
     - switch.turn_on: timer_ringing
+    - wait_until:
+        condition:
+          media_player.is_announcing:
     - globals.set:
         id: voice_assistant_phase
         value: '${voice_assist_timer_finished_phase_id}'
@@ -581,126 +461,8 @@ intercom_api:
   speaker: intercom_speaker
   ringing_timeout: 30s
 
-  on_outgoing_call:
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 20
-        duration: 200ms
-    - lambda: |-
-        id(peer_name) = id(intercom).get_current_destination();
-        id(previous_mode) = id(current_mode);
-    - globals.set:
-        id: current_mode
-        value: '1'
-    - script.execute: backlight_timer
-    - script.execute: draw_display
-    - if:
-        condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
-        then:
-          - homeassistant.event:
-              event: esphome.intercom_call
-              data:
-                caller: !lambda 'return App.get_friendly_name();'
-                destination: "Home Assistant"
-                type: "doorbell"
-
-  on_ringing:
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 20
-        duration: 200ms
-    - lambda: |-
-        id(peer_name) = id(intercom).get_caller();
-        id(previous_mode) = id(current_mode);
-    - globals.set:
-        id: current_mode
-        value: '1'
-    - script.execute: backlight_timer
-    - script.execute: draw_display
-    - script.execute: intercom_ringing_loop
-
   on_answered:
     - logger.log: "Call answered"
-
-  on_streaming:
-    - script.stop: intercom_ringing_loop
-    - mixer_speaker.apply_ducking:
-        id: media_speaker_mix
-        decibel_reduction: 20
-        duration: 200ms
-    - script.execute: backlight_timer
-    # Set globals FIRST (before any async action) so draw_display sees correct state
-    - lambda: |-
-        if (id(current_mode) != 1) {
-          id(previous_mode) = id(current_mode);
-          id(current_mode) = 1;
-        }
-        std::string caller = id(intercom).get_caller();
-        if (!caller.empty()) {
-          id(peer_name) = caller;
-        } else {
-          id(peer_name) = id(intercom).get_current_destination();
-        }
-    - script.execute: draw_display
-
-  on_idle:
-    - script.stop: intercom_ringing_loop
-    - if:
-        condition:
-          not:
-            voice_assistant.is_running:
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_speaker_mix
-              decibel_reduction: 0
-              duration: 500ms
-    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
-    # Restore previous mode after call ends
-    - if:
-        condition:
-          lambda: return id(previous_mode) == 0;
-        then:
-          - globals.set:
-              id: current_mode
-              value: '0'
-          - script.execute: set_idle_or_mute_phase
-          - script.execute: draw_display
-        else:
-          - globals.set:
-              id: current_mode
-              value: '1'
-          - script.execute: draw_display
-
-  on_hangup:
-    - script.stop: intercom_ringing_loop
-    - if:
-        condition:
-          not:
-            voice_assistant.is_running:
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_speaker_mix
-              decibel_reduction: 0
-              duration: 500ms
-    - logger.log:
-        format: "Hangup: %s"
-        args: ['reason.c_str()']
-
-  on_call_failed:
-    - script.stop: intercom_ringing_loop
-    - if:
-        condition:
-          not:
-            voice_assistant.is_running:
-        then:
-          - mixer_speaker.apply_ducking:
-              id: media_speaker_mix
-              decibel_reduction: 0
-              duration: 500ms
-    - logger.log:
-        format: "Call failed: %s"
-        args: ['reason.c_str()']
 
 # =============================================================================
 # DISPLAY (MIPI DSI)
@@ -873,144 +635,144 @@ font:
 # =============================================================================
 image:
   # VA state images
-  - file: images/assistant/${ai_avatar}/listening.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/listening.png
     id: img_listening
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/thinking.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/thinking.png
     id: img_thinking
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/error.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error.png
     id: img_error
     resize: 400x400
     type: RGB565
     byte_order: little_endian
   # Mood backgrounds for replying (set based on LLM emoticon prefix)
-  - file: images/assistant/${ai_avatar}/happy.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/happy.png
     id: mood_happy
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/neutral.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/neutral.png
     id: mood_neutral
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/angry.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/angry.png
     id: mood_angry
     resize: 400x400
     type: RGB565
     byte_order: little_endian
   # Overlay page images
-  - file: images/assistant/${ai_avatar}/error_no_wifi.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_wifi.png
     id: error_no_wifi
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/error_no_ha.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_ha.png
     id: error_no_ha
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_00.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_00.png
     id: idle_00
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_01.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_01.png
     id: idle_01
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_02.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_02.png
     id: idle_02
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_03.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_03.png
     id: idle_03
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_04.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_04.png
     id: idle_04
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_05.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_05.png
     id: idle_05
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_06.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_06.png
     id: idle_06
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_07.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_07.png
     id: idle_07
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_08.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_08.png
     id: idle_08
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_09.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_09.png
     id: idle_09
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_10.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_10.png
     id: idle_10
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_11.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_11.png
     id: idle_11
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_12.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_12.png
     id: idle_12
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_13.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_13.png
     id: idle_13
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_14.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_14.png
     id: idle_14
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_15.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_15.png
     id: idle_15
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_16.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_16.png
     id: idle_16
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_17.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_17.png
     id: idle_17
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_18.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_18.png
     id: idle_18
     resize: 400x400
     type: RGB565
     byte_order: little_endian
-  - file: images/assistant/${ai_avatar}/idle_19.png
+  - file: ${assets_base}images/assistant/${ai_avatar}/idle_19.png
     id: idle_19
     resize: 400x400
     type: RGB565
@@ -1970,15 +1732,6 @@ lvgl:
 # GLOBALS
 # =============================================================================
 globals:
-  - id: init_in_progress
-    type: bool
-    restore_value: false
-    initial_value: "true"
-  - id: restart_intent
-    type: bool
-    restore_value: false
-    initial_value: "false"
-
   - id: voice_assistant_phase
     type: int
     restore_value: false
@@ -2013,7 +1766,157 @@ globals:
 # SCRIPTS
 # =============================================================================
 script:
-  # Main display rendering — split-screen layout
+  # Remove package's LED-based update_led (P4 has no status_led, uses LVGL display)
+  - id: !remove update_led
+  - id: update_led
+    mode: restart
+    then:
+      - script.execute: draw_display
+
+  # Display cleanup after VA ends (extends package placeholder)
+  - id: !extend va_end_cleanup
+    then:
+      - script.execute: backlight_timer
+      - text_sensor.template.publish:
+          id: text_request
+          state: ""
+      - text_sensor.template.publish:
+          id: text_response
+          state: ""
+      - script.execute: set_idle_or_mute_phase
+      - script.execute: draw_display
+
+  # Display state routing (extends package placeholder)
+  # Maps g_applied_led to voice_assistant_phase and calls draw_display.
+  - id: !extend ui_state_changed
+    then:
+      - lambda: |-
+          int led = id(g_applied_led);
+          // Intercom idle: restore previous mode after call ends
+          if (led == 0 && id(current_mode) == 1 && id(intercom).get_state_str() == "Idle") {
+            id(peer_name) = id(intercom).get_current_destination();
+            if (id(previous_mode) == 0) {
+              id(current_mode) = 0;
+            }
+          }
+          // Map LED state to voice_assistant_phase
+          switch (led) {
+            case 0:  // Idle
+              if (!api::global_api_server->is_connected()) {
+                id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+              } else if (id(mute).state) {
+                id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+              } else if (id(speaker_media_player).state == media_player::MEDIA_PLAYER_STATE_PLAYING) {
+                lv_img_set_src(id(mood_bg), id(mood_neutral));
+                id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+              } else {
+                id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              }
+              break;
+            case 1:  // Both muted
+            case 2:  // Mic muted
+              id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+              break;
+            case 4:  // MWW recent / barge-in
+            case 5:  // VA Listening
+              id(current_mode) = 0;
+              id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+              break;
+            case 6:  // VA Thinking
+              id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+              break;
+            case 7:  // VA Speaking (text set by ui_tts_started)
+              id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+              break;
+            case 11: // VA Error
+              id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+              break;
+            case 12: // Media playing
+              if (id(mute).state) {
+                id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+              } else {
+                lv_img_set_src(id(mood_bg), id(mood_neutral));
+                id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+              }
+              break;
+            default:
+              break;
+          }
+      - script.execute: backlight_timer
+      # Reset text on listening start
+      - if:
+          condition:
+            lambda: 'return id(g_applied_led) == 5;'
+          then:
+            - text_sensor.template.publish:
+                id: text_request
+                state: "..."
+            - text_sensor.template.publish:
+                id: text_response
+                state: "..."
+      # Intercom idle: update labels if staying in IC mode
+      - if:
+          condition:
+            lambda: |-
+              return id(g_applied_led) == 0 && id(current_mode) == 1
+                     && id(intercom).get_state_str() == "Idle";
+          then:
+            - lambda: |-
+                id(peer_name) = id(intercom).get_current_destination();
+            - script.execute: draw_display
+      - script.execute: draw_display
+
+  # TTS text display (extends package placeholder)
+  - id: !extend ui_tts_started
+    then:
+      # Parse emoticon prefix, set mood background, strip from displayed text
+      - lambda: |-
+          std::string t = text;
+          esphome::image::Image *mood = id(mood_neutral);
+          if (t.size() >= 3) {
+            std::string prefix = t.substr(0, 3);
+            if (prefix == ":-)") {
+              mood = id(mood_happy);
+            } else if (prefix == ":-(") {
+              mood = id(mood_angry);
+            } else if (prefix == ":-|") {
+              // neutral (default)
+            }
+            if (prefix == ":-)" || prefix == ":-(" || prefix == ":-|") {
+              t = t.substr(3);
+              if (!t.empty() && t[0] == ' ') t = t.substr(1);
+            }
+          }
+          lv_img_set_src(id(mood_bg), mood);
+          id(text_response).publish_state(t);
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_replying_phase_id}'
+      - script.stop: backlight_timer
+      - light.turn_on:
+          id: display_backlight
+          brightness: 100%
+      - script.execute: draw_display
+
+  # STT text display (extends package placeholder)
+  - id: !extend ui_stt_ended
+    then:
+      - text_sensor.template.publish:
+          id: text_request
+          state: !lambda 'return text;'
+      - script.execute: draw_display
+
+  # Intercom call display (extends package placeholder)
+  - id: !extend ui_ic_call
+    then:
+      - lambda: |-
+          id(peer_name) = peer;
+          id(previous_mode) = id(current_mode);
+          id(current_mode) = 1;
+      - script.execute: backlight_timer
+      - script.execute: draw_display
+
+  # Main display rendering -- split-screen layout
   - id: draw_display
     mode: restart
     then:
@@ -2147,9 +2050,11 @@ script:
                          !id(init_in_progress);
               - switch.is_off: mute
               - not:
+                  micro_wake_word.is_running:
+              - not:
                   media_player.is_announcing:
           then:
-            - script.execute: start_wake_word
+            - micro_wake_word.start:
       - script.execute: update_timer_state
 
   # Idle animation loop (play once + long pause)
@@ -2358,87 +2263,6 @@ script:
           lv_obj_clear_flag(id(timer_overlay), LV_OBJ_FLAG_HIDDEN);
 
   # VA end handler — mode: restart ensures barge-in cancels previous on_end
-  - id: va_end_handler
-    mode: restart
-    then:
-      # Wait for TTS to finish playing
-      - wait_until:
-          condition:
-            - media_player.is_announcing:
-          timeout: 0.5s
-      - wait_until:
-          condition:
-            and:
-              - not:
-                  media_player.is_announcing:
-              - not:
-                  speaker.is_playing:
-                      id: tts_speaker
-          timeout: 30s
-      - if:
-          condition:
-            or:
-              - media_player.is_announcing:
-              - speaker.is_playing:
-                  id: tts_speaker
-          then:
-            - logger.log:
-                level: WARN
-                format: "VA: TTS drain timeout, forcing cleanup"
-            - media_player.stop:
-                announcement: true
-      - delay: 100ms
-      - voice_assistant.stop:
-      # Barge-in: restart VA. Otherwise release audio focus + reset display.
-      - if:
-          condition:
-            lambda: 'return id(restart_intent);'
-          then:
-            - globals.set:
-                id: restart_intent
-                value: "false"
-            # Wait for VA to reach IDLE — start() is silently ignored if not IDLE
-            - wait_until:
-                condition:
-                  not:
-                    voice_assistant.is_running:
-                timeout: 2s
-            - voice_assistant.start:
-          else:
-            - mixer_speaker.apply_ducking:
-                id: media_speaker_mix
-                decibel_reduction: 0
-                duration: 500ms
-            - script.execute: backlight_timer
-            - text_sensor.template.publish:
-                id: text_request
-                state: ""
-            - text_sensor.template.publish:
-                id: text_response
-                state: ""
-            - if:
-                condition:
-                  not:
-                    intercom_api.is_idle: intercom
-                then:
-                  - globals.set:
-                      id: current_mode
-                      value: '1'
-            - script.execute: set_idle_or_mute_phase
-            - script.execute: draw_display
-
-  # Wake word management
-  - id: start_wake_word
-    then:
-      - if:
-          condition:
-            and:
-              - switch.is_off: mute
-              - not:
-                  voice_assistant.is_running:
-          then:
-            - micro_wake_word.start:
-
   - id: set_idle_or_mute_phase
     then:
       - if:
@@ -2477,21 +2301,6 @@ script:
                 announcement: true
             - delay: 6s
 
-  # Intercom ringing loop
-  - id: intercom_ringing_loop
-    mode: restart
-    then:
-      - while:
-          condition:
-            or:
-              - intercom_api.is_ringing: intercom
-              - intercom_api.is_incoming: intercom
-          then:
-            - media_player.speaker.play_on_device_media_file:
-                media_file: intercom_ringing_sound
-                announcement: true
-            - delay: 3s
-
   # Backlight auto-off timer
   - id: backlight_timer
     mode: restart
@@ -2512,43 +2321,21 @@ script:
 # TEMPLATE BUTTONS (exposed to HA card)
 # =============================================================================
 button:
-  - platform: template
-    name: Call
-    id: call_button
-    icon: mdi:phone
+  # Extend package buttons with display updates
+  - id: !extend call_button
     on_press:
-      - intercom_api.call_toggle: intercom
       - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
       - script.execute: draw_display
 
-  - platform: template
-    name: Next Contact
-    id: next_contact_button
-    icon: mdi:skip-next
+  - id: !extend next_contact_button
     on_press:
-      - intercom_api.next_contact: intercom
       - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
       - script.execute: draw_display
 
-  - platform: template
-    name: Previous Contact
-    id: prev_contact_button
-    icon: mdi:skip-previous
+  - id: !extend prev_contact_button
     on_press:
-      - intercom_api.prev_contact: intercom
       - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
       - script.execute: draw_display
-
-  - platform: template
-    name: Decline
-    id: decline_button
-    icon: mdi:phone-hangup
-    on_press:
-      - intercom_api.decline_call: intercom
-
-
-  - platform: restart
-    name: Restart
 
 # =============================================================================
 # PHYSICAL BUTTON (GPIO0)
@@ -2596,61 +2383,75 @@ binary_sensor:
 # SWITCHES
 # =============================================================================
 switch:
-  # Mic Mute — silences microphone + stops wake word detection
+  # Remove package-provided mute and speaker_mute (device needs mic_aec + amp control)
+  - id: !remove mute
+  - id: !remove speaker_mute
+
+  # Mic Mute -- device override: uses mic_aec, adds display updates
   - platform: template
     name: Mic Mute
     id: mute
-    icon: mdi:microphone-off
+    icon: "mdi:microphone-off"
     optimistic: true
     restore_mode: ALWAYS_OFF
+    entity_category: config
     on_turn_on:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute ON — microphone silenced, MWW stopped"
+          format: "Mic mute ON -- microphone silenced, MWW stopped"
+      - voice_assistant.stop:
       - micro_wake_word.stop:
       - microphone.mute: mic_aec
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_muted_phase_id}'
       - script.execute: draw_display
+      - script.execute: update_status
     on_turn_off:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute OFF — microphone active, MWW started"
+          format: "Mic mute OFF -- microphone active, MWW started"
       - microphone.unmute: mic_aec
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_idle_phase_id}'
-      - script.execute: start_wake_word
+      - if:
+          condition:
+            not:
+              micro_wake_word.is_running:
+          then:
+            - micro_wake_word.start:
       - script.execute: draw_display
+      - script.execute: update_status
 
-  # Speaker Mute — DAC mute (clean silence) + amp off (power saving)
+  # Speaker Mute -- device override: adds amp enable/disable
   - platform: template
     name: Speaker Mute
     id: speaker_mute
     icon: mdi:volume-off
+    entity_category: config
     optimistic: true
     restore_mode: ALWAYS_OFF
     on_turn_on:
-      # DAC mute first (clean silence), then amp off (no click)
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute ON — DAC muted, amplifier off"
+          format: "Speaker mute ON -- DAC muted, amplifier off"
       - speaker.mute_on: hw_speaker
       - delay: 50ms
       - output.turn_off: speaker_enable
+      - script.execute: update_status
     on_turn_off:
-      # Amp on first (stabilize), then DAC unmute (no pop)
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute OFF — amplifier on, DAC unmuted"
+          format: "Speaker mute OFF -- amplifier on, DAC unmuted"
       - output.turn_on: speaker_enable
       - delay: 50ms
       - speaker.mute_off: hw_speaker
+      - script.execute: update_status
 
   - platform: template
     id: timer_ringing
@@ -2667,23 +2468,6 @@ switch:
       - script.execute: timer_alarm_loop
       - delay: 15min
       - switch.turn_off: timer_ringing
-
-  # MWW active status + control
-  - platform: template
-    name: Wake Word
-    id: wake_word_switch
-    icon: mdi:account-voice
-    restore_mode: DISABLED
-    lambda: 'return id(mww).is_running();'
-    turn_on_action:
-      - if:
-          condition:
-            not:
-              lambda: 'return id(mww).is_running();'
-          then:
-            - micro_wake_word.start:
-    turn_off_action:
-      - micro_wake_word.stop:
 
   - platform: intercom_api
     intercom_api_id: intercom
@@ -2750,45 +2534,40 @@ select:
           then:
             - logger.log: "AEC mode select: skipping during boot"
           else:
-            - logger.log:
-                format: "Switching AEC mode to %s"
-                args: ['x.c_str()']
-            - lambda: |-
-                // Don't switch during active VA or intercom call
-                if (id(va).is_running() || !id(intercom).is_idle()) {
-                  ESP_LOGW("aec_mode", "Cannot switch AEC mode during active VA/intercom");
-                  return;
-                }
-                int mode = 0;
-                if (x == "sr_low_cost") mode = 0;
-                else if (x == "sr_high_perf") mode = 1;
-                else if (x == "voip_low_cost") mode = 3;
-                else if (x == "voip_high_perf") mode = 4;
-                id(i2s_duplex).stop();
-                if (!id(aec_processor).reinit(static_cast<aec_mode_t>(mode))) {
-                  ESP_LOGE("aec_mode", "AEC reinit failed! Restarting with previous mode.");
-                }
-                id(i2s_duplex).start();
-            # Restart MWW — duplex stop resets mic_ref_count, MWW must re-register
-            - micro_wake_word.stop:
-            - delay: 300ms
             - if:
                 condition:
-                  switch.is_off: mute
+                  or:
+                    - voice_assistant.is_running:
+                    - not:
+                        intercom_api.is_idle: intercom
                 then:
-                  - micro_wake_word.start:
+                  - logger.log:
+                      level: WARN
+                      format: "Cannot switch AEC mode during active VA/intercom"
+                else:
+                  - logger.log:
+                      format: "Switching AEC mode to %s"
+                      args: ['x.c_str()']
+                  - micro_wake_word.stop:
+                  - i2s_audio_duplex.stop: i2s_duplex
+                  - esp_aec.set_mode:
+                      id: aec_processor
+                      mode: !lambda 'return x;'
+                  - i2s_audio_duplex.start: i2s_duplex
+                  - delay: 300ms
+                  - if:
+                      condition:
+                        switch.is_off: mute
+                      then:
+                        - micro_wake_word.start:
 
 # =============================================================================
 # TEXT SENSORS
 # =============================================================================
 text_sensor:
-  - platform: homeassistant
-    id: ha_active_devices
-    entity_id: sensor.intercom_active_devices
+  # Extend package ha_active_devices with display updates
+  - id: !extend ha_active_devices
     on_value:
-      - intercom_api.set_contacts:
-          id: intercom
-          contacts_csv: !lambda 'return x;'
       - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
       - script.execute: draw_display
 

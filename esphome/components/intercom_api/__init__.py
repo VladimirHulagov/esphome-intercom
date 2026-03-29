@@ -5,7 +5,6 @@ from esphome.const import (
     CONF_ID,
     CONF_MICROPHONE,
     CONF_SPEAKER,
-    CONF_PORT,
     CONF_ICON,
     CONF_NAME,
     CONF_MODE,
@@ -21,6 +20,7 @@ CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 
 CONF_AEC_ID = "aec_id"
+CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_ON_RINGING = "on_ringing"
 CONF_ON_STREAMING = "on_streaming"
@@ -46,6 +46,7 @@ StopAction = intercom_api_ns.class_("StopAction", automation.Action)
 AnswerCallAction = intercom_api_ns.class_("AnswerCallAction", automation.Action)
 DeclineCallAction = intercom_api_ns.class_("DeclineCallAction", automation.Action)
 CallToggleAction = intercom_api_ns.class_("CallToggleAction", automation.Action)
+PublishEntityStatesAction = intercom_api_ns.class_("PublishEntityStatesAction", automation.Action)
 
 # Parameterized actions
 SetVolumeAction = intercom_api_ns.class_("SetVolumeAction", automation.Action)
@@ -61,6 +62,7 @@ IntercomIsCallingCondition = intercom_api_ns.class_("IntercomIsCallingCondition"
 IntercomIsIncomingCondition = intercom_api_ns.class_("IntercomIsIncomingCondition", automation.Condition)
 IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondition", automation.Condition)
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
+IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
 
 def _aec_schema(value):
     """Validate aec_id - import esp_aec only if used."""
@@ -82,6 +84,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
         cv.Optional(CONF_AEC_ID): _aec_schema,
+        # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
+        cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
         # Ringing timeout: auto-decline call if not answered within this time
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
         # Trigger when incoming call (auto_answer OFF)
@@ -156,11 +160,13 @@ async def to_code(config):
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
 
     # Set device name (for full mode: exclude self from contacts list)
-    cg.add(var.set_device_name(cg.RawExpression('App.get_friendly_name()')))
+    from esphome.core import CORE
+    cg.add(var.set_device_name(CORE.friendly_name or CORE.name))
 
     if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
         aec = await cg.get_variable(config[CONF_AEC_ID])
         cg.add(var.set_aec(aec))
+        cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
         cg.add_define("USE_ESP_AEC")
 
     # Ringing timeout (auto-decline if not answered)
@@ -248,7 +254,7 @@ async def to_code(config):
         )
         cg.add(var.set_caller_sensor(caller_sensor))
 
-        # Contacts list sensor (CSV of available contacts)
+        # Contacts sensor (publishes count, e.g. "3 contacts")
         contacts_sensor_id = cv.declare_id(text_sensor.TextSensor)(f"{config[CONF_ID].id}_contacts")
         contacts_sensor = await text_sensor.new_text_sensor(
             {
@@ -272,7 +278,7 @@ INTERCOM_ACTION_SCHEMA = automation.maybe_simple_id(
 )
 
 
-@automation.register_action("intercom_api.next_contact", NextContactAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.next_contact", NextContactAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def next_contact_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -280,7 +286,7 @@ async def next_contact_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.prev_contact", PrevContactAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.prev_contact", PrevContactAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def prev_contact_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -288,7 +294,7 @@ async def prev_contact_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.start", StartAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.start", StartAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def start_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -296,7 +302,7 @@ async def start_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.stop", StopAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.stop", StopAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def stop_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -304,7 +310,7 @@ async def stop_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.answer_call", AnswerCallAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.answer_call", AnswerCallAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def answer_call_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -312,7 +318,7 @@ async def answer_call_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.decline_call", DeclineCallAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.decline_call", DeclineCallAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def decline_call_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
@@ -320,8 +326,16 @@ async def decline_call_action_to_code(config, action_id, template_arg, args):
     return var
 
 
-@automation.register_action("intercom_api.call_toggle", CallToggleAction, INTERCOM_ACTION_SCHEMA)
+@automation.register_action("intercom_api.call_toggle", CallToggleAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
 async def call_toggle_action_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
+    return var
+
+
+@automation.register_action("intercom_api.publish_entity_states", PublishEntityStatesAction, INTERCOM_ACTION_SCHEMA, synchronous=True)
+async def publish_entity_states_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
     cg.add(var.set_parent(parent))
@@ -344,6 +358,7 @@ CONF_CONTACTS_CSV = "contacts_csv"
             cv.Required(CONF_VOLUME): cv.templatable(cv.float_range(min=0.0, max=1.0)),
         }
     ),
+    synchronous=True,
 )
 async def set_volume_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -363,6 +378,7 @@ async def set_volume_action_to_code(config, action_id, template_arg, args):
             cv.Required(CONF_GAIN_DB): cv.templatable(cv.float_range(min=-20.0, max=20.0)),
         }
     ),
+    synchronous=True,
 )
 async def set_mic_gain_db_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -382,6 +398,7 @@ async def set_mic_gain_db_action_to_code(config, action_id, template_arg, args):
             cv.Required(CONF_CONTACTS_CSV): cv.templatable(cv.string),
         }
     ),
+    synchronous=True,
 )
 async def set_contacts_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -404,6 +421,7 @@ CONF_CONTACT = "contact"
             cv.Required(CONF_CONTACT): cv.templatable(cv.string),
         }
     ),
+    synchronous=True,
 )
 async def set_contact_action_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
@@ -490,4 +508,25 @@ async def intercom_is_in_call_to_code(config, condition_id, template_arg, args):
     var = cg.new_Pvariable(condition_id, template_arg)
     parent = await cg.get_variable(config[CONF_ID])
     cg.add(var.set_parent(parent))
+    return var
+
+
+CONF_DESTINATION = "destination"
+
+@automation.register_condition(
+    "intercom_api.destination_is",
+    IntercomDestinationIsCondition,
+    automation.maybe_simple_id(
+        {
+            cv.GenerateID(): cv.use_id(IntercomApi),
+            cv.Required(CONF_DESTINATION): cv.templatable(cv.string),
+        }
+    ),
+)
+async def intercom_destination_is_to_code(config, condition_id, template_arg, args):
+    var = cg.new_Pvariable(condition_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
+    templ = await cg.templatable(config[CONF_DESTINATION], args, cg.std_string)
+    cg.add(var.set_destination(templ))
     return var

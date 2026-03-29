@@ -19,12 +19,13 @@ With i2s_audio_duplex:
 - **True Full-Duplex**: Simultaneous mic input and speaker output on one I2S bus
 - **Standard Platforms**: Exposes `microphone` and `speaker` platform classes (compatible with Voice Assistant, MWW, intercom_api)
 - **AEC Integration**: Built-in echo cancellation via `esp_aec` component, three reference modes:
-  - **Ring buffer** (default): Works with any codec. Speaker audio is copied to a delay buffer as reference. Configure `aec_reference_delay_ms` to match your acoustic path (typically 60-100ms). `aec_reference_volume` scales the reference to match hardware DAC volume.
-  - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference, no delay tuning needed. Enable with `use_stereo_aec_reference: true`. The digital loopback is post-DSP-volume — no `aec_reference_volume` scaling needed.
-  - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data, no ring buffer delay. Enable with `use_tdm_reference: true`. The analog reference already reflects hardware volume — no scaling needed.
+  - **Direct TX reference** (default): Uses the previous TX frame as AEC reference. No ring buffer, no delay tuning. Works with any setup (discrete MEMS mic + amp, or codec). The AEC adaptive filter compensates for the ~1 chunk latency automatically.
+  - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference. Enable with `use_stereo_aec_reference: true`.
+  - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data. Enable with `use_tdm_reference: true`.
 - **Dual Mic Path**: `pre_aec` option for raw mic (diagnostics) alongside AEC-processed mic (VA/STT/MWW)
 - **PSRAM Buffers**: `buffers_in_psram` option moves all audio buffers to PSRAM (~28KB internal heap saved). ESP-IDF new I2S driver uses memcpy for user buffers (not DMA), so PSRAM is safe. Required for `sr_low_cost` AEC on memory-constrained devices.
-- **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic attenuation (pre-AEC), speaker volume, AEC reference volume
+- **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic gain pre-AEC (for weak MEMS mics), speaker volume (persistent)
+- **Codec-less Support**: `slot_bit_width: 32` for MEMS mics (INMP441, MSM261, SPH0645) + I2S amp on same bus. `correct_dc_offset: true` for mics without built-in HPF
 - **Number Platform**: Native `mic_gain` and `speaker_volume` entities with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, `i2s_audio_duplex` owns the number entities and `intercom_api` defers to avoid conflicts.
 - **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` prevents dual AEC (both `i2s_audio_duplex` and `intercom_api` with `aec_id`) and dual DC offset removal, catching configuration errors at compile time
 - **AEC Gating**: Auto-disables AEC when speaker is silent in mono/stereo modes (prevents filter drift). TDM mode is always-on (hardware ref captures silence naturally).
@@ -39,7 +40,7 @@ With i2s_audio_duplex:
 graph TD
     RX[I2S RX] --> Stereo["Stereo mode (ES8311)<br/>split L=ref, R=mic"]
     RX --> TDM["TDM mode (ES7210)<br/>deinterleave mic_slot, ref_slot"]
-    RX --> Mono["Mono mode<br/>mic only, ref from ring buffer"]
+    RX --> Mono["Mono mode<br/>mic only, ref from prev TX"]
 
     Stereo --> mic_path[mic]
     Stereo --> ref_path[ref]
@@ -65,7 +66,7 @@ graph TD
     Mixer["mixer<br/>(VA TTS + Intercom RX)"] --> SPK[Speaker buffer]
     SPK --> VOL[volume scaling]
     VOL --> TX[I2S TX]
-    VOL --> RingBuf["ref ring buffer<br/>(mono mode only)"]
+    VOL --> DirectRef["direct ref buffer<br/>(mono mode only)"]
     RingBuf -.-> reference
 ```
 
@@ -95,7 +96,7 @@ graph TD
 
 - **ESP32**, **ESP32-S3**, or **ESP32-P4** (tested on S3 and P4, including RISC-V dual-core P4 with 32MB PSRAM). Single-core SoCs (C3, C5, C6, H2, S2) supported but cannot pin `task_core` to Core 1.
 - AEC requires PSRAM (S3/P4). TDM requires `SOC_I2S_SUPPORTS_TDM` (S3, P4, C3, C5, C6, H2).
-- Audio codec with shared I2S bus (ES8311 recommended)
+- Audio codec with shared I2S bus (ES8311 recommended), or discrete I2S mic + amp on the same bus
 - ESP-IDF framework
 
 ## Installation
@@ -104,7 +105,7 @@ graph TD
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/intercom-api
+      url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
     components: [i2s_audio_duplex, esp_aec]
 ```
@@ -147,8 +148,9 @@ speaker:
 | `sample_rate` | int | 16000 | I2S bus sample rate (8000-48000) |
 | `output_sample_rate` | int | - | Mic/AEC output rate. If set, enables FIR decimation (must divide `sample_rate` evenly, max ratio 6) |
 | `aec_id` | ID | - | Reference to `esp_aec` component for echo cancellation |
-| `aec_reference_delay_ms` | int | 80 | AEC reference delay in ms for ring buffer mode (typically 60-100ms). Ignored when `use_stereo_aec_reference` is enabled. |
-| `mic_attenuation` | float | 1.0 | Pre-AEC mic attenuation (0.01-1.0, for hot mics like ES8311) |
+| `mic_attenuation` | float | 1.0 | Pre-AEC mic gain/attenuation (0.01-32.0). <1.0 attenuates hot mics, >1.0 amplifies weak mics. Use `mic_gain_pre_aec` number platform for runtime control. |
+| `slot_bit_width` | int | auto | I2S slot width in bits (16 or 32). Set to 32 for MEMS mics without codec (INMP441, MSM261, SPH0645). |
+| `correct_dc_offset` | bool | false | Enable DC offset removal. Required for MEMS mics without built-in HPF (MSM261, SPH0645). |
 | `use_stereo_aec_reference` | bool | false | ES8311 digital feedback mode (see below) |
 | `reference_channel` | string | left | Which stereo channel carries AEC reference: `left` or `right` |
 | `use_tdm_reference` | bool | false | TDM hardware reference mode (ES7210, see below) |
@@ -168,17 +170,14 @@ speaker:
 
 ### AEC with Voice Assistant + MWW
 
-Use `sr_low_cost` AEC mode for simultaneous VA + MWW. This mode uses a **linear-only adaptive filter** (Espressif `esp_aec3` engine) without the residual echo suppressor (RES) that VOIP modes add. The RES non-linear processing distorts spectral features that MWW's neural model relies on (confirmed: VOIP AEC = 2/10 detection, SR AEC = 10/10).
+Use `sr_low_cost` AEC mode for simultaneous VA + MWW. This is critical: VOIP modes add a residual echo suppressor (RES) that distorts spectral features MWW relies on (confirmed: VOIP = 2/10 detection, SR = 10/10). Espressif engineer (esp-sr #159): *"For speech recognition and wake word models, adding the non-linear module reduces recognition accuracy."*
 
 ```yaml
 esp_aec:
   id: aec_component
   sample_rate: 16000
   filter_length: 4        # 64ms tail (4 for integrated codec, 8 for separate mic+speaker)
-  mode: sr_low_cost       # Linear-only AEC — preserves spectral features for MWW.
-                          # VOIP modes add RES that breaks MWW detection (esp-sr#159).
-                          # SR also uses ~60% less CPU (22% vs 58% Core 0).
-                          # Frame size: 512 samples (32ms) — requires buffers_in_psram.
+  mode: sr_low_cost       # Linear-only AEC, preserves spectral features for MWW
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -187,54 +186,35 @@ i2s_audio_duplex:
   buffers_in_psram: true  # Required for sr_low_cost (512-sample frames need more memory)
 
 microphone:
-  # Post-AEC: echo-cancelled audio for VA STT, intercom, AND MWW
   - platform: i2s_audio_duplex
     id: mic_aec
     i2s_audio_duplex_id: i2s_duplex
 
-  # Pre-AEC: raw mic fallback (kept for diagnostics)
+  # Pre-AEC: raw mic (diagnostics only)
   - platform: i2s_audio_duplex
     id: mic_raw
     i2s_audio_duplex_id: i2s_duplex
     pre_aec: true
 
 micro_wake_word:
-  microphone: mic_aec     # Post-AEC: SR linear AEC preserves spectral features for neural MWW
+  microphone: mic_aec     # Post-AEC works with SR linear AEC
 
 voice_assistant:
-  microphone: mic_aec     # Post-AEC: clean STT without speaker echo
+  microphone: mic_aec
 ```
 
-**Why `sr_low_cost`?** Espressif's AEC has two completely different engines:
-- **SR modes** (`sr_low_cost`, `sr_high_perf`): `esp_aec3` — pure linear adaptive filter, no non-linear processing. Preserves audio spectral characteristics. ~22% CPU on Core 0.
-- **VOIP modes** (`voip_low_cost`, `voip_high_perf`): `dios_ssp_aec` — linear filter + two-stage residual echo suppressor (RES). Aggressively cleans audio for human listening but distorts features that neural models rely on. ~58% CPU on Core 0.
+With SR linear AEC, MWW detects reliably on post-AEC audio even during TTS playback. No need for a separate `mic_raw` path. MWW task priority can be boosted from default 3 to 8 via `on_boot` lambda for reliable barge-in.
 
-Espressif engineer (esp-sr #159): *"For speech recognition and wake word models, adding the non-linear module reduces recognition accuracy."*
-
-**Why all on `mic_aec`?** With SR linear AEC, MWW detects reliably on post-AEC audio even during music/TTS playback. No need for separate `mic_raw` path. The echo is cancelled without distorting the wake word features.
-
-### AEC CPU Impact
-
-The ESP-SR AEC has two completely different engines with vastly different CPU profiles:
+### AEC Mode Comparison
 
 | Mode | Engine | CPU (Core 0) | RES | MWW compatible |
 |------|--------|-------------|-----|----------------|
-| `sr_low_cost` | `esp_aec3_728` (linear, SIMD) | **~22%** | No | **Yes** (10/10 detection) |
+| `sr_low_cost` | `esp_aec3_728` (linear, SIMD) | **~22%** | No | **Yes** (10/10) |
 | `sr_high_perf` | `esp_aec3_hps16fft` (linear, FFT) | ~25% | No | Yes |
-| `voip_low_cost` | `dios_ssp_aec` (Speex-based) | **~58%** | Yes (always) | **No** (2/10 detection) |
+| `voip_low_cost` | `dios_ssp_aec` (Speex-based) | **~58%** | Yes (always) | **No** (2/10) |
 | `voip_high_perf` | `dios_ssp_aec` | ~64% | Yes (always) | No |
 
-**Use `sr_low_cost`** for VA + MWW + intercom. It provides effective echo cancellation while preserving spectral features for neural wake word detection, at 60% less CPU than VOIP modes.
-
-| Metric | sr_low_cost | voip_low_cost |
-|--------|------------|---------------|
-| Frame size | 512 samples (32ms) | 256 samples (16ms) |
-| CPU (Core 0) | ~22% | ~58% |
-| MWW detection | 10/10 | 2/10 |
-| Echo cancellation | Linear only | Linear + RES |
-| Requires `buffers_in_psram` | Yes (on S3) | No |
-
-**MWW + AEC coexistence**: With `sr_low_cost`, MWW uses the same `mic_aec` (post-AEC) as VA and intercom. The linear AEC removes echo without distorting spectral features. MWW task priority can be boosted from default 3 to 8 via `on_boot` lambda for reliable barge-in during TTS playback.
+SR modes use `esp_aec3` (pure linear adaptive filter, no non-linear processing). VOIP modes use `dios_ssp_aec` (linear + two-stage RES). Use `sr_low_cost` for VA + MWW + intercom. Do not use `sr_high_perf` on ESP32-S3 (exhausts DMA memory).
 
 ### ES8311 Digital Feedback AEC (Recommended)
 
@@ -252,7 +232,7 @@ i2s_audio_duplex:
 - ES8311 register 0x44 is configured to output DAC+ADC on ASDOUT as stereo
 - L channel = DAC loopback (reference signal), R channel = ADC (microphone) — configurable via `reference_channel`
 - Reference is **sample-accurate** (same I2S frame as mic) → best possible AEC
-- `aec_reference_delay_ms` is **ignored** in this mode — the reference comes directly from the I2S RX deinterleave, not from the ring buffer
+- The reference comes directly from the I2S RX deinterleave, sample-accurate
 
 ### TDM Hardware Reference (ES7210 + ES8311)
 
@@ -274,7 +254,7 @@ i2s_audio_duplex:
 - MIC1 (slot 0) captures voice, MIC3 (slot 1) captures the ES8311 analog output
 - I2S is configured as `I2S_SLOT_MODE_STEREO` with TDM slot mask so all slots appear in DMA
 - The audio task deinterleaves mic and ref from the TDM frame — they are inherently sample-aligned
-- No ring buffer delay, no speaker gating — the hardware ref is naturally silent when speaker is silent
+- The hardware ref is naturally silent when speaker is silent
 - The analog reference already reflects DAC hardware volume — no `aec_reference_volume` scaling needed
 
 **ES7210 TDM register configuration** (required in `on_boot` lambda):
@@ -408,7 +388,7 @@ esphome:
         id(i2c_bus).write(0x18, data, 2);
 ```
 
-> **Note**: Without `use_stereo_aec_reference`, the component uses a ring buffer with configurable delay (`aec_reference_delay_ms`, default 80ms) for the AEC reference signal. The stereo mode eliminates timing issues and is strongly recommended for ES8311.
+> **Note**: Without `use_stereo_aec_reference`, the component uses a direct reference from the previous TX frame. Stereo mode is sample-accurate and recommended for ES8311.
 
 ## Pin Mapping by Codec
 
@@ -467,7 +447,8 @@ i2s_audio_duplex:
 | Scenario | Use This Component | Use Standard i2s_audio |
 |----------|-------------------|----------------------|
 | ES8311/ES8388/WM8960 codec | Yes | No (won't work properly) |
-| Separate INMP441 + MAX98357A | No | Yes (two I2S buses) |
+| INMP441 + MAX98357A on same bus | Yes (direct TX reference, `slot_bit_width: 32`) | No |
+| INMP441 + MAX98357A on separate buses | Either works | Yes |
 | PDM microphone + I2S speaker | No | Yes (different protocols) |
 | Need true full-duplex on single bus | Yes | Limited |
 | VA + MWW + Intercom on same device | Yes (single bus) | Yes (dual bus with mixer speaker) |
@@ -615,11 +596,11 @@ Removing any of these causes audio glitch at stream startup (cache cold-start: e
 4. Check DMA buffer size — at 4 slots, `dma_frame_num` should be 256 (2048 bytes/descriptor, under 4092 limit)
 
 ### MWW Not Detecting During TTS
-1. **Use `sr_low_cost` AEC mode** (not `voip_low_cost`). VOIP modes add a residual echo suppressor that distorts spectral features MWW relies on (2/10 detection vs 10/10 with SR). See [AEC CPU Impact](#aec-cpu-impact).
-2. **MWW on `mic_aec`** (post-AEC), NOT `mic_raw`. With SR linear AEC, post-AEC audio preserves wake word features while removing echo.
-3. **Enable `buffers_in_psram: true`** — required for SR mode's 512-sample frames on ESP32-S3.
+1. **Use `sr_low_cost` AEC mode** (not VOIP). See [AEC Mode Comparison](#aec-mode-comparison).
+2. **MWW on `mic_aec`** (post-AEC), NOT `mic_raw`.
+3. **Enable `buffers_in_psram: true`** for SR mode's 512-sample frames on ESP32-S3.
 4. **Boost MWW priority to 8** via on_boot lambda (ESPHome defaults to 3, below mixer at 10).
-5. Do NOT use `sr_high_perf` — exhausts DMA memory on ESP32-S3.
+5. Do NOT use `sr_high_perf` on ESP32-S3 (exhausts DMA memory).
 
 ### Switches/Display Slow With AEC On
 With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Core 1. This issue is resolved by correct core assignment. If you still see display slowness, check that no other high-priority task is pinned to Core 1.
@@ -636,7 +617,7 @@ With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Cor
 - **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless** — these components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
 - **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker has been silent for >250ms) is the workaround.
 - **TDM analog reference vs ES8311 digital feedback**: The digital feedback path (ES8311 stereo loopback) provides a cleaner reference signal for AEC than the TDM analog path (ES7210 MIC3 capturing speaker output). Analog loopback introduces non-linear distortion from the DAC/amplifier chain that the AEC linear adaptive filter cannot fully model. Expect ~95-98% echo cancellation with analog reference vs ~99% with digital feedback. Both are adequate for voice assistant and intercom use.
-- **AEC reference volume**: `aec_reference_volume` should ONLY be used with ring buffer mode (mono, no stereo/TDM). Both ES8311 digital feedback and TDM analog reference already include the hardware volume in the reference signal — applying additional scaling would double-attenuate and degrade AEC performance.
+- **AEC reference volume**: `aec_reference_volume` should ONLY be used with direct TX reference mode (mono, no stereo/TDM). Both ES8311 digital feedback and TDM analog reference already include the hardware volume in the reference signal.
 
 ## License
 

@@ -20,7 +20,7 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 
 #ifdef USE_ESP_AEC
-#include "esphome/components/esp_aec/esp_aec.h"
+#include "esphome/components/esp_aec/aec_processor.h"
 #endif
 
 #include "intercom_protocol.h"
@@ -123,7 +123,8 @@ class IntercomApi : public Component {
   void set_device_name(const std::string &name) { this->device_name_ = name; }
 
 #ifdef USE_ESP_AEC
-  void set_aec(esp_aec::EspAec *aec) { this->aec_ = aec; }
+  void set_aec(AecProcessor *aec) { this->aec_ = aec; }
+  void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
   void set_aec_enabled(bool enabled);
   bool is_aec_enabled() const { return this->aec_enabled_; }
 #endif
@@ -295,7 +296,7 @@ class IntercomApi : public Component {
   text_sensor::TextSensor *state_sensor_{nullptr};
   text_sensor::TextSensor *destination_sensor_{nullptr};  // full: selected contact
   text_sensor::TextSensor *caller_sensor_{nullptr};       // full: who is calling
-  text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: CSV of contacts
+  text_sensor::TextSensor *contacts_sensor_{nullptr};     // full: contact count (e.g. "3 contacts")
 
   // Registered entities (for state sync after boot)
   switch_::Switch *auto_answer_switch_{nullptr};
@@ -379,8 +380,9 @@ class IntercomApi : public Component {
 
 #ifdef USE_ESP_AEC
   // AEC (Acoustic Echo Cancellation)
-  esp_aec::EspAec *aec_{nullptr};
+  AecProcessor *aec_{nullptr};
   bool aec_enabled_{false};
+  uint32_t aec_ref_delay_ms_{80};  // Configurable via YAML (default 80ms)
 
   // Speaker reference buffer for AEC (fed by speaker_task)
   std::unique_ptr<RingBuffer> spk_ref_buffer_;
@@ -536,6 +538,12 @@ class CallToggleAction : public Action<Ts...>, public Parented<IntercomApi> {
   void play(const Ts &...x) override { this->parent_->call_toggle(); }
 };
 
+template<typename... Ts>
+class PublishEntityStatesAction : public Action<Ts...>, public Parented<IntercomApi> {
+ public:
+  void play(const Ts &...x) override { this->parent_->publish_entity_states(); }
+};
+
 // === Switch platform classes with restore support ===
 
 // AEC switch (only available when USE_ESP_AEC is defined)
@@ -599,6 +607,15 @@ class IntercomIsInCallCondition : public Condition<Ts...>, public Parented<Inter
   bool check(const Ts &...x) override {
     auto state = this->parent_->get_call_state();
     return state == CallState::STREAMING || state == CallState::ANSWERING;
+  }
+};
+
+template<typename... Ts>
+class IntercomDestinationIsCondition : public Condition<Ts...>, public Parented<IntercomApi> {
+ public:
+  TEMPLATABLE_VALUE(std::string, destination)
+  bool check(const Ts &...x) override {
+    return this->parent_->get_current_destination() == this->destination_.value(x...);
   }
 };
 

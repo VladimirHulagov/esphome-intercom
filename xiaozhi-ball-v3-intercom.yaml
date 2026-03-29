@@ -24,7 +24,6 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2024.12.0
   on_boot:
     priority: 600
     then:
@@ -71,6 +70,7 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "16"
       CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
@@ -119,7 +119,10 @@ wifi:
 # EXTERNAL COMPONENTS
 # ==============================================================================
 external_components:
-  - source: github://n-IA-hane/intercom-api@main
+  - source:
+      type: git
+      url: https://github.com/n-IA-hane/esphome-intercom
+      ref: main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # ==============================================================================
@@ -168,8 +171,6 @@ i2s_audio_duplex:
   # Gives sample-accurate reference for AEC (no ring buffer timing issues)
   # Requires ES8311 register 0x44 bits[6:4]=4 (set in on_boot)
   use_stereo_aec_reference: true
-  # Minimal delay for stereo mode - reference is nearly sample-aligned
-  aec_reference_delay_ms: 10
 
 # ==============================================================================
 # MICROPHONE (via duplex platform)
@@ -226,12 +227,14 @@ intercom_api:
     # ESP-to-ESP bridge is handled automatically by HA detecting state change to "Outgoing"
     - if:
         condition:
-          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+          intercom_api.destination_is:
+            id: intercom
+            destination: "Home Assistant"
         then:
           - homeassistant.event:
               event: esphome.intercom_call
               data:
-                caller: !lambda 'return App.get_friendly_name();'
+                caller: "${friendly_name}"
                 destination: "Home Assistant"
                 type: "doorbell"
 

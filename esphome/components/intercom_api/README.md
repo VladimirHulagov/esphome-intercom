@@ -53,7 +53,7 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/intercom-api
+      url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
     components: [intercom_api, esp_aec]
 
@@ -105,6 +105,7 @@ intercom_api:
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
 | `aec_id` | ID | - | Reference to esp_aec component |
+| `aec_reference_delay_ms` | int | 80 | AEC ring buffer pre-fill delay (10-200ms). Tune for your hardware if echo cancellation is poor. |
 
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |

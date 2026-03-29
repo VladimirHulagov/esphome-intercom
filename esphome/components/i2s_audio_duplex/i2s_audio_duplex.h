@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/ring_buffer.h"
 
@@ -130,6 +131,7 @@ class I2SAudioDuplex : public Component {
   void set_mclk_multiple(uint32_t mult) { this->mclk_multiple_ = mult; }
   void set_i2s_comm_fmt(uint8_t fmt) { this->i2s_comm_fmt_ = fmt; }
   void set_mic_channel_right(bool right) { this->mic_channel_right_ = right; }
+  void set_tx_slot_right(bool right) { this->tx_slot_right_ = right; }
   void set_slot_bit_width(uint8_t sbw) { this->slot_bit_width_ = sbw; }
 
   // AEC setter
@@ -150,10 +152,6 @@ class I2SAudioDuplex : public Component {
   // AEC reference volume - for codecs with hardware volume (ES8311)
   void set_aec_reference_volume(float volume) { this->aec_ref_volume_.store(volume, std::memory_order_relaxed); }
   float get_aec_reference_volume() const { return this->aec_ref_volume_.load(std::memory_order_relaxed); }
-
-  // AEC reference delay - acoustic path delay in milliseconds
-  void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
-  uint32_t get_aec_reference_delay_ms() const { return this->aec_ref_delay_ms_; }
 
   // ES8311 Digital Feedback mode: RX is stereo with L=DAC(ref), R=ADC(mic)
   void set_use_stereo_aec_reference(bool use) { this->use_stereo_aec_ref_ = use; }
@@ -215,7 +213,6 @@ class I2SAudioDuplex : public Component {
  protected:
   bool init_i2s_duplex_();
   void deinit_i2s_();
-  void prefill_aec_ref_buffer_();
 
   static void audio_task(void *param);
   void audio_task_();
@@ -242,7 +239,6 @@ class I2SAudioDuplex : public Component {
     size_t bus_frame_bytes{0};
     size_t rx_frame_bytes{0};
     size_t tdm_tx_frame_bytes{0};
-    size_t aec_delay_bytes{0};
 
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
     int16_t *rx_buffer{nullptr};
@@ -254,7 +250,6 @@ class I2SAudioDuplex : public Component {
     int16_t *tdm_deint_mic{nullptr};
     int16_t *tdm_deint_ref{nullptr};
     int16_t *tdm_tx_buffer{nullptr};
-    int16_t *ref_bus_buffer{nullptr};
     int16_t *aec_output{nullptr};
 
     // ── Loop mutable state ──
@@ -298,6 +293,7 @@ class I2SAudioDuplex : public Component {
   uint32_t mclk_multiple_{256};        // MCLK multiple: 128, 256, 384, or 512
   uint8_t i2s_comm_fmt_{0};            // 0=philips, 1=msb, 2=pcm_short, 3=pcm_long
   bool mic_channel_right_{false};      // RX mono slot: false=LEFT, true=RIGHT
+  bool tx_slot_right_{false};          // TX mono slot: false=LEFT (default), true=RIGHT
   uint8_t slot_bit_width_{0};          // 0 = auto (match bits_per_sample), or 16/24/32
   uint32_t output_sample_rate_{0};     // 0 = use sample_rate_ (no decimation)
   uint32_t decimation_ratio_{1};       // sample_rate_ / output_sample_rate_ (computed in setup)
@@ -319,9 +315,8 @@ class I2SAudioDuplex : public Component {
   std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
   TaskHandle_t audio_task_handle_{nullptr};
 
-  // Cross-thread buffer operation requests (main thread → audio task, avoids concurrent ring buffer access)
+  // Cross-thread buffer operation request (main thread -> audio task, avoids concurrent ring buffer access)
   std::atomic<bool> request_speaker_reset_{false};
-  std::atomic<bool> request_ref_prefill_{false};
 
   // Mic data callbacks
   std::vector<MicDataCallback> mic_callbacks_;       // Post-AEC (for VA/STT)
@@ -337,14 +332,14 @@ class I2SAudioDuplex : public Component {
   // AEC support
   AecProcessor *aec_{nullptr};
   std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
-  std::unique_ptr<RingBuffer> speaker_ref_buffer_;  // Reference for AEC (bus rate in mono mode)
+  int16_t *direct_aec_ref_{nullptr};     // AEC reference from previous TX frame (bus rate, mono mode)
+  bool direct_aec_ref_valid_{false};     // True after first TX frame has been saved
 
   // Volume control — atomic: written from main loop, read from audio task via snapshot.
   std::atomic<float> mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
   std::atomic<float> aec_ref_volume_{1.0f};   // AEC reference scaling (set to codec's output volume for proper echo matching)
-  uint32_t aec_ref_delay_ms_{80}; // AEC reference delay in ms (80 for separate I2S, 20-40 for ES8311)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
 
@@ -367,6 +362,21 @@ class I2SAudioDuplex : public Component {
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};
 
+  // Deferred stop cleanup: channel deletion deferred until task exits
+  std::atomic<bool> stop_cleanup_pending_{false};
+  void finish_stop_cleanup_();
+
+};
+
+// Native actions for YAML automations
+template<typename... Ts> class StartAction : public Action<Ts...>, public Parented<I2SAudioDuplex> {
+ public:
+  void play(const Ts &...x) override { this->parent_->start(); }
+};
+
+template<typename... Ts> class StopAction : public Action<Ts...>, public Parented<I2SAudioDuplex> {
+ public:
+  void play(const Ts &...x) override { this->parent_->stop(); }
 };
 
 }  // namespace i2s_audio_duplex
