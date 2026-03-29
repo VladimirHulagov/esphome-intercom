@@ -1,0 +1,3280 @@
+# =============================================================================
+# XIAOZHI BALL V3 - VOICE ASSISTANT + INTERCOM (LVGL DISPLAY)
+# =============================================================================
+# Based on: https://github.com/RealDeco/xiaozhi-esphome
+# Original: devices/Spotpear Balls/Ball_v2.yaml (v1.07)
+#
+# Display uses LVGL declarative widgets instead of manual ili9xxx lambdas.
+#
+# Key changes from the original:
+#   - Replaced i2s_audio + audio_dac with i2s_audio_duplex for true full-duplex
+#     single-bus I2S (mic + speaker on same ES8311 bus)
+#   - Added esp_aec (Acoustic Echo Cancellation) with ES8311 stereo L/R digital
+#     feedback for sample-accurate reference alignment
+#   - Added mixer speaker (VA TTS + intercom audio share hw_speaker)
+#   - Added intercom_api component (TCP-based full-duplex intercom, full mode)
+#   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
+#   - Custom wake word model (hey_trowyayoh) instead of built-in models
+#   - All images, animations, and sounds stored locally (no external downloads)
+#   - Removed battery monitoring, touchscreen, startup/wake sounds
+#   - Removed wake_word_engine_location select (always on-device MWW)
+#   - Removed show_text, show_battery_status switches
+#   - Added backlight auto-off timer with configurable timeout
+#   - LVGL display: declarative page widgets, mood-based replying backgrounds
+#   - Added intercom pages: idle (contact selector), ringing, in-call
+#   - Added intercom controls: call/hangup/next/prev buttons, volume, mic gain
+#
+# Combines voice_assistant + micro_wake_word with intercom_api.
+# Uses i2s_audio_duplex (ES8311) + mixer speaker for concurrent audio.
+# I2S bus at 48kHz (ES8311 native), mic decimated to 16kHz via FIR filter.
+# Wake word ALWAYS active. Mode switching is UI-only (display + buttons).
+#
+# Audio pipeline (i2s_audio_duplex at 48kHz, stereo AEC reference):
+#
+#   I2S RX 48kHz stereo → L=ref R=mic → FIR x3 ──┐
+#                                                └── AEC (SR linear) → mic_aec → VA / Intercom TX / MWW
+#
+#   Music/radio → media_speaker (resampler) ───────────┐
+#   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311
+#   Intercom RX → intercom_speaker (resampler) ────────┘
+#
+# GPIO0 Button Behavior (page-aware):
+#   VA idle:           Click=start VA | Long press(1-3s)=switch to intercom
+#   VA active:         Click=stop VA
+#   IC idle:           Click=call | Double=next contact | Long=switch to VA
+#   IC ringing in:     Click=answer | Double=decline | Long=switch to VA
+#   IC ringing out:    Click=hangup | Long=switch to VA
+#   IC in call:        Click=hangup | Long=switch to VA
+#   Timer ringing:     Click=stop timer (any page)
+# =============================================================================
+
+substitutions:
+  name: xiaozhi-ball-v3
+  friendly_name: Xiaozhi Ball V3 LVGL
+
+  # ---- Remote mode (for users, just download and flash) ----
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Local mode (for development, clone repo first) ----
+  # assets_base: ""
+
+  # AI avatar folder (${assets_base}images/assistant/<ai_avatar>/)
+  ai_avatar: troiaio
+
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+
+  # Font configuration
+  font_glyphsets: "GF_Latin_Core"
+  font_family: Figtree
+
+  # Display constants
+  display_width: "240"
+  display_height: "240"
+  
+  current_weather: weather.<your_weather_service>
+
+# =============================================================================
+# ESP32 BASE CONFIGURATION
+# =============================================================================
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2026.2.0
+  name_add_mac_suffix: false
+  on_boot:
+    priority: 600
+    then:
+      - output.turn_on: speaker_enable
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      - script.execute: compute_layout_metrics
+      - script.execute: reposition_widgets
+      - script.execute: draw_display
+      - script.execute: backlight_timer
+      - micro_wake_word.stop:
+      - delay: 1s
+      # Configure ES8311 for digital feedback AEC
+      # Register 0x44 bits[6:4] = ADCDAT_SEL: 4 = DACL + ADC
+      # This makes ASDOUT output stereo: L=DAC loopback (reference), R=ADC (mic)
+      - lambda: |-
+          ESP_LOGI("es8311", "Configuring ES8311 register 0x44 for digital feedback...");
+          uint8_t reg = 0x44;
+          uint8_t current_val = 0;
+          id(i2c_bus).write(0x18, &reg, 1);
+          id(i2c_bus).read(0x18, &current_val, 1);
+          ESP_LOGI("es8311", "Register 0x44 current value: 0x%02X", current_val);
+          uint8_t data[2] = {0x44, 0x48};
+          auto err = id(i2c_bus).write(0x18, data, 2);
+          if (err == esphome::i2c::ERROR_OK) {
+            ESP_LOGI("es8311", "Wrote register 0x44=0x48 for digital feedback AEC");
+            id(i2c_bus).write(0x18, &reg, 1);
+            id(i2c_bus).read(0x18, &current_val, 1);
+            ESP_LOGI("es8311", "Register 0x44 after write: 0x%02X", current_val);
+          } else {
+            ESP_LOGE("es8311", "Failed to write register 0x44: error %d", (int)err);
+          }
+      # Restore ES8311 volume and sync AEC reference
+      - lambda: |-
+          float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
+          id(es8311_dac).set_volume(vol);
+          id(peer_name) = id(intercom).get_current_destination();
+      - micro_wake_word.start:
+      - delay: 30s
+      - if:
+          condition:
+            lambda: return id(init_in_progress);
+          then:
+            - globals.set:
+                id: init_in_progress
+                value: 'false'
+            - script.execute: draw_display
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# =============================================================================
+# EXTERNAL COMPONENTS
+# =============================================================================
+# Remote:
+external_components:
+  - source: github://apaneiro/intercom-api@main
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
+
+# =============================================================================
+# CONNECTIVITY
+# =============================================================================
+api:
+  on_client_connected:
+    - lambda: |-
+        id(intercom).publish_entity_states();
+        // Force media_player to re-publish volume to HA (prevents stale slider)
+        id(speaker_media_player).publish_state();
+    - script.execute: draw_display
+  on_client_disconnected:
+    - script.execute: draw_display
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: DEBUG
+  logs:
+    intercom_api: INFO
+    i2s_duplex: DEBUG
+    micro_wake_word: DEBUG
+    voice_assistant: DEBUG
+    component: INFO
+    wifi: INFO
+    api: INFO
+    ota: INFO
+    mdns: INFO
+    sensor: INFO
+    switch: INFO
+    light: INFO
+    display: INFO
+    image: INFO
+    spi: INFO
+    i2c: INFO
+    esp32: INFO
+
+network:
+  enable_high_performance: true
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Ball v3 Hotspot"
+  on_connect:
+    - script.execute: draw_display
+  on_disconnect:
+    - script.execute: draw_display
+
+captive_portal:
+
+# =============================================================================
+# PERIODIC UPDATES
+# =============================================================================
+time:
+  - platform: homeassistant
+    id: my_time
+    on_time_sync: 
+      then:
+        - script.execute: update_date
+        - script.execute: update_hours
+        - script.execute: update_minutes
+        - script.execute: update_seconds
+    on_time:
+      - cron: '* * * * * *' # every second
+        then:
+          - script.execute: update_idle_labels
+          - script.execute: update_seconds
+      - seconds: 0 # every minute at zero seconds
+        then:
+          - script.execute: update_minutes
+      - minutes: 0 # every hour at zero minutes
+        then:
+          - script.execute: update_hours
+          - script.execute: update_date
+
+# =============================================================================
+# I2C BUS (ES8311 codec control)
+# =============================================================================
+i2c:
+  - id: i2c_bus
+    sda: GPIO15
+    scl: GPIO14
+    scan: false
+    
+  - id: touchscreen_i2c_bus
+    sda: GPIO11
+    scl: GPIO7
+    scan: false
+
+# =============================================================================
+# AUDIO CODEC (ES8311)
+# =============================================================================
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: i2c_bus
+    bits_per_sample: 16bit
+    sample_rate: 48000
+    mic_gain: 24DB
+
+# =============================================================================
+# ECHO CANCELLATION (ESP-SR)
+#
+# sr_low_cost: Linear-only AEC (esp_aec3 engine, no residual echo suppressor).
+#   Preserves spectral features for MWW neural detection (10/10 vs 2/10 with VOIP).
+#   Uses ~60% less CPU than VOIP modes (22% vs 58%).
+#   Frame size: 512 samples (32ms) — requires buffers_in_psram.
+# =============================================================================
+esp_aec:
+  id: aec_component
+  sample_rate: 16000
+  filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
+  mode: sr_low_cost    # Linear AEC — preserves spectral features for MWW
+
+# =============================================================================
+# I2S AUDIO DUPLEX (single bus for ES8311)
+# Full-duplex I2S: mic + speaker on same bus, managed by one FreeRTOS task.
+# audio_task runs on Core 1 at priority 9, processes AEC inline.
+# Bus runs at 48kHz (ES8311 native rate, better DAC quality).
+# Internal FIR decimation x3 produces 16kHz for mic/AEC/MWW/VA/intercom.
+# =============================================================================
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO45
+  i2s_bclk_pin: GPIO9
+  i2s_mclk_pin: GPIO16
+  i2s_din_pin: GPIO10
+  i2s_dout_pin: GPIO8
+  sample_rate: 48000             # I2S bus rate (ES8311 native)
+  output_sample_rate: 16000      # Mic/AEC/MWW/VA output rate (FIR decimation x3)
+  aec_id: aec_component
+  # ES8311 digital feedback: RX is stereo L=DAC(reference), R=ADC(mic).
+  # Sample-accurate reference alignment, no ring buffer delay needed.
+  # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
+  use_stereo_aec_reference: true
+  aec_reference_delay_ms: 10   # Minimal (sample-aligned via stereo feedback)
+  buffers_in_psram: true       # All audio buffers in PSRAM — required for sr_low_cost (512-sample frames)
+
+# =============================================================================
+# MICROPHONE
+# Single mic_aec: SR linear AEC preserves spectral features for all consumers
+# (VA STT, intercom TX, MWW). No mic_raw needed with sr_low_cost mode.
+# =============================================================================
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_aec
+    i2s_audio_duplex_id: i2s_duplex
+
+
+# =============================================================================
+# SPEAKERS (mixer topology: sources -> resampler -> mixer 48kHz -> hw_speaker)
+# hw_speaker runs at 48kHz (bus rate). ResamplerSpeaker upsamples any input.
+# =============================================================================
+speaker:
+  - platform: i2s_audio_duplex
+    id: hw_speaker
+    i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 48000
+
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    task_stack_in_psram: true
+    source_speakers:
+      - id: media_speaker_mix       # Music/radio streams (duckable)
+        timeout: 10s
+        buffer_duration: 500ms
+      - id: tts_speaker_mix         # VA TTS announcements (never ducked)
+        timeout: 10s
+        buffer_duration: 500ms
+      - id: intercom_speaker_mix    # Intercom audio
+        timeout: 10s
+        buffer_duration: 500ms
+
+  # ResamplerSpeakers: convert any input rate → 48kHz before the mixer
+  - platform: resampler
+    id: media_speaker              # Music/radio → 48kHz
+    output_speaker: media_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: tts_speaker                # VA TTS → 48kHz
+    output_speaker: tts_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: intercom_speaker           # Intercom RX (16kHz) → 48kHz
+    output_speaker: intercom_speaker_mix
+    task_stack_in_psram: true
+
+# =============================================================================
+# MEDIA PLAYER (separate pipelines: media vs TTS announcement)
+# =============================================================================
+media_player:
+  - platform: speaker
+    name: None
+    id: speaker_media_player
+    internal: false
+    buffer_size: 524288  # 512KB (default 1MB)
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 48000
+      format: FLAC
+    announcement_pipeline:
+      speaker: tts_speaker
+      format: FLAC
+      sample_rate: 48000
+    files:
+      - id: timer_finished_sound
+        file: ${assets_base}sounds/timer_finished.flac
+      - id: intercom_ringing_sound
+        file: ${assets_base}sounds/ringtone.flac
+    on_announcement:
+      # Only show LED for announcements when intercom is idle
+      # During intercom calls, keep current intercom LED state
+      - if:
+          condition:
+            intercom_api.is_idle: intercom
+          then:
+            - light.turn_on:
+                id: led
+                brightness: 100%
+                red: 0.00
+                green: 0.00
+                blue: 1.00
+      # Set replying phase for non-VA announcements (e.g., timer sound)
+      - if:
+          condition:
+            not:
+              voice_assistant.is_running:
+          then:
+            - globals.set:
+                id: voice_assistant_phase
+                value: '${voice_assist_replying_phase_id}'
+            - script.execute: update_replying_text
+            - script.execute: draw_display
+    on_play:
+      - script.execute: backlight_timer
+      # Show neutral mood image during media playback (like old announcement behavior)
+      - if:
+          condition:
+            and:
+              - intercom_api.is_idle: intercom
+              - not:
+                  voice_assistant.is_running:
+          then:
+            - lambda: |-
+                // Clear old VA text, show neutral mood image
+                id(wrapped_lines_reply).clear();
+                id(reply_total_pages) = 1;
+                id(reply_page_index) = 0;
+                lv_img_set_src(id(mood_bg), id(mood_neutral));
+            - script.execute: update_replying_text
+            - globals.set:
+                id: voice_assistant_phase
+                value: '${voice_assist_replying_phase_id}'
+            - script.execute: draw_display
+    on_pause:
+      # PAUSED holds 5KB+3KB internal RAM (read_task+decode_task) + HTTP connection.
+      # Stop immediately to free resources — HA can re-send URL if needed.
+      - media_player.stop:
+    on_idle:
+      - script.execute: backlight_timer
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - intercom_api.is_idle: intercom
+          then:
+            - script.execute: set_idle_or_mute_phase
+            - script.execute: draw_display
+
+# =============================================================================
+# WAKE WORD & VOICE ASSISTANT
+#
+# MWW always-on (stop_after_detection: false) on mic_aec.
+# SR linear AEC preserves spectral features for neural detection (10/10).
+# Ducking managed centrally: acquire in on_wake_word_detected, release in va_end_handler.
+# =============================================================================
+micro_wake_word:
+  id: mww
+  microphone: mic_aec    # Post-AEC: SR linear AEC preserves spectral features
+  stop_after_detection: false
+  on_wake_word_detected:
+    - script.execute: backlight_timer
+    # Acquire audio focus: duck media
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
+    # Barge-in: if VA/TTS active, stop and let va_end_handler restart VA
+    - if:
+        condition:
+          or:
+            - media_player.is_announcing:
+            - voice_assistant.is_running:
+        then:
+          - globals.set:
+              id: restart_intent
+              value: "true"
+          - voice_assistant.stop:
+          - media_player.stop:
+              announcement: true
+        else:
+          # Fresh start (no VA running)
+          - voice_assistant.start:
+              wake_word: !lambda return wake_word;
+  models:
+    - model: "${assets_base}wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
+    - model: alexa
+
+voice_assistant:
+  id: va
+  microphone: mic_aec    # Post-AEC: clean audio for STT (no speaker echo)
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_listening:
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 0.00
+        green: 1.00
+        blue: 0.00
+        effect: "Slow Pulse"
+    - globals.set:
+        id: current_mode
+        value: '0'
+    - globals.set:
+        id: voice_assistant_phase
+        value: '${voice_assist_listening_phase_id}'
+    - text_sensor.template.publish:
+        id: text_request
+        state: "..."
+    - text_sensor.template.publish:
+        id: text_response
+        state: "..."
+    - script.stop: reply_pagination_timer
+    - script.execute: draw_display
+  on_stt_vad_end:
+    - globals.set:
+        id: voice_assistant_phase
+        value: '${voice_assist_thinking_phase_id}'
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 1.00
+        green: 0.55
+        blue: 0.00
+        effect: "Fast Pulse"
+    - script.execute: draw_display
+  on_stt_end:
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+  on_tts_start:
+    - light.turn_off:
+        id: led
+    - light.turn_on:
+        id: led
+        brightness: 100%
+        red: 0.00
+        green: 0.00
+        blue: 1.00
+    # Parse emoticon prefix, set mood background, strip from displayed text.
+    # Word-wrap runs here (CPU only, no LVGL rendering yet — replying page is hidden).
+    - lambda: |-
+        std::string text = x;
+        esphome::image::Image *mood = id(mood_neutral);
+        // Check for 3-char emoticon prefix: :-)  :-(  :-|
+        if (text.size() >= 3) {
+          std::string prefix = text.substr(0, 3);
+          if (prefix == ":-)") {
+            mood = id(mood_happy);
+          } else if (prefix == ":-(") {
+            mood = id(mood_angry);
+          } else if (prefix == ":-|") {
+            // neutral (default)
+          }
+          // Strip emoticon + optional space
+          if (prefix == ":-)" || prefix == ":-(" || prefix == ":-|") {
+            text = text.substr(3);
+            if (!text.empty() && text[0] == ' ') text = text.substr(1);
+          }
+        }
+        lv_img_set_src(id(mood_bg), mood);
+        id(text_response).publish_state(text);
+    - globals.set:
+        id: voice_assistant_phase
+        value: '${voice_assist_replying_phase_id}'
+    - globals.set:
+        id: reply_page_index
+        value: '0'
+    - script.stop: reply_pagination_timer
+    - script.stop: backlight_timer
+    - light.turn_on:
+        id: backlight
+        brightness: 100%
+    - script.execute: update_replying_text
+    - script.execute: reply_pagination_timer
+    - script.execute: draw_display
+  on_end:
+    - script.execute: va_end_handler
+  on_error:
+    # Always release audio focus on error
+    - globals.set:
+        id: restart_intent
+        value: "false"
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 0
+        duration: 300ms
+    - light.turn_on:
+        id: led
+        brightness: 70%
+        red: 1.00
+        green: 0.00
+        blue: 0.00
+    - if:
+        condition:
+          lambda: return !id(init_in_progress);
+        then:
+          - globals.set:
+              id: voice_assistant_phase
+              value: '${voice_assist_error_phase_id}'
+          - script.execute: draw_display
+          - delay: 2s
+          - script.execute: set_idle_or_mute_phase
+          - script.execute: draw_display
+  on_client_connected:
+    - globals.set:
+        id: init_in_progress
+        value: 'false'
+    - if:
+        condition:
+          and:
+            - switch.is_off: mute
+            - not:
+                lambda: 'return id(mww).is_running();'
+        then:
+          - micro_wake_word.start:
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: draw_display
+    # Boost MWW task priority (default 3 -> 8)
+    - delay: 1s
+    - lambda: |-
+        TaskHandle_t mww_task = xTaskGetHandle("mww");
+        if (mww_task) {
+          vTaskPrioritySet(mww_task, 8);
+        }
+  on_client_disconnected:
+    - micro_wake_word.stop:
+    - globals.set:
+        id: voice_assistant_phase
+        value: '${voice_assist_not_ready_phase_id}'
+    - script.execute: draw_display
+  on_timer_started:
+    - script.execute: update_timer_state
+  on_timer_cancelled:
+    - script.execute: update_timer_state
+  on_timer_updated:
+    - script.execute: update_timer_state
+  on_timer_tick:
+    - script.execute: update_timer_state
+  on_timer_finished:
+    - switch.turn_on: timer_ringing
+    - wait_until:
+        condition:
+          media_player.is_announcing:
+    - globals.set:
+        id: voice_assistant_phase
+        value: '${voice_assist_timer_finished_phase_id}'
+    - script.execute: draw_display
+
+# =============================================================================
+# INTERCOM API (TCP-based, port 6054)
+# =============================================================================
+intercom_api:
+  id: intercom
+  mode: full
+  microphone: mic_aec
+  speaker: intercom_speaker
+  ringing_timeout: 30s
+
+  on_outgoing_call:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
+    - lambda: |-
+        id(peer_name) = id(intercom).get_current_destination();
+        id(previous_mode) = id(current_mode);
+    - globals.set:
+        id: current_mode
+        value: '1'
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        effect: "Calling"
+    - lvgl.label.update:
+        id: ic_ringing_out_peer_label
+        text: !lambda 'return id(peer_name);'
+    - script.execute: draw_display
+    - if:
+        condition:
+          lambda: 'return id(intercom).get_current_destination() == "Home Assistant";'
+        then:
+          - homeassistant.event:
+              event: esphome.intercom_call
+              data:
+                caller: !lambda 'return App.get_friendly_name();'
+                destination: "Home Assistant"
+                type: "doorbell"
+
+  on_ringing:
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
+    - lambda: |-
+        id(peer_name) = id(intercom).get_caller();
+        id(previous_mode) = id(current_mode);
+    - globals.set:
+        id: current_mode
+        value: '1'
+    - script.execute: backlight_timer
+    - lvgl.label.update:
+        id: ic_ringing_in_peer_label
+        text: !lambda 'return id(peer_name);'
+    - script.execute: draw_display
+    - script.execute: intercom_ringing_loop
+    - light.turn_on:
+        id: led
+        effect: "Ringing"
+
+  on_answered:
+    - logger.log: "Call answered"
+
+  on_streaming:
+    - script.stop: intercom_ringing_loop
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 20
+        duration: 200ms
+    - script.execute: backlight_timer
+    - light.turn_on:
+        id: led
+        red: 30%
+        green: 69%
+        blue: 31%
+        effect: none
+    - lambda: |-
+        // Auto-answer skips on_ringing, so switch mode here if needed
+        if (id(current_mode) != 1) {
+          id(previous_mode) = id(current_mode);
+          id(current_mode) = 1;
+        }
+        std::string caller = id(intercom).get_caller();
+        if (!caller.empty()) {
+          id(peer_name) = caller;
+        } else {
+          id(peer_name) = id(intercom).get_current_destination();
+        }
+    - lvgl.label.update:
+        id: ic_in_call_peer_label
+        text: !lambda 'return id(peer_name);'
+    - script.execute: draw_display
+
+  on_idle:
+    - script.stop: intercom_ringing_loop
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 0
+        duration: 500ms
+    - light.turn_off: led
+    - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+    # Restore previous mode after call ends
+    - if:
+        condition:
+          lambda: return id(previous_mode) == 0;
+        then:
+          - script.execute: switch_to_va
+        else:
+          - globals.set:
+              id: current_mode
+              value: '1'
+          - script.execute: update_ic_idle_labels
+          - script.execute: draw_display
+
+  on_hangup:
+    - script.stop: intercom_ringing_loop
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 0
+        duration: 500ms
+    - logger.log:
+        format: "Hangup: %s"
+        args: ['reason.c_str()']
+
+  on_call_failed:
+    - script.stop: intercom_ringing_loop
+    - mixer_speaker.apply_ducking:
+        id: media_speaker_mix
+        decibel_reduction: 0
+        duration: 500ms
+    - logger.log:
+        format: "Call failed: %s"
+        args: ['reason.c_str()']
+
+# =============================================================================
+# GLOBALS
+# =============================================================================
+globals:
+  - id: init_in_progress
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: restart_intent
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: voice_assistant_phase
+    type: int
+    restore_value: false
+    initial_value: ${voice_assist_not_ready_phase_id}
+
+  # Mode: 0=VA, 1=Intercom
+  - id: current_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Previous mode (for restoring after incoming call)
+  - id: previous_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  # Intercom peer name for display
+  - id: peer_name
+    type: std::string
+    restore_value: no
+    initial_value: '"Home Assistant"'
+
+  # Replying page pagination
+  - id: reply_page_index
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: reply_total_pages
+    type: int
+    restore_value: false
+    initial_value: "1"
+  - id: wrapped_lines_reply
+    type: std::vector<std::string>
+    restore_value: false
+
+  # Chord widths for circular text wrapping (computed at boot)
+  - id: chord_widths_cache
+    type: std::vector<int>
+    restore_value: false
+  # Text row y-positions for circular display (computed at boot)
+  - id: text_row_y
+    type: std::vector<int>
+    restore_value: false
+  # UI grid y-positions (proportional, computed at boot from display height)
+  # [0]=top, [1]=center, [2]=height, [3]=title, [4]=subtitle, [5]=state,
+  # [6]=label, [7]=info, [8]=contacts, [9]=action_hint, [10]=bottom_info,
+  # [11]=bottom_status, [12]=page_counter, [13]=timer_box_height
+  - id: y_metrics
+    type: std::vector<int>
+    restore_value: false
+
+# =============================================================================
+# SCRIPTS
+# =============================================================================
+script:
+  # VA end handler — mode: restart ensures barge-in cancels previous on_end
+  - id: va_end_handler
+    mode: restart
+    then:
+      - wait_until:
+          condition:
+            - media_player.is_announcing:
+          timeout: 0.5s
+      - wait_until:
+          condition:
+            and:
+              - not:
+                  media_player.is_announcing:
+              - not:
+                  speaker.is_playing:
+                      id: tts_speaker
+          timeout: 30s
+      - if:
+          condition:
+            or:
+              - media_player.is_announcing:
+              - speaker.is_playing:
+                  id: tts_speaker
+          then:
+            - logger.log:
+                level: WARN
+                format: "VA: TTS drain timeout, forcing cleanup"
+            - media_player.stop:
+                announcement: true
+      - delay: 100ms
+      - voice_assistant.stop:
+      # Barge-in: restart VA. Otherwise release audio focus + cleanup display.
+      - if:
+          condition:
+            lambda: 'return id(restart_intent);'
+          then:
+            - globals.set:
+                id: restart_intent
+                value: "false"
+            # Wait for VA to reach IDLE — start() is silently ignored if not IDLE
+            - wait_until:
+                condition:
+                  not:
+                    voice_assistant.is_running:
+                timeout: 2s
+            - voice_assistant.start:
+          else:
+            - mixer_speaker.apply_ducking:
+                id: media_speaker_mix
+                decibel_reduction: 0
+                duration: 500ms
+            - light.turn_off: led
+            - script.stop: reply_pagination_timer
+            - script.execute: backlight_timer
+            - text_sensor.template.publish:
+                id: text_request
+                state: ""
+            - text_sensor.template.publish:
+                id: text_response
+                state: ""
+            # Clear replying page text (prevents stale TTS text when music keeps replying_page visible)
+            - lambda: |-
+                id(wrapped_lines_reply).clear();
+                id(reply_total_pages) = 1;
+                id(reply_page_index) = 0;
+            - script.execute: update_replying_text
+            - script.execute: set_idle_or_mute_phase
+            - if:
+                condition:
+                  not:
+                    intercom_api.is_idle:
+                      id: intercom
+                then:
+                  - globals.set:
+                      id: current_mode
+                      value: '1'
+            - script.execute: draw_display
+
+  # Compute chord widths and text row positions from display dimensions (once at boot)
+  - id: compute_layout_metrics
+    then:
+      - lambda: |-
+          const int w = ${display_width};
+          const int h = ${display_height};
+          const int r = w / 2;
+          const int cy = h / 2;
+          const int side_margin = w / 40;
+          const int line_h = h / 13;
+          const int line_spacing = h / 60;
+          const int top_pad = h / 24;
+          const int bottom_pad = h / 24;
+
+          // y_metrics: proportional UI grid (same formula as original)
+          id(y_metrics).clear();
+          id(y_metrics).reserve(14);
+          id(y_metrics).push_back(0);            // [0] top
+          id(y_metrics).push_back(h / 2);        // [1] center
+          id(y_metrics).push_back(h);             // [2] height
+          id(y_metrics).push_back(h / 8);         // [3] title
+          id(y_metrics).push_back(h * 7 / 24);    // [4] subtitle
+          id(y_metrics).push_back(h * 5 / 12);    // [5] state
+          id(y_metrics).push_back(h * 13 / 24);   // [6] label
+          id(y_metrics).push_back(h * 5 / 8);     // [7] info
+          id(y_metrics).push_back(h * 37 / 48);   // [8] contacts
+          id(y_metrics).push_back(h * 5 / 6);     // [9] action hint
+          id(y_metrics).push_back(h * 41 / 48);   // [10] bottom info
+          id(y_metrics).push_back(h - h / 16);    // [11] bottom status
+          id(y_metrics).push_back(h - 2);          // [12] page counter
+          id(y_metrics).push_back(h * 3 / 20);    // [13] timer box height
+
+          // text_row_y + chord_widths_cache: VA text rows for circular wrapping
+          id(text_row_y).clear();
+          id(chord_widths_cache).clear();
+          int y = top_pad;
+          while (y + line_h <= h - bottom_pad) {
+            id(text_row_y).push_back(y);
+            int mid_y = y + line_h / 2;
+            int dy = abs(mid_y - cy);
+            int chord_w = 0;
+            if (dy < r) {
+              chord_w = (int)(2.0f * sqrtf((float)(r * r - dy * dy))) - side_margin * 2;
+              if (chord_w < 0) chord_w = 0;
+            }
+            id(chord_widths_cache).push_back(chord_w);
+            y += (line_h + line_spacing);
+          }
+          ESP_LOGI("layout", "y_metrics: title=%d sub=%d state=%d info=%d contacts=%d",
+                   id(y_metrics)[3], id(y_metrics)[4], id(y_metrics)[5],
+                   id(y_metrics)[7], id(y_metrics)[8]);
+          ESP_LOGI("layout", "Computed %d text rows, first chord=%d, max chord=%d",
+                   (int)id(chord_widths_cache).size(),
+                   id(chord_widths_cache).empty() ? 0 : id(chord_widths_cache).front(),
+                   id(chord_widths_cache).empty() ? 0 : *std::max_element(id(chord_widths_cache).begin(), id(chord_widths_cache).end()));
+
+  # Reposition all widgets using computed y_metrics, text_row_y, chord_widths_cache
+  # Called once at boot after compute_layout_metrics. All YAML y/width are placeholders.
+  - id: reposition_widgets
+    then:
+      - lambda: |-
+          const auto &ym = id(y_metrics);
+          const auto &row_y = id(text_row_y);
+          const auto &cw = id(chord_widths_cache);
+          if (ym.size() < 14 || row_y.empty()) return;
+
+          // Helper: position label at y_center (original uses TextAlign::CENTER)
+          // LVGL TOP_MID: y_top = y_center - font_line_height / 2
+          auto set_center_y = [](lv_obj_t* obj, int y_center) {
+            const lv_font_t* f = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+            int fh = lv_font_get_line_height(f);
+            lv_obj_set_y(obj, y_center - fh / 2);
+          };
+
+          // --- IC idle page (10 children in YAML order) ---
+          lv_obj_t* p = id(ic_idle_page)->obj;
+          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
+          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Intercom:"
+          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "IDLE"
+          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Destination:"
+          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer name
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // contacts
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+          set_center_y(lv_obj_get_child(p, 8), ym[7] + 12);   // left contacts button
+          set_center_y(lv_obj_get_child(p, 9), ym[7] + 12);   // right contacts button
+
+          // --- top layer (2 children in YAML order) ---
+          p = lv_layer_top();
+          set_center_y(lv_obj_get_child(p, 1), ym[11]);  // clock
+          set_center_y(lv_obj_get_child(p, 2), ym[10]);  // battery wifi HA
+
+          // --- IC ringing in page (8 children) ---
+          p = id(ic_ringing_in_page)->obj;
+          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
+          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
+          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "RINGING"
+          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Incoming call from:"
+          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+
+          // --- IC ringing out page (8 children) ---
+          p = id(ic_ringing_out_page)->obj;
+          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
+          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
+          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "CALLING"
+          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Calling:"
+          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+
+          // --- IC in call page (8 children) ---
+          p = id(ic_in_call_page)->obj;
+          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
+          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
+          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "IN CALL"
+          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Connected to:"
+          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
+          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          set_center_y(lv_obj_get_child(p, 6), ym[5] - 8);   // left button
+          set_center_y(lv_obj_get_child(p, 7), ym[5] - 8);   // right button
+
+          // --- Thinking page: chord-width labels (10 children after image) ---
+          lv_obj_t* think[] = {
+            id(think_line_0), id(think_line_1), id(think_line_2), id(think_line_3), id(think_line_4),
+            id(think_line_5), id(think_line_6), id(think_line_7), id(think_line_8), id(think_line_9)
+          };
+          for (size_t i = 0; i < row_y.size() && i < 10; i++) {
+            lv_obj_set_y(think[i], row_y[i]);
+            lv_obj_set_width(think[i], cw[i]);
+          }
+
+          // --- Replying page: chord-width labels ---
+          lv_obj_t* reply[] = {
+            id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
+            id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
+          };
+          for (size_t i = 0; i < row_y.size() && i < 10; i++) {
+            lv_obj_set_y(reply[i], row_y[i]);
+            lv_obj_set_width(reply[i], cw[i]);
+          }
+
+          // Page counter at bottom
+          lv_obj_set_y(id(reply_page_counter), ym[12]);
+
+          // Timer overlay: dynamic height from y_metrics[13]
+          lv_obj_set_height(id(timer_overlay), ym[13]);
+          lv_obj_set_width(id(timer_overlay), ym[2]);  // full width = h (square display)
+          lv_obj_set_height(id(timer_bar), ym[13] - 4);
+          lv_obj_set_width(id(timer_bar), ym[2] - 4);
+
+          ESP_LOGI("layout", "Repositioned all widgets from computed metrics");
+
+  # Main display rendering — single lambda for page routing + animation control
+  - id: draw_display
+    mode: restart
+    then:
+      - lambda: |-
+          // Determine target page
+          lv_obj_t* target = nullptr;
+          if (id(init_in_progress)) {
+            target = id(initializing_page)->obj;
+          } else if (!wifi::global_wifi_component->is_connected()) {
+            target = id(no_wifi_page)->obj;
+          } else if (!api::global_api_server->is_connected()) {
+            target = id(no_ha_page)->obj;
+          } else if (id(current_mode) == 1) {
+            // Intercom mode
+            auto s = id(intercom).get_state_str();
+            if (s == "Ringing" || s == "Incoming") {
+              target = id(ic_ringing_in_page)->obj;
+            } else if (s == "Calling" || s == "Outgoing") {
+              target = id(ic_ringing_out_page)->obj;
+            } else if (s == "Streaming" || s == "Answering") {
+              target = id(ic_in_call_page)->obj;
+            } else {
+              target = id(ic_idle_page)->obj;
+            }
+          } else {
+            // VA mode
+            int phase = id(voice_assistant_phase);
+            if (phase == ${voice_assist_listening_phase_id}) {
+              target = id(listening_page)->obj;
+            } else if (phase == ${voice_assist_thinking_phase_id}) {
+              target = id(thinking_page)->obj;
+            } else if (phase == ${voice_assist_replying_phase_id}) {
+              target = id(replying_page)->obj;
+            } else if (phase == ${voice_assist_error_phase_id}) {
+              target = id(error_page)->obj;
+            } else if (phase == ${voice_assist_muted_phase_id}) {
+              target = id(muted_page)->obj;
+            } else if (phase == ${voice_assist_not_ready_phase_id}) {
+              target = id(no_ha_page)->obj;
+            } else if (phase == ${voice_assist_timer_finished_phase_id}) {
+              target = id(timer_finished_page)->obj;
+            } else {
+              target = id(idle_page)->obj;
+            }
+          }
+
+          if (target == nullptr) return;
+
+          if (target == id(idle_page)->obj)
+            lv_obj_add_flag(id(top_battery_label), LV_OBJ_FLAG_HIDDEN);
+          else
+            lv_obj_clear_flag(id(top_battery_label), LV_OBJ_FLAG_HIDDEN);
+          
+          // Skip page load if already showing (avoids redundant SPI transfer)
+          bool page_changed = (target != lv_disp_get_scr_act(nullptr));
+          if (page_changed) {
+            lv_disp_load_scr(target);
+          }
+
+      # Update top labels 
+      - script.execute: update_idle_labels
+      # Self-heal: ensure MWW is active when in VA idle (catches any missed restarts)
+      - if:
+          condition:
+            and:
+              - lambda: |-
+                  return id(current_mode) == 0 &&
+                         id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
+                         !id(init_in_progress);
+              - switch.is_off: mute
+              - not:
+                  media_player.is_announcing:
+          then:
+            - script.execute: start_wake_word
+      - if:
+          condition:
+            lambda: |-
+              return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle"
+                     && !id(init_in_progress);
+          then:
+            - script.execute: update_ic_idle_labels
+      # Always sync timer overlay on redraw (on_timer_tick stops when timers expire)
+      - script.execute: update_timer_state
+
+  # Timer state update + overlay UI
+  - id: update_timer_state
+    then:
+      - lambda: |-
+          const auto &timers = id(va).get_timers();
+          voice_assistant::Timer first_timer{};
+          voice_assistant::Timer first_active{};
+          bool any_active = false;
+          for (const auto &t : timers) {
+            if (first_timer.total_seconds == 0 || t.seconds_left < first_timer.seconds_left) first_timer = t;
+            if (t.is_active && (!any_active || t.seconds_left < first_active.seconds_left)) {
+              first_active = t;
+              any_active = true;
+            }
+          }
+
+          // Timer overlay: show only on VA pages that support it
+          int phase = id(voice_assistant_phase);
+          bool on_timer_page = id(current_mode) == 0 && (
+            phase == ${voice_assist_idle_phase_id} ||
+            phase == ${voice_assist_listening_phase_id} ||
+            phase == ${voice_assist_thinking_phase_id} ||
+            phase == ${voice_assist_muted_phase_id}
+          );
+
+          // Hide if: not on a supported page, no timers, or timer finished (<=1s, not active)
+          bool timer_finished = !any_active && (timers.empty() || first_timer.seconds_left <= 1);
+          if (!on_timer_page || timer_finished) {
+            lv_obj_add_flag(id(timer_overlay), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+
+          // Pick timer to display (active first, then paused)
+          const auto &t = any_active ? first_active : first_timer;
+          uint32_t sec = t.seconds_left;
+          uint32_t total = t.total_seconds;
+
+          // Bar as simple background — fixed at 100%
+          lv_bar_set_value(id(timer_bar), 100, LV_ANIM_OFF);
+
+          // Bar color: green active, grey paused
+          static lv_style_t style_active, style_paused;
+          static bool styles_init = false;
+          if (!styles_init) {
+            lv_style_init(&style_active);
+            lv_style_set_bg_color(&style_active, lv_color_hex(0x26ED3A));
+            lv_style_init(&style_paused);
+            lv_style_set_bg_color(&style_paused, lv_color_hex(0x888888));
+            styles_init = true;
+          }
+          lv_obj_remove_style(id(timer_bar), nullptr, LV_PART_INDICATOR);
+          lv_obj_add_style(id(timer_bar), any_active ? &style_active : &style_paused, LV_PART_INDICATOR);
+
+          // Format time text
+          char buf[8];
+          int h = sec / 3600;
+          int m = (sec / 60) % 60;
+          int s = sec % 60;
+          if (h > 0) snprintf(buf, sizeof(buf), "%02d:%02d", h, m);
+          else       snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
+          lv_label_set_text(id(timer_label), buf);
+
+          lv_obj_clear_flag(id(timer_overlay), LV_OBJ_FLAG_HIDDEN);
+
+  # Wake word management (always on-device MWW)
+  - id: start_wake_word
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  - voice_assistant.is_running:
+              - switch.is_off: mute
+          then:
+            - micro_wake_word.start:
+
+  - id: stop_wake_word
+    then:
+      - micro_wake_word.stop:
+
+  - id: set_idle_or_mute_phase
+    then:
+      - if:
+          condition:
+            switch.is_on: mute
+          then:
+            - globals.set:
+                id: voice_assistant_phase
+                value: '${voice_assist_muted_phase_id}'
+          else:
+            - if:
+                condition:
+                  media_player.is_playing:
+                then:
+                  # Music playing — show neutral mood screen instead of idle animation
+                  - lambda: |-
+                      lv_img_set_src(id(mood_bg), id(mood_neutral));
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_replying_phase_id}'
+                else:
+                  - globals.set:
+                      id: voice_assistant_phase
+                      value: '${voice_assist_idle_phase_id}'
+
+  # Mode switching scripts
+  - id: switch_to_va
+    then:
+      - globals.set:
+          id: current_mode
+          value: '0'
+      - script.execute: set_idle_or_mute_phase
+      - script.execute: draw_display
+
+  - id: switch_to_intercom
+    then:
+      - globals.set:
+          id: current_mode
+          value: '1'
+      - script.execute: update_ic_idle_labels
+      - script.execute: draw_display
+
+  # Update all dynamic labels on the intercom idle page
+  - id: update_ic_idle_labels
+    then:
+      - lvgl.label.update:
+          id: ic_idle_peer_label
+          text: !lambda 'return id(peer_name);'
+      - lvgl.label.update:
+          id: ic_idle_contacts_label
+          text: !lambda |-
+            auto csv = id(intercom).get_contacts_csv();
+            int count = csv.empty() ? 0 : std::count(csv.begin(), csv.end(), ',') + 1;
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Contacts: %d", count);
+            return std::string(buf);
+
+  # Update clock and battery labels on idle page
+  - id: update_idle_labels
+    then:
+      - lvgl.label.update:
+          id: top_clock_label
+          text:
+            format: "%02d:%02d"
+            args: ['id(my_time).now().hour', 'id(my_time).now().minute']
+      - if:
+          condition:
+            - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
+          then:
+            - lvgl.label.update:
+                id: top_battery_label
+                text: !lambda |-
+                  bool charging = id(usb_connected).state;
+                  float bat = id(battery_percentage).state;
+                  float wifi = id(wifi_pct).state;
+                  std::string ret;
+                  if (bat < 10) ret = charging ? "\U000F089F" : "\U000F008E";
+                  else if (bat < 20) ret = charging ? "\U000F089C" : "\U000F007A";
+                  else if (bat < 30) ret = charging ? "\U000F0086" : "\U000F007B";
+                  else if (bat < 40) ret = charging ? "\U000F0087" : "\U000F007C";
+                  else if (bat < 50) ret = charging ? "\U000F0088" : "\U000F007D";
+                  else if (bat < 60) ret = charging ? "\U000F089D" : "\U000F007E";
+                  else if (bat < 70) ret = charging ? "\U000F0089" : "\U000F007F";
+                  else if (bat < 80) ret = charging ? "\U000F089E" : "\U000F0080";
+                  else if (bat < 90) ret = charging ? "\U000F008A" : "\U000F0081";
+                  else if (bat < 100) ret = charging ? "\U000F008B" : "\U000F0082";
+                  else ret = "\U000F0079";
+                  if (wifi < 20) ret += "\U000F08BF";
+                  else if (wifi < 55) ret += "\U000F08BC";
+                  else if (wifi < 80) ret += "\U000F08BD";
+                  else ret += "\U000F08BE";
+                  ret += id(node_status).state ? "\U000F07D0" : "\U000F15D0";
+                  return ret;
+          else:
+            - lvgl.label.update:
+                id: top_battery_label
+                text: ""
+
+  # Update replying page labels with current page of wrapped text
+  - id: update_replying_text
+    then:
+      - lambda: |-
+          lv_obj_t* lines[] = {
+            id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
+            id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
+          };
+          const size_t total_rows = 10;
+          const auto &wrapped = id(wrapped_lines_reply);
+          const size_t total_lines = wrapped.size();
+          const size_t cur_page = id(reply_page_index) % id(reply_total_pages);
+          const size_t start_line = cur_page * total_rows;
+          const size_t end_line = std::min(start_line + total_rows, total_lines);
+          for (size_t i = 0; i < total_rows; i++) {
+            size_t line_idx = start_line + i;
+            if (line_idx < end_line && !wrapped[line_idx].empty()) {
+              lv_label_set_text(lines[i], wrapped[line_idx].c_str());
+            } else {
+              lv_label_set_text(lines[i], "");
+            }
+          }
+          // Update page counter
+          if (id(reply_total_pages) > 1) {
+            char buf[12];
+            snprintf(buf, sizeof(buf), "%d/%d", (int)(cur_page + 1), (int)id(reply_total_pages));
+            lv_label_set_text(id(reply_page_counter), buf);
+          } else {
+            lv_label_set_text(id(reply_page_counter), "");
+          }
+
+  # Auto-advance replying text pages every 14 seconds
+  - id: reply_pagination_timer
+    mode: restart
+    then:
+      - delay: 14s
+      - globals.set:
+          id: reply_page_index
+          value: !lambda 'return id(reply_page_index) + 1;'
+      - script.execute: update_replying_text
+      - script.execute: reply_pagination_timer
+
+  # Timer alarm: play sound in a loop until timer_ringing is turned off
+  - id: timer_alarm_loop
+    mode: single
+    then:
+      - while:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: timer_finished_sound
+                announcement: true
+            - delay: 6s
+
+  # Intercom ringing loop
+  - id: intercom_ringing_loop
+    mode: restart
+    then:
+      - while:
+          condition:
+            or:
+              - intercom_api.is_ringing: intercom
+              - intercom_api.is_incoming: intercom
+          then:
+            - media_player.speaker.play_on_device_media_file:
+                media_file: intercom_ringing_sound
+                announcement: true
+            - delay: 3s
+
+  # Backlight timer
+  - id: backlight_timer
+    mode: restart
+    then:
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+      - delay: 30s
+      - light.turn_on:
+          id: backlight
+          brightness: 60%
+      - delay: 120s
+      - if:
+          condition:
+            binary_sensor.is_on: usb_connected
+          then:
+            - light.turn_on:
+                id: backlight
+                brightness: 20%
+          else:
+            - light.turn_off: backlight
+            
+  - id: swipe_left_script
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: is_idle_screen
+          then:
+            - script.execute: switch_to_intercom
+          else:
+            - script.execute: switch_to_va
+
+  - id: swipe_right_script
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: is_idle_screen
+          then:
+            - script.execute: switch_to_intercom
+          else:
+            - script.execute: switch_to_va
+
+  - id: update_seconds
+    then:
+      - lvgl.indicator.update:
+          id: second_hand
+          value: !lambda |-
+            return id(my_time).now().second;
+  - id: update_minutes
+    then:
+      - lvgl.indicator.update:
+          id: minute_hand
+          value: !lambda |-
+            return id(my_time).now().minute;
+  - id: update_hours
+    then:
+      - lvgl.indicator.update:
+          id: hour_hand
+          value: !lambda |-
+            auto now = id(my_time).now();
+            return std::fmod(now.hour, 12) * 60 + now.minute;
+  - id: update_date
+    then:
+      - lvgl.label.update:
+          id: date_label
+          text: 
+            time_format: "%b %d"
+            time: my_time
+      - lvgl.label.update:
+          id: day_label
+          text:
+            time_format: "%a"
+            time: my_time
+  - id: update_current_weather_icon
+    then:
+      - lambda: |-
+          if (id(weather_state).state == "clear-night") {
+            id(outside_condition_icon).publish_state("\U0000e51c");
+          } else if (id(weather_state).state == "cloudy") {
+            id(outside_condition_icon).publish_state("\U0000e2bd");
+          } else if (id(weather_state).state == "fog") {
+            id(outside_condition_icon).publish_state("\U0000e818");
+          } else if (id(weather_state).state == "hail") {
+            id(outside_condition_icon).publish_state("\U0000f67f");
+          } else if (id(weather_state).state == "lightning") {
+            id(outside_condition_icon).publish_state("\U0000ebdb");
+          } else if (id(weather_state).state == "lightning-rainy") {
+            id(outside_condition_icon).publish_state("\U0000ebdb");
+          } else if (id(weather_state).state == "partlycloudy") {
+            id(outside_condition_icon).publish_state("\U0000f172");
+          } else if (id(weather_state).state == "pouring") {
+            id(outside_condition_icon).publish_state("\U0000f61f");
+          } else if (id(weather_state).state == "rainy") {
+            id(outside_condition_icon).publish_state("\U0000f176");
+          } else if (id(weather_state).state == "snowy") {
+            id(outside_condition_icon).publish_state("\U0000e2cd");
+          } else if (id(weather_state).state == "snowy-rainy") {
+            id(outside_condition_icon).publish_state("\U0000f61d");
+          } else if (id(weather_state).state == "sunny") {
+            id(outside_condition_icon).publish_state("\U0000e81a");
+          } else if (id(weather_state).state == "windy") {
+            id(outside_condition_icon).publish_state("\U0000e29c");
+          } else if (id(weather_state).state == "windy-variant") {
+            id(outside_condition_icon).publish_state("\efd8");
+          } else if (id(weather_state).state == "exceptional") {
+            id(outside_condition_icon).publish_state("\U0000e002");
+          } else {
+            id(outside_condition_icon).publish_state("");
+          }
+
+# =============================================================================
+# BUTTONS
+# =============================================================================
+button:
+  - platform: factory_reset
+    id: factory_reset_btn
+    internal: true
+
+  # Intercom template buttons
+  - platform: template
+    id: call_button
+    name: "Call"
+    icon: "mdi:phone"
+    on_press:
+      - intercom_api.call_toggle:
+          id: intercom
+
+  - platform: template
+    id: next_contact_button
+    name: "Next Contact"
+    icon: "mdi:arrow-right"
+    on_press:
+      - intercom_api.next_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - lvgl.label.update:
+          id: ic_idle_peer_label
+          text: !lambda 'return id(peer_name);'
+      - script.execute: draw_display
+
+  - platform: template
+    id: prev_contact_button
+    name: "Previous Contact"
+    icon: "mdi:arrow-left"
+    on_press:
+      - intercom_api.prev_contact:
+          id: intercom
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - lvgl.label.update:
+          id: ic_idle_peer_label
+          text: !lambda 'return id(peer_name);'
+      - script.execute: draw_display
+
+  - platform: template
+    id: decline_button
+    name: "Decline"
+    icon: "mdi:phone-hangup"
+    on_press:
+      - intercom_api.decline_call:
+          id: intercom
+
+  - platform: restart
+    name: "Restart"
+    icon: "mdi:restart"
+
+# =============================================================================
+# SENSORS
+# =============================================================================
+sensor:
+  - platform: homeassistant
+    id: outdoor_temperature
+    entity_id: $current_weather
+    attribute: temperature
+    on_value: 
+      then:
+        - lvgl.label.update:
+            id: temp_widget
+            text: 
+              format: "%2.1f°"
+              args: [ 'x' ]
+
+  - platform: adc
+    pin: GPIO1
+    name: "Battery Voltage"
+    id: battery_voltage
+    attenuation: 12db
+    accuracy_decimals: 2
+    update_interval: 10s
+    unit_of_measurement: "V"
+    icon: mdi:battery
+    filters:
+      - multiply: 2.0
+      - median:
+          window_size: 7
+          send_every: 7
+          send_first_at: 1
+      - throttle: 1min
+
+  - platform: template
+    id: battery_percentage
+    name: "Battery Percentage"
+    lambda: |-
+      if (!id(battery_voltage).has_state() || std::isnan(id(battery_voltage).state))
+        return NAN;
+      return id(battery_voltage).state;
+    accuracy_decimals: 0
+    unit_of_measurement: "%"
+    icon: mdi:battery-medium
+    filters:
+      - calibrate_linear:
+         method: exact
+         datapoints:
+          - 2.80 -> 0.0
+          - 3.10 -> 10.0
+          - 3.30 -> 20.0
+          - 3.45 -> 30.0
+          - 3.60 -> 40.0
+          - 3.70 -> 50.0
+          - 3.75 -> 60.0
+          - 3.80 -> 70.0
+          - 3.90 -> 80.0
+          - 4.00 -> 90.0
+          - 4.20 -> 100.0
+      - lambda: |-
+          if (x > 100) return 100;
+          if (x < 0) return 0;
+          return x;
+
+  - platform: wifi_signal
+    id: wifi_signal_db
+    name: "WiFi Signal dBm"
+    icon: "mdi:wifi"
+    update_interval: 30s
+
+  - platform: template
+    id: wifi_pct
+    name: "WiFi Signal %"
+    icon: "mdi:wifi"
+    unit_of_measurement: "%"
+    update_interval: 30s
+    lambda: |-
+      if (!id(wifi_signal_db).has_state()) return 0.0f;
+      float dbm = id(wifi_signal_db).state;
+      if (dbm >= -50) return 100.0f;
+      if (dbm <= -100) return 0.0f;
+      return 2.0f * (dbm + 100.0f);
+
+# =============================================================================
+# BINARY SENSORS
+# =============================================================================
+binary_sensor:
+  - platform: status
+    id: node_status
+    name: "Status"
+
+  # True when the VA idle page is the active screen
+  - platform: template
+    id: is_idle_screen
+    lambda: |-
+      return id(current_mode) == 0 &&
+             id(voice_assistant_phase) == ${voice_assist_idle_phase_id} &&
+             !id(init_in_progress);
+
+  # Physical GPIO0 button - PAGE AWARE (uses mode/state checks instead of display.is_displaying_page)
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    id: main_button
+    name: "Main Button"
+    icon: "mdi:gesture-tap-button"
+    on_multi_click:
+      # Single click
+      - timing:
+          - ON for 10ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                switch.is_on: timer_ringing
+              then:
+                - switch.turn_off: timer_ringing
+              else:
+                - if:
+                    condition:
+                      lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+                    then:
+                      - button.press: call_button
+                    else:
+                      - if:
+                          condition:
+                            lambda: |-
+                              if (id(current_mode) != 1) return false;
+                              auto s = id(intercom).get_state_str();
+                              return s != "Idle";
+                          then:
+                            - button.press: call_button
+                          else:
+                            - if:
+                                condition:
+                                  not:
+                                    voice_assistant.is_running:
+                                then:
+                                  - voice_assistant.start:
+                                else:
+                                  - voice_assistant.stop:
+      # Double click: decline incoming or next contact
+      - timing:
+          - ON for 50ms to 500ms
+          - OFF for 50ms to 400ms
+          - ON for 50ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  if (id(current_mode) != 1) return false;
+                  auto s = id(intercom).get_state_str();
+                  return s == "Ringing" || s == "Incoming";
+              then:
+                - button.press: decline_button
+              else:
+                - if:
+                    condition:
+                      lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+                    then:
+                      - button.press: next_contact_button
+      # Long press (3s): switch VA <-> Intercom
+      - timing:
+          - ON for 1s to 3s
+        then:
+          - if:
+              condition:
+                lambda: return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+              then:
+                - script.execute: switch_to_va
+              else:
+                - script.execute: switch_to_intercom
+
+  - platform: template
+    name: "USB Connected"
+    id: usb_connected
+    device_class: plug
+    lambda: return id(battery_voltage).state > 4.15;
+    on_press:
+      - script.execute: backlight_timer
+    on_release:
+      - script.execute: backlight_timer
+
+# =============================================================================
+# TOUCHSCREEN
+# =============================================================================
+touchscreen:
+  - platform: cst816
+    id: touch
+    display: s3_box_lcd
+    i2c_id: touchscreen_i2c_bus
+    transform:
+      mirror_x: false
+      mirror_y: false
+      swap_xy: false
+    interrupt_pin: GPIO12
+    reset_pin: GPIO6
+    on_touch:
+        - script.execute: backlight_timer
+        - if:
+            condition:
+              switch.is_on: timer_ringing
+            then:
+              - switch.turn_off: timer_ringing
+    on_update:
+      lambda: |-
+        for (auto touch : touches) {
+          // Check if it's a valid, ongoing touch (state <= 2)
+          if (touch.state > 0 && touch.state <= 2) {
+            // Check for horizontal swipe (e.g., more than 50 pixels)
+            if ((touch.x - touch.x_org) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Right - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe_right_script)->execute();
+            } else if ((touch.x_org - touch.x) > 50) {
+              // ESP_LOGI("Swipe", "Swiped Left - 0x%02X - 0x%02X", touch.x, touch.x_org);
+              id(swipe_left_script)->execute();
+            }
+          }
+        }
+
+# =============================================================================
+# OUTPUTS AND LIGHTS
+# =============================================================================
+output:
+  - platform: gpio
+    id: speaker_enable
+    pin: GPIO46
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO42
+    inverted: true
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    icon: "mdi:brightness-6"
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+
+  - platform: esp32_rmt_led_strip
+    id: led
+    name: none
+    disabled_by_default: false
+    entity_category: config
+    pin: GPIO48
+    default_transition_length: 0s
+    chipset: WS2812
+    num_leds: 1
+    rgb_order: grb
+    effects:
+      - pulse:
+          name: "Slow Pulse"
+          transition_length: 250ms
+          update_interval: 250ms
+          min_brightness: 0%
+          max_brightness: 100%
+      - pulse:
+          name: "Fast Pulse"
+          transition_length: 100ms
+          update_interval: 100ms
+          min_brightness: 50%
+          max_brightness: 100%
+      - strobe:
+          name: "Ringing"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 300ms
+            - state: false
+              duration: 300ms
+      - strobe:
+          name: "Calling"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 50%
+              blue: 0%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+
+# =============================================================================
+# SWITCHES AND SELECTS
+# =============================================================================
+switch:
+  # Mic Mute — silences microphone + stops wake word detection
+  - platform: template
+    name: Mic Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    entity_category: config
+    on_turn_on:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute ON — microphone silenced, MWW stopped"
+      - micro_wake_word.stop:
+      - microphone.mute: mic_aec
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_muted_phase_id}'
+      - script.execute: draw_display
+    on_turn_off:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Mic mute OFF — microphone active, MWW started"
+      - microphone.unmute: mic_aec
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_idle_phase_id}'
+      - script.execute: start_wake_word
+      - script.execute: draw_display
+
+  # Speaker Mute — DAC mute (clean silence) + amp off (power saving)
+  - platform: template
+    name: Speaker Mute
+    id: speaker_mute
+    icon: mdi:volume-off
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Speaker mute ON — DAC muted, amplifier off"
+      - speaker.mute_on: hw_speaker
+      - delay: 50ms
+      - output.turn_off: speaker_enable
+    on_turn_off:
+      - logger.log:
+          level: INFO
+          tag: mute
+          format: "Speaker mute OFF — amplifier on, DAC unmuted"
+      - output.turn_on: speaker_enable
+      - delay: 50ms
+      - speaker.mute_off: hw_speaker
+
+  - platform: template
+    id: timer_ringing
+    optimistic: true
+    internal: true
+    restore_mode: ALWAYS_OFF
+    on_turn_off:
+      - script.stop: timer_alarm_loop
+      - media_player.stop:
+          announcement: true
+    on_turn_on:
+      - media_player.stop:
+          announcement: true
+      - script.execute: timer_alarm_loop
+      - delay: 15min
+      - switch.turn_off: timer_ringing
+
+  # MWW active status + control
+  - platform: template
+    name: Wake Word
+    id: wake_word_switch
+    icon: mdi:account-voice
+    restore_mode: DISABLED
+    lambda: 'return id(mww).is_running();'
+    turn_on_action:
+      - if:
+          condition:
+            not:
+              lambda: 'return id(mww).is_running();'
+          then:
+            - micro_wake_word.start:
+    turn_off_action:
+      - micro_wake_word.stop:
+
+  # Intercom switches
+  - platform: intercom_api
+    intercom_api_id: intercom
+    auto_answer:
+      id: auto_answer_switch
+      name: "Auto Answer"
+      restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
+    aec:
+      id: aec_switch
+      name: "Echo Cancellation"
+      restore_mode: RESTORE_DEFAULT_ON
+
+# =============================================================================
+# NUMBERS
+# =============================================================================
+number:
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
+    mic_gain:
+      id: mic_gain
+      name: "Mic Gain"
+
+  - platform: template
+    id: speaker_volume
+    name: "Speaker Volume"
+    icon: "mdi:volume-high"
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    set_action:
+      - lambda: |-
+          float es8311_vol = 0.15 + (x / 100.0) * 0.60;
+          id(es8311_dac).set_volume(es8311_vol);
+
+# =============================================================================
+# Select Entities
+# =============================================================================
+select:
+  - platform: template
+    name: AEC Mode
+    id: aec_mode_select
+    icon: mdi:tune-vertical
+    options:
+      - "sr_low_cost"
+      - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "sr_low_cost"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - if:
+          condition:
+            lambda: 'return id(init_in_progress);'
+          then:
+            - logger.log: "AEC mode select: skipping during boot"
+          else:
+            - logger.log:
+                format: "Switching AEC mode to %s"
+                args: ['x.c_str()']
+            - lambda: |-
+                // Don't switch during active VA or intercom call
+                if (id(va).is_running() || !id(intercom).is_idle()) {
+                  ESP_LOGW("aec_mode", "Cannot switch AEC mode during active VA/intercom");
+                  return;
+                }
+                int mode = 0;
+                if (x == "sr_low_cost") mode = 0;
+                else if (x == "sr_high_perf") mode = 1;
+                else if (x == "voip_low_cost") mode = 3;
+                else if (x == "voip_high_perf") mode = 4;
+                id(i2s_duplex).stop();
+                if (!id(aec_component).reinit(static_cast<aec_mode_t>(mode))) {
+                  ESP_LOGE("aec_mode", "AEC reinit failed! Restarting with previous mode.");
+                }
+                id(i2s_duplex).start();
+            # Restart MWW — duplex stop resets mic_ref_count, MWW must re-register
+            - micro_wake_word.stop:
+            - delay: 300ms
+            - if:
+                condition:
+                  switch.is_off: mute
+                then:
+                  - micro_wake_word.start:
+
+# =============================================================================
+# TEXT SENSORS
+# =============================================================================
+text_sensor:
+  - platform: homeassistant
+    id: weather_state
+    entity_id: $current_weather
+    on_value:
+        - script.execute: update_current_weather_icon
+
+  - platform: template
+    id: outside_condition_icon
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: forecast_label
+            text: !lambda return x;
+
+  - platform: homeassistant
+    id: ha_active_devices
+    entity_id: sensor.intercom_active_devices
+    on_value:
+      - intercom_api.set_contacts:
+          id: intercom
+          contacts_csv: !lambda 'return x;'
+      - lambda: 'id(peer_name) = id(intercom).get_current_destination();'
+      - if:
+          condition:
+            lambda: return id(current_mode) == 1;
+          then:
+            - script.execute: update_ic_idle_labels
+            - script.execute: draw_display
+
+  - id: text_request
+    platform: template
+    on_value:
+      then:
+        - lambda: |-
+            const std::string &text = x;
+            lv_obj_t* lines[] = {
+              id(think_line_0), id(think_line_1), id(think_line_2), id(think_line_3), id(think_line_4),
+              id(think_line_5), id(think_line_6), id(think_line_7), id(think_line_8), id(think_line_9)
+            };
+            for (size_t i = 0; i < 10; i++) lv_label_set_text(lines[i], "");
+            if (text == "...") return;
+            std::vector<std::string> words;
+            words.reserve(text.size()/5);
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i) {
+              if (i == text.size() || text[i] == ' ' || text[i] == '\n' || text[i] == '\r' || text[i] == '\t') {
+                if (i > start) words.push_back(text.substr(start, i - start));
+                start = i + 1;
+              }
+            }
+            if (words.empty() || id(chord_widths_cache).empty()) return;
+            const auto &chords = id(chord_widths_cache);
+            const size_t total_rows = chords.size();
+            const lv_font_t *font = lv_obj_get_style_text_font(id(think_line_0), LV_PART_MAIN);
+            // Start from middle of display (row total_rows/2 - 3)
+            size_t start_row = total_rows / 2 - 3;
+            if (start_row >= total_rows) start_row = 0;
+            // lines[] already cleared above
+            size_t row = start_row;
+            size_t word_idx = 0;
+            const int avg_char_w = lv_font_get_line_height(font) * 2 / 3;  // ~60% of line height
+            while (row < total_rows && row < 10 && word_idx < words.size()) {
+              const int chord_w = chords[row];
+              if (chord_w <= 0) { row++; continue; }
+              const size_t sw = word_idx;
+              std::string line;
+              line.reserve(chord_w / avg_char_w);
+              while (word_idx < words.size()) {
+                const auto &word = words[word_idx];
+                std::string test = line.empty() ? word : (line + ' ' + word);
+                if ((int)(test.length() * avg_char_w) > chord_w) {
+                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
+                  if (w > chord_w) {
+                    if (word_idx == sw) { line = word; word_idx++; }
+                    break;
+                  }
+                }
+                line = test;
+                word_idx++;
+              }
+              if (word_idx > sw) lv_label_set_text(lines[row], line.c_str());
+              row++;
+            }
+
+  - id: text_response
+    platform: template
+    on_value:
+      then:
+        - lambda: |-
+            // Skip redundant "..." during replying phase (label text set by update_replying_text)
+            if (x == "..." && id(voice_assistant_phase) == ${voice_assist_replying_phase_id}) {
+              return;
+            }
+            const std::string &text = x;
+            std::vector<std::string> words;
+            words.reserve(text.size()/5);
+            size_t start = 0;
+            for (size_t i = 0; i <= text.size(); ++i) {
+              if (i == text.size() || text[i] == ' ' || text[i] == '\n' || text[i] == '\r' || text[i] == '\t') {
+                if (i > start) {
+                  words.push_back(text.substr(start, i - start));
+                }
+                start = i + 1;
+              }
+            }
+            id(reply_page_index) = 0;
+            id(wrapped_lines_reply).clear();
+            id(reply_total_pages) = 1;
+            if (words.empty() || id(chord_widths_cache).empty()) return;
+            const auto &chords = id(chord_widths_cache);
+            const size_t total_rows = chords.size();
+            const lv_font_t *font = lv_obj_get_style_text_font(id(reply_line_0), LV_PART_MAIN);
+            const int avg_char_w = lv_font_get_line_height(font) * 2 / 3;
+            size_t word_idx = 0;
+            size_t safety = 0;
+            size_t line_count = 0;
+            while (word_idx < words.size() && safety++ < words.size() * 2) {
+              int row = line_count % total_rows;
+              const int chord_w = chords[row];
+              if (chord_w <= 0) { id(wrapped_lines_reply).push_back(""); line_count++; continue; }
+              const size_t start_word = word_idx;
+              std::string line;
+              line.reserve(chord_w / avg_char_w);
+              while (word_idx < words.size()) {
+                const auto &word = words[word_idx];
+                std::string test = line.empty() ? word : (line + ' ' + word);
+                if ((int)(test.length() * avg_char_w) > chord_w) {
+                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
+                  if (w > chord_w) {
+                    if (word_idx == start_word) { line = word; word_idx++; }
+                    break;
+                  }
+                }
+                line = test;
+                word_idx++;
+              }
+              if (word_idx > start_word) {
+                id(wrapped_lines_reply).push_back(line);
+                line_count++;
+              }
+            }
+            id(reply_total_pages) = (line_count + total_rows - 1) / total_rows;
+            if (id(reply_total_pages) < 1) id(reply_total_pages) = 1;
+
+# =============================================================================
+# GRAPHIC RESOURCES
+# =============================================================================
+image:
+  defaults:
+    resize: 240x240
+    type: RGB565
+    transparency: opaque
+  images:
+    # Static VA state images
+    - file: ${assets_base}images/assistant/${ai_avatar}/error.png
+      id: assistant_gui_error
+    - file: ${assets_base}images/assistant/${ai_avatar}/listening.png
+      id: assistant_gui_listening
+    - file: ${assets_base}images/assistant/${ai_avatar}/thinking.png
+      id: assistant_gui_thinking
+    - file: ${assets_base}images/assistant/${ai_avatar}/timer_finished.png
+      id: assistant_gui_timer_finished
+    - file: ${assets_base}images/assistant/${ai_avatar}/error_no_wifi.png
+      id: error_no_wifi
+    - file: ${assets_base}images/assistant/${ai_avatar}/error_no_ha.png
+      id: error_no_ha
+
+    # Mood backgrounds for replying page (set based on LLM emoticon prefix)
+    - file: ${assets_base}images/assistant/${ai_avatar}/happy.png
+      id: mood_happy
+    - file: ${assets_base}images/assistant/${ai_avatar}/neutral.png
+      id: mood_neutral
+    - file: ${assets_base}images/assistant/${ai_avatar}/angry.png
+      id: mood_angry
+
+# =============================================================================
+# FONT
+# =============================================================================
+font:
+  - file: "gfonts://Roboto"
+    id: roboto
+    size: 14
+    glyphsets:
+      - GF_Latin_Kernel
+    glyphs: [
+      "-"
+    ]
+  - file: "gfonts://Material+Symbols+Outlined"
+    id: icons_med
+    size: 24
+    glyphs: [
+      "\U0000e2bd", #cloud
+      "\U0000e818", #foggy
+      "\U0000f157", #clear day
+      "\U0000f67f", #weather-hail
+      "\U0000ebdb", #thunderstorm
+      "\U0000f172", #partly cloudy day
+      "\U0000f176", #rainy
+      "\U0000f61f", #rainy-heavy
+      "\U0000f61d", #rainy-snow
+      "\U0000e80f", #snowing
+      "\U0000e2cd", #snowy
+      "\U0000e81a", #sunny
+      "\U0000e29c", #airwave
+      "\U0000efd8", #air
+      "\U0000e51c", #darkmode
+      "\U0000e002", #warning
+      "\U0000eabd", #unknown med
+      "\U0000e043", #shuffle
+      "\U0000e040", #repeat
+      "\U0000e8b5", #schedule
+    ]
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+    id: font_response
+    size: 15
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+    id: font_timer
+    size: 30
+    glyphs: "0123456789:"
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 600
+    id: font_clock
+    size: 20
+    glyphs: "0123456789:%"
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F0079" # battery-100
+          - "\U000F008E" # battery-alert (0%)
+          - "\U000F007A" # battery-10
+          - "\U000F007B" # battery-20
+          - "\U000F007C" # battery-30
+          - "\U000F007D" # battery-40
+          - "\U000F007E" # battery-50
+          - "\U000F007F" # battery-60
+          - "\U000F0080" # battery-70
+          - "\U000F0081" # battery-80
+          - "\U000F0082" # battery-90
+          - "\U000F0553" # battery-charging-100
+          - "\U000F089F" # battery-charging-outline (0%)
+          - "\U000F089C" # battery-charging-10
+          - "\U000F0086" # battery-charging-20
+          - "\U000F0087" # battery-charging-30
+          - "\U000F0088" # battery-charging-40
+          - "\U000F089D" # battery-charging-50
+          - "\U000F0089" # battery-charging-60
+          - "\U000F089E" # battery-charging-70
+          - "\U000F008A" # battery-charging-80
+          - "\U000F008B" # battery-charging-90
+          - "\U000F08BF" # wifi-strength-outline (<20%)
+          - "\U000F08BC" # wifi-strength-1 (<55%)
+          - "\U000F08BD" # wifi-strength-2 (<80%)
+          - "\U000F08BE" # wifi-strength-3 (>=80%)
+          - "\U000F15D0" # Home Alert
+          - "\U000F07D0" # Home Assistant
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: ic_icons
+    size: 42
+    glyphs:
+      - "\U000F03F2" # phone
+      - "\U000F03F5" # phone-hangup
+      - "\U000F0731" # arrow left bold
+      - "\U000F0734" # arrow right bold
+  # Intercom fonts
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 700
+    id: font_title
+    size: 24
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_state
+    size: 28
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_info
+    size: 20
+  - file:
+      type: gfonts
+      family: Roboto Mono
+      weight: 400
+    id: font_debug
+    size: 14
+
+# =============================================================================
+# SPI BUS (DISPLAY)
+# =============================================================================
+spi:
+  - id: spi_bus
+    clk_pin: 4
+    mosi_pin: 2
+
+# =============================================================================
+# DISPLAY (mipi_spi - stripped of pages, LVGL handles rendering)
+# =============================================================================
+# https://esphome.io/components/display/ili9xxx/
+# WARNING (ILI9xxx)
+# This component has been made redundant since this class of displays is now
+# supported by the MIPI SPI Display Driver. This component may be removed 
+# in a future release.
+display:
+  - platform: mipi_spi
+    id: s3_box_lcd
+    model: GC9A01A
+    invert_colors: true
+    data_rate: 40MHz
+    cs_pin: 5
+    dc_pin: 47
+    reset_pin:
+      number: 38
+    auto_clear_enabled: false
+    dimensions:
+      height: 240
+      width: 240
+
+# =============================================================================
+# LVGL DISPLAY ENGINE
+#
+# Declarative widgets for VA + intercom pages. Static idle image,
+# mood-based replying backgrounds, timer overlay on top_layer.
+# =============================================================================
+lvgl:
+  displays:
+    - s3_box_lcd
+  buffer_size: 50%
+  color_depth: 16
+  log_level: WARN
+  
+  style_definitions:
+    - id: date_style
+      text_font: unscii_8
+      align: center
+      text_color: 0xD0D0D0
+      bg_color: 0x000000
+      bg_opa: 25%
+      radius: 4
+      pad_all: 2
+    - id: icon_style
+      text_font: icons_med
+      align: center
+      text_color: 0x707070
+    - id: clock_data
+      text_font: roboto
+      align: center
+      text_color: 0xA0A0A0
+      radius: 12
+      pad_all: 3
+      bg_opa: 25%
+      bg_color: 0x000000
+    - id: clock_media
+      text_font: roboto
+      text_color: 0xFFFFFF
+      bg_color: 0x000000
+      pad_all: 6
+      radius: 18
+      bg_opa: 75%
+
+  top_layer:
+    widgets:
+      # Timer overlay bar (hidden by default, shown on idle/listening/thinking/muted)
+      # Dimensions set by reposition_widgets from y_metrics[13] and y_metrics[2]
+      - obj:
+          id: timer_overlay
+          align: TOP_MID
+          width: 1
+          height: 1
+          bg_color: 0xFFFFFF
+          border_color: 0x000000
+          border_width: 1
+          hidden: true
+          widgets:
+            - bar:
+                id: timer_bar
+                align: CENTER
+                width: 1
+                height: 1
+                min_value: 0
+                max_value: 100
+                value: 50
+                indicator:
+                  bg_color: 0x26ED3A
+            - label:
+                id: timer_label
+                align: CENTER
+                text: ""
+                text_color: 0x000000
+                text_font: font_timer
+      - label:
+          id: top_clock_label
+          align: TOP_MID
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
+      - label:
+          id: top_battery_label
+          align: TOP_MID
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
+
+  pages:
+    # ========================================================================
+    # INITIALIZATION PAGE
+    # ========================================================================
+    - id: initializing_page
+      bg_color: 0x000000
+      widgets:
+       - spinner:
+           id: loading_spinner
+           arc_length: 36
+           arc_rounded: true
+           spin_time: 2s
+           align: CENTER
+
+    # ========================================================================
+    # VA: IDLE PAGE
+    # ========================================================================
+    - id: idle_page
+      widgets:
+        - obj: # clock container
+            height: 240
+            width: 240
+            align: CENTER
+            pad_all: 0
+            border_width: 0
+            bg_color: 0x000000
+            widgets:
+              - meter: #clock face
+                  id: clock_hands
+                  height: 220
+                  width: 220
+                  align: CENTER
+                  bg_opa: TRANSP
+                  border_width: 0
+                  text_color: 0xC0C000
+                  scales:
+                    - range_from: 0 # minutes scale
+                      range_to: 60
+                      angle_range: 360
+                      rotation: 270
+                      ticks:
+                        width: 1
+                        count: 61
+                        length: 10
+                        color: 0x0A0A0A
+                      indicators:
+                        - line:
+                            id: minute_hand
+                            width: 3
+                            color: 0xa6a6a6
+                            r_mod: -4
+                            value: 0
+                    - range_from: 1 # hours scale for labels
+                      range_to: 12
+                      angle_range: 330
+                      rotation: 300
+                      ticks:
+                        width: 1
+                        count: 12
+                        length: 1
+                        major:
+                          stride: 1
+                          width: 4
+                          length: 10
+                          color: 0x5F0606
+                          label_gap: 12
+                    - range_from: 0 # hi-res hours scale for hand
+                      range_to: 720
+                      angle_range: 360
+                      rotation: 270
+                      ticks:
+                        count: 0
+                      indicators:
+                        - line:
+                            id: hour_hand
+                            width: 5
+                            color: 0xa6a6a6
+                            r_mod: -30
+                            value: 0
+                    - range_from: 0 # secondss scale
+                      range_to: 60
+                      angle_range: 360
+                      rotation: 270
+                      ticks:
+                        count: 0
+                      indicators:
+                        - line:
+                            id: second_hand
+                            width: 2
+                            color: 0xff1000
+                            r_mod: -12
+        - label:
+            styles: date_style
+            id: day_label
+            y: 38
+        - label:
+            id: date_label
+            styles: date_style
+            y: 51
+        - label:
+            align: CENTER
+            id: temp_widget
+            x: -40
+            y: -22
+            styles: clock_data
+            text: "---"
+        - label:
+            align: CENTER
+            id: forecast_label
+            x: 40
+            y: -24
+            styles: icon_style
+            text: "\U0000eabd"
+        
+    # ========================================================================
+    # VA: LISTENING PAGE (placeholder)
+    # ========================================================================
+    - id: listening_page
+      bg_color: 0xFFFFFF
+      widgets:
+        - image:
+            align: CENTER
+            src: assistant_gui_listening
+
+    # ========================================================================
+    # VA: THINKING PAGE (chord-width text, same layout as replying)
+    # Text starts at row total_rows/2-3 (around row 2), matching original
+    # ========================================================================
+    - id: thinking_page
+      bg_color: 0xFFFFFF
+      widgets:
+        - image:
+            align: CENTER
+            src: assistant_gui_thinking
+        # Chord-width labels: y and width set by reposition_widgets from text_row_y/chord_widths_cache
+        - label:
+            id: think_line_0
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_1
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_2
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_3
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_4
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_5
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_6
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_7
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_8
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: think_line_9
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            long_mode: CLIP
+            text_align: CENTER
+
+    # ========================================================================
+    # VA: REPLYING PAGE (chord-width text, 10 rows for circular display)
+    # Chord widths: 2*sqrt(r²-dy²)-12, r=120, side_margin=6/side
+    # Row y-positions: 10, 32, 54, 76, 98, 120, 142, 164, 186, 208
+    # ========================================================================
+    - id: replying_page
+      bg_color: 0x000000
+      scrollbar_mode: "off"
+      widgets:
+        # Mood background image (set dynamically based on LLM emoticon prefix)
+        - image:
+            id: mood_bg
+            align: CENTER
+            src: mood_neutral
+        # Chord-width text labels: y and width set by reposition_widgets from text_row_y/chord_widths_cache
+        - label:
+            id: reply_line_0
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_1
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_2
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_3
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_4
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_5
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_6
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_7
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_8
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_line_9
+            align: TOP_MID
+            y: 0
+            width: 1
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_response
+            long_mode: CLIP
+            text_align: CENTER
+        - label:
+            id: reply_page_counter
+            align: TOP_MID
+            y: 0
+            text: ""
+            text_color: 0x888888
+            text_font: font_debug
+            text_align: CENTER
+
+    # ========================================================================
+    # VA: ERROR PAGE
+    # ========================================================================
+    - id: error_page
+      bg_color: 0x000000
+      widgets:
+        - image:
+            align: CENTER
+            src: assistant_gui_error
+
+    # ========================================================================
+    # VA: MUTED PAGE
+    # ========================================================================
+    - id: muted_page
+      bg_color: 0x000000
+
+    # ========================================================================
+    # VA: TIMER FINISHED PAGE
+    # ========================================================================
+    - id: timer_finished_page
+      bg_color: 0x000000
+      widgets:
+        - image:
+            align: CENTER
+            src: assistant_gui_timer_finished
+
+    # ========================================================================
+    # VA: NO HA PAGE
+    # ========================================================================
+    - id: no_ha_page
+      bg_color: 0x000000
+      widgets:
+        - image:
+            align: CENTER
+            src: error_no_ha
+
+    # ========================================================================
+    # VA: NO WIFI PAGE
+    # ========================================================================
+    - id: no_wifi_page
+      bg_color: 0x000000
+      widgets:
+        - image:
+            align: CENTER
+            src: error_no_wifi
+
+    # ========================================================================
+    # INTERCOM: IDLE PAGE
+    # ========================================================================
+    - id: ic_idle_page
+      bg_color: 0x0000FF
+      widgets:
+        # All y positions set dynamically by reposition_widgets from y_metrics
+        # Child order: [0]title [1]intercom [2]state [3]dest [4]peer [5]contacts [6]wifi [7]HA
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "${friendly_name}"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Intercom:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "IDLE"
+            text_color: 0x00FF00
+            text_font: font_state
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Destination:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            id: ic_idle_peer_label
+            align: TOP_MID
+            y: 0
+            text: "Home Assistant"
+            text_color: 0xFFFFFF
+            text_font: font_info
+            width: 200
+            text_align: CENTER
+            long_mode: DOT
+        - label:
+            id: ic_idle_contacts_label
+            align: TOP_MID
+            y: 0
+            text: "Contacts: 0"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            width: 200
+            text_align: CENTER
+            long_mode: DOT
+        - button:
+            id: ic_idle_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_idle_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_idle_page_left_contacts_btn
+            align: TOP_LEFT
+            x: 25
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_left_contacts_lbl
+                  text: "\U000F0731"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: prev_contact_button
+        - button:
+            id: ic_idle_page_right_contacts_btn
+            align: TOP_RIGHT
+            x: -25
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_idle_page_right_contacts_btn_lbl
+                  text: "\U000F0734"
+                  align: CENTER
+                  text_color: 0xFFFFFF
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: next_contact_button
+
+    # ========================================================================
+    # INTERCOM: RINGING IN PAGE
+    # ========================================================================
+    - id: ic_ringing_in_page
+      bg_color: 0xFF0000
+      widgets:
+        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
+        # All y set by reposition_widgets from y_metrics
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "${friendly_name}"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Status:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "RINGING"
+            text_color: 0xFFFF00
+            text_font: font_state
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Incoming call from:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            id: ic_ringing_in_peer_label
+            align: TOP_MID
+            y: 0
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Press button to answer"
+            text_color: 0xFFFF00
+            text_font: font_debug
+            text_align: CENTER
+        - button:
+            id: ic_ringing_in_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            id: ic_ringing_in_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_in_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x000000
+                  text_font: ic_icons
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: |-
+                      auto s = id(intercom).get_state_str();
+                      return s == "Ringing" || s == "Incoming";
+                  then:
+                    - button.press: decline_button
+                  else:
+                    - if:
+                        condition:
+                          lambda: |-
+                            auto s = id(intercom).get_state_str();
+                            return s == "Calling" || s == "Outgoing";
+                        then:
+                          - button.press: call_button
+
+    # ========================================================================
+    # INTERCOM: RINGING OUT PAGE
+    # ========================================================================
+    - id: ic_ringing_out_page
+      bg_color: 0xFF9900
+      widgets:
+        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
+        # All y set by reposition_widgets from y_metrics
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "${friendly_name}"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Status:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "CALLING"
+            text_color: 0x000000
+            text_font: font_state
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Calling:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            id: ic_ringing_out_peer_label
+            align: TOP_MID
+            y: 0
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Waiting for answer..."
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - button:
+            id: ic_ringing_out_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_ringing_out_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_ringing_out_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: decline_button
+
+    # ========================================================================
+    # INTERCOM: IN CALL PAGE
+    # ========================================================================
+    - id: ic_in_call_page
+      bg_color: 0x008800
+      widgets:
+        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
+        # All y set by reposition_widgets from y_metrics
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "${friendly_name}"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Status:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "IN CALL"
+            text_color: 0x0000FF
+            text_font: font_state
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Connected to:"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            id: ic_in_call_peer_label
+            align: TOP_MID
+            y: 0
+            text: ""
+            text_color: 0xFFFFFF
+            text_font: font_info
+            text_align: CENTER
+        - label:
+            align: TOP_MID
+            y: 0
+            text: "Press button to hang up"
+            text_color: 0xFFFFFF
+            text_font: font_debug
+            text_align: CENTER
+        - button:
+            id: ic_in_call_page_left_btn
+            align: TOP_LEFT
+            x: 4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_left_btn_lbl
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
+        - button:
+            id: ic_in_call_page_right_btn
+            align: TOP_RIGHT
+            x: -4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  id: ic_in_call_page_right_btn_lbl
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
