@@ -23,6 +23,7 @@ from .websocket_api import (
     async_register_websocket_api,
     _get_intercom_devices,
     _stop_device_sessions,
+    _find_bridge_by_source,
     _sessions,
     _bridges,
     IntercomSession,
@@ -207,10 +208,81 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             else:
                 _LOGGER.error("P2P call failed: -> %s", dest_device["name"])
 
+    async def handle_forward(call: ServiceCall) -> None:
+        """Forward an active or ringing call to another device.
+
+        Target is the source (caller) device. forward_to is the new destination.
+        """
+        source_device = await _resolve_target_device(hass, call)
+        if not source_device:
+            _LOGGER.error("No intercom device found for forward source target")
+            return
+
+        forward_to_id = call.data.get("forward_to")
+        if not forward_to_id:
+            _LOGGER.error("forward_to field is required")
+            return
+
+        intercom_devices = await _get_intercom_devices(hass)
+        dest_device = next(
+            (d for d in intercom_devices if d["device_id"] == forward_to_id),
+            None,
+        )
+        if not dest_device:
+            _LOGGER.error("Forward destination device not found: %s", forward_to_id)
+            return
+
+        # Find active bridge with this source
+        bridge = _find_bridge_by_source(source_device["device_id"])
+
+        if bridge:
+            # Forward existing bridge
+            result = await bridge.forward_to(
+                dest_device["device_id"],
+                dest_device["host"],
+                dest_device["name"],
+            )
+            _LOGGER.info(
+                "Forward via service: %s -> %s (%s)",
+                source_device["name"], dest_device["name"], result,
+            )
+        else:
+            # No active bridge. Create one (source -> new dest).
+            # This handles the case where the ESP called HA and we want to
+            # route it to another ESP.
+            bridge_id = f"{source_device['device_id']}_{dest_device['device_id']}"
+            await _stop_device_sessions(source_device["device_id"])
+
+            new_bridge = BridgeSession(
+                hass=hass,
+                bridge_id=bridge_id,
+                source_device_id=source_device["device_id"],
+                source_host=source_device["host"],
+                source_name=source_device["name"],
+                dest_device_id=dest_device["device_id"],
+                dest_host=dest_device["host"],
+                dest_name=dest_device["name"],
+            )
+            _bridges[bridge_id] = new_bridge
+            result = await new_bridge.start()
+
+            if result in ("connected", "ringing"):
+                _LOGGER.info(
+                    "Forward (new bridge) via service: %s -> %s (%s)",
+                    source_device["name"], dest_device["name"], result,
+                )
+            else:
+                _bridges.pop(bridge_id, None)
+                _LOGGER.error(
+                    "Forward failed: %s -> %s",
+                    source_device["name"], dest_device["name"],
+                )
+
     hass.services.async_register(DOMAIN, "answer", handle_answer)
     hass.services.async_register(DOMAIN, "decline", handle_decline)
     hass.services.async_register(DOMAIN, "hangup", handle_hangup)
     hass.services.async_register(DOMAIN, "call", handle_call)
+    hass.services.async_register(DOMAIN, "forward", handle_forward)
 
 
 async def _async_setup_shared(hass: HomeAssistant, config: dict | None = None) -> None:

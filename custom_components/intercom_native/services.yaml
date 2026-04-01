@@ -33,3 +33,18 @@ call:
       selector:
         device:
           integration: esphome
+
+forward:
+  name: Forward Call
+  description: Forward an active or ringing call to another device. Target is the caller device.
+  target:
+    device:
+      integration: esphome
+  fields:
+    forward_to:
+      name: Forward To
+      description: The device to forward the call to.
+      required: true
+      selector:
+        device:
+          integration: esphome
