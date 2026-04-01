@@ -45,29 +45,28 @@ async def _resolve_target_device(hass: HomeAssistant, call: ServiceCall) -> dict
 
     device_ids = set()
 
-    # Extract device_ids from target (HA resolves entity/area targets to device_ids)
-    target = call.data.get("target") or {}
-    if hasattr(call, "target") and call.target:
-        target = call.target
+    # HA puts target selector data in call.data at top level (device_id, entity_id)
+    # AND/OR in call.target if the service schema uses target selectors.
+    # Check both locations.
+    for source in [call.data, getattr(call, "target", None) or {}]:
+        # Direct device_id targeting
+        if "device_id" in source:
+            ids = source["device_id"]
+            if isinstance(ids, str):
+                device_ids.add(ids)
+            elif isinstance(ids, list):
+                device_ids.update(ids)
 
-    # Direct device_id targeting
-    if "device_id" in target:
-        ids = target["device_id"]
-        if isinstance(ids, str):
-            device_ids.add(ids)
-        elif isinstance(ids, list):
-            device_ids.update(ids)
-
-    # Entity targeting: resolve entity -> device
-    if "entity_id" in target:
-        entity_registry = er.async_get(hass)
-        eids = target["entity_id"]
-        if isinstance(eids, str):
-            eids = [eids]
-        for eid in eids:
-            entry = entity_registry.async_get(eid)
-            if entry and entry.device_id:
-                device_ids.add(entry.device_id)
+        # Entity targeting: resolve entity -> device
+        if "entity_id" in source:
+            entity_registry = er.async_get(hass)
+            eids = source["entity_id"]
+            if isinstance(eids, str):
+                eids = [eids]
+            for eid in eids:
+                entry = entity_registry.async_get(eid)
+                if entry and entry.device_id:
+                    device_ids.add(entry.device_id)
 
     if not device_ids:
         return None
@@ -230,6 +229,10 @@ async def _async_register_services(hass: HomeAssistant) -> None:
         )
         if not dest_device:
             _LOGGER.error("Forward destination device not found: %s", forward_to_id)
+            return
+
+        if dest_device["device_id"] == source_device["device_id"]:
+            _LOGGER.error("Cannot forward to self")
             return
 
         # Find active bridge with this source

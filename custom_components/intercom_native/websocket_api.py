@@ -581,11 +581,10 @@ class BridgeSession:
                 await self._dest_client.disconnect()
                 self._dest_client = None
 
-            # 4. Update dest info
+            # 4. Update dest info (bridge_id stays immutable for lifetime)
             self.dest_device_id = new_dest_device_id
             self.dest_host = new_dest_host
             self.dest_name = new_dest_name
-            self.bridge_id = f"{self.source_device_id}_{new_dest_device_id}"
 
             # 5. Create new dest client with callbacks
             def on_new_dest_audio(data: bytes) -> None:
@@ -646,7 +645,14 @@ class BridgeSession:
                     "new_dest_name": new_dest_name,
                     "state": "failed",
                 })
-                await self.stop()
+                # Cleanup without calling stop() (would deadlock on _stop_lock)
+                self._active = False
+                if self._source_client:
+                    await self._source_client.stop_stream()
+                    await self._source_client.disconnect()
+                    self._source_client = None
+                _bridges.pop(self.bridge_id, None)
+                self._fire_state_event("idle")
                 return "error"
 
             result = await self._dest_client.start_stream(
@@ -661,16 +667,18 @@ class BridgeSession:
                     "new_dest_name": new_dest_name,
                     "state": "failed",
                 })
-                await self.stop()
+                # Cleanup without calling stop() (would deadlock on _stop_lock)
+                self._active = False
+                if self._dest_client:
+                    await self._dest_client.disconnect()
+                    self._dest_client = None
+                if self._source_client:
+                    await self._source_client.stop_stream()
+                    await self._source_client.disconnect()
+                    self._source_client = None
+                _bridges.pop(self.bridge_id, None)
+                self._fire_state_event("idle")
                 return "error"
-
-            # Update global bridges dict with new bridge_id
-            old_keys = [
-                k for k, v in _bridges.items() if v is self and k != self.bridge_id
-            ]
-            for k in old_keys:
-                _bridges.pop(k, None)
-            _bridges[self.bridge_id] = self
 
             if result == "ringing":
                 _LOGGER.info("Forward: new dest %s ringing", new_dest_name)

@@ -733,20 +733,22 @@ class IntercomCard extends HTMLElement {
   async _tryAutoAnswer() {
     // Check if browser has persistent mic permission
     try {
-      const perm = await navigator.permissions.query({ name: "microphone" });
-      if (perm.state !== "granted") {
-        console.info("intercom: auto-answer skipped, mic permission not persistent");
-        this._autoAnswering = false;
-        return;
+      if (navigator.permissions?.query) {
+        const perm = await navigator.permissions.query({ name: "microphone" });
+        if (perm.state !== "granted") {
+          console.info("intercom: auto-answer skipped, mic permission not persistent");
+          this._autoAnswering = false;
+          return;
+        }
       }
+      // permissions.query not available or permission granted: try answering
+      console.info("intercom: auto-answering call");
+      await this._answer();
     } catch (e) {
-      // permissions.query not supported, skip auto-answer
+      console.warn("intercom: auto-answer failed", e);
+    } finally {
       this._autoAnswering = false;
-      return;
     }
-
-    console.info("intercom: auto-answering call");
-    await this._answer();
   }
 
   _toggleAutoAnswer() {
@@ -756,7 +758,7 @@ class IntercomCard extends HTMLElement {
       localStorage.setItem(`intercom_auto_answer_${deviceId}`, this._autoAnswer.toString());
     }
     // If enabling, request mic permission now (user gesture from the toggle click)
-    if (this._autoAnswer) {
+    if (this._autoAnswer && navigator.mediaDevices?.getUserMedia) {
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
           // Got permission, release stream immediately
