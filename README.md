@@ -425,15 +425,16 @@ graph LR
 2. Card sends `intercom_native/start` to HA
 3. HA opens TCP connection to ESP:6054
 4. HA sends START message (caller="Home Assistant")
-5. ESP enters Ringing state (or auto-answers)
-6. Bidirectional audio streaming begins
+5. ESP enters Ringing state (or auto-answers if enabled)
+6. User can answer on the ESP via GPIO button, LVGL touchscreen button, or HA automation
+7. Bidirectional audio streaming begins
 
 **Call Flow (ESP → Browser):**
-1. User presses "Call" on ESP (with destination set to "Home Assistant")
+1. User presses "Call" on ESP via GPIO button or LVGL touchscreen (with destination set to "Home Assistant")
 2. ESP sends RING message to HA
 3. HA notifies all connected browser cards
 4. Card shows incoming call with Answer/Decline buttons
-5. User clicks "Answer" in browser
+5. User clicks "Answer" in browser (or auto-answer if enabled on the card)
 6. Bidirectional audio streaming begins
 
 **Use Simple mode when:**
@@ -455,14 +456,14 @@ graph TB
 ```
 
 **Call Flow (ESP #1 calls ESP #2):**
-1. User selects "Bedroom" on ESP #1 display/button
-2. User presses Call button → ESP #1 enters "Outgoing" state
+1. User selects "Bedroom" on ESP #1 via display or button
+2. User presses Call (GPIO button or LVGL touchscreen) → ESP #1 enters "Outgoing" state
 3. HA detects state change via ESPHome API
 4. HA sends START to ESP #2 (caller="Kitchen")
 5. ESP #2 enters "Ringing" state
-6. User answers on ESP #2 (or auto-answer)
+6. User answers on ESP #2 (GPIO button, LVGL touch, or auto-answer if enabled)
 7. HA bridges audio: ESP #1 ↔ HA ↔ ESP #2
-8. Either device can hangup → STOP propagates to both
+8. Either device can hangup (button, touch, or HA service) → STOP propagates to both
 
 **Full mode features:**
 - Contact list auto-discovery from HA
