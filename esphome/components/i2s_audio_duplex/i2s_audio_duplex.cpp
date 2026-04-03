@@ -752,10 +752,7 @@ void I2SAudioDuplex::audio_task_() {
 
     this->process_rx_path_(ctx);
 
-    // Snapshot AEC gate state right before AEC decision for timing precision
     ctx.aec_enabled = this->aec_enabled_.load(std::memory_order_relaxed);
-    // aec_ref_volume removed: reference must match exact post-volume PCM sent to speaker.
-    // No extra scaling. Espressif TYPE2 pattern: ref = playback as-is.
     ctx.now_ms = millis();
 
     this->process_aec_and_callbacks_(ctx);
