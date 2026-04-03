@@ -619,18 +619,19 @@ The intercom card has an **Auto Answer** checkbox (visible in idle state only):
 
 The preference is saved per device in localStorage.
 
-### Example: Doorbell PBX Automation
+### Automation Examples
+
+#### Doorbell routing based on presence
+
+When the doorbell rings, forward to the indoor panel if someone is home, or send a push notification if everyone is away.
 
 ```yaml
 alias: Doorbell call routing
-description: Forward doorbell calls based on presence
 triggers:
   - trigger: event
     event_type: esphome.intercom_call
-conditions: []
 actions:
   - choose:
-      # If home: forward to indoor panel
       - conditions:
           - condition: state
             entity_id: person.daniele
@@ -641,7 +642,6 @@ actions:
               device_id: "{{ trigger.event.data.device_id }}"
             data:
               forward_to: "<indoor_panel_device_id>"
-      # If away: send notification
       - conditions:
           - condition: state
             entity_id: person.daniele
@@ -653,10 +653,114 @@ actions:
               message: "{{ trigger.event.data.caller }} is calling"
               data:
                 clickAction: /lovelace/intercom
+                importance: high
+                channel: doorbell
                 actions:
                   - action: URI
                     title: "Open Intercom"
                     uri: /lovelace/intercom
+mode: single
+```
+
+#### Auto-decline after timeout
+
+If nobody answers within 30 seconds, decline the call automatically.
+
+```yaml
+alias: Intercom auto-decline after timeout
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+actions:
+  - delay: "00:00:30"
+  - condition: template
+    value_template: >
+      {{ states('sensor.' ~ trigger.event.data.caller | lower | replace(' ', '_') ~ '_intercom_state') == 'Outgoing' }}
+  - action: intercom_native.decline
+    target:
+      device_id: "{{ trigger.event.data.device_id }}"
+mode: single
+```
+
+#### Bridge two ESP devices from an automation
+
+Start a call between the kitchen and bedroom intercoms via an HA automation (e.g. triggered by a button or schedule).
+
+```yaml
+alias: Call kitchen from bedroom
+triggers:
+  - trigger: state
+    entity_id: input_button.call_kitchen
+actions:
+  - action: intercom_native.call
+    target:
+      device_id: "<kitchen_device_id>"
+    data:
+      source: "<bedroom_device_id>"
+mode: single
+```
+
+#### Doorbell with actionable notification and decline
+
+Send a push notification with Answer and Decline actions. If the user taps Decline, the call is ended.
+
+```yaml
+alias: Doorbell notification with actions
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      title: "Doorbell"
+      message: "{{ trigger.event.data.caller }} is calling"
+      data:
+        tag: intercom
+        channel: doorbell
+        importance: high
+        clickAction: /lovelace/intercom
+        actions:
+          - action: URI
+            title: "Open Intercom"
+            uri: /lovelace/intercom
+          - action: DECLINE_INTERCOM
+            title: "Decline"
+  - wait_for_trigger:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: DECLINE_INTERCOM
+    timeout: "00:00:30"
+  - condition: template
+    value_template: "{{ wait.trigger is not none }}"
+  - action: intercom_native.decline
+    target:
+      device_id: "{{ trigger.event.data.device_id }}"
+  - action: notify.mobile_app_phone
+    data:
+      message: clear_notification
+      data:
+        tag: intercom
+mode: single
+```
+
+#### Night mode: auto-decline all calls
+
+During night hours, automatically decline all incoming calls.
+
+```yaml
+alias: Night mode auto-decline
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+conditions:
+  - condition: time
+    after: "23:00:00"
+    before: "07:00:00"
+actions:
+  - action: intercom_native.decline
+    target:
+      device_id: "{{ trigger.event.data.device_id }}"
 mode: single
 ```
 
