@@ -205,6 +205,8 @@ class I2SAudioDuplex : public Component {
   void set_task_core(int8_t core) { this->task_core_ = core; }
   void set_task_stack_size(uint32_t size) { this->task_stack_size_ = size; }
   void set_buffers_in_psram(bool psram) { this->buffers_in_psram_ = psram; }
+  void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
+  void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
 
  protected:
   bool init_i2s_duplex_();
@@ -329,6 +331,11 @@ class I2SAudioDuplex : public Component {
   std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
   int16_t *direct_aec_ref_{nullptr};     // AEC reference from previous TX frame (bus rate, mono mode)
   bool direct_aec_ref_valid_{false};     // True after first TX frame has been saved
+
+  // AEC ring buffer reference (TYPE2-style, for no-codec setups)
+  bool aec_use_ring_buffer_{false};      // Config: use ring buffer instead of previous frame
+  uint32_t aec_ref_buffer_ms_{80};       // Config: ring buffer size in ms
+  std::unique_ptr<RingBuffer> aec_ref_ring_buffer_;  // Ring buffer for AEC ref (bus rate, post-volume)
 
   // Volume control — atomic: written from main loop, read from audio task via snapshot.
   std::atomic<float> mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)

@@ -682,6 +682,20 @@ void I2SAudioDuplex::audio_task_() {
           heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
     ctx.aec_output = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
+
+    // Ring buffer for TYPE2-style AEC reference (no-codec setups only)
+    if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
+      // Buffer size: aec_ref_buffer_ms_ worth of audio at bus rate
+      size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
+      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;  // minimum 4 frames
+      this->aec_ref_ring_buffer_ = RingBuffer::create(rb_bytes);
+      if (!this->aec_ref_ring_buffer_) {
+        alloc_fail("AEC reference ring buffer"); goto cleanup;
+      }
+      ESP_LOGI(TAG, "AEC reference: ring_buffer (%zu bytes, %ums)", rb_bytes, (unsigned)this->aec_ref_buffer_ms_);
+    } else if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
+      ESP_LOGI(TAG, "AEC reference: previous_frame");
+    }
   }
 #endif
 
@@ -719,6 +733,9 @@ void I2SAudioDuplex::audio_task_() {
     if (this->request_speaker_reset_.exchange(false, std::memory_order_relaxed)) {
       this->speaker_buffer_->reset();
       this->direct_aec_ref_valid_ = false;
+      if (this->aec_ref_ring_buffer_) {
+        this->aec_ref_ring_buffer_->reset();
+      }
     }
     // Reset per-frame state
     ctx.output_buffer = nullptr;
@@ -896,9 +913,30 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
     // Mono mode: get AEC reference (direct from TX or ring buffer)
     // Reference is post-volume PCM, no additional scaling (Espressif TYPE2 pattern).
     if (!ctx.use_stereo_aec_ref) {
-      if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
+      bool ref_filled = false;
+
+      if (this->aec_ref_ring_buffer_) {
+        // Ring buffer mode: read one frame, zero-fill if not enough data (TYPE2 timeout pattern)
+        size_t ref_bytes = ctx.bus_frame_size * sizeof(int16_t);
+        size_t avail = this->aec_ref_ring_buffer_->available();
+        if (avail >= ref_bytes) {
+          if (ctx.ratio > 1) {
+            // Read at bus rate into direct_aec_ref_ (temp), then decimate to output rate
+            this->aec_ref_ring_buffer_->read(this->direct_aec_ref_, ref_bytes, 0);
+            this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
+          } else {
+            // No decimation: read directly into spk_ref_buffer
+            this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, ref_bytes, 0);
+          }
+          ref_filled = true;
+        }
+      } else if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
+        // Previous frame mode: decimate from bus rate to output rate
         this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
-      } else {
+        ref_filled = true;
+      }
+
+      if (!ref_filled) {
         memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
       }
     }
@@ -954,9 +992,23 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
   }
 
-  // Save post-volume TX data as direct AEC reference (used in next iteration)
+  // Save post-volume TX data as AEC reference
 #ifdef USE_ESP_AEC
-  if (this->direct_aec_ref_ != nullptr) {
+  if (this->aec_ref_ring_buffer_) {
+    // Ring buffer mode: write post-volume PCM for TYPE2-style reference
+    if (ctx.speaker_running && !ctx.speaker_paused) {
+      size_t written = this->aec_ref_ring_buffer_->write(
+          (void *) ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
+      if (written == 0) {
+        // Buffer full: trim oldest data to make room (prevent unbounded backlog)
+        int16_t discard[64];
+        this->aec_ref_ring_buffer_->read(discard, sizeof(discard), 0);
+        this->aec_ref_ring_buffer_->write(
+            (void *) ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
+      }
+    }
+  } else if (this->direct_aec_ref_ != nullptr) {
+    // Previous frame mode: save for next iteration
     memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
     this->direct_aec_ref_valid_ = ctx.speaker_running && !ctx.speaker_paused;
   }
