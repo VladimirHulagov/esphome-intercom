@@ -255,7 +255,7 @@ i2s_audio_duplex:
 - I2S is configured as `I2S_SLOT_MODE_STEREO` with TDM slot mask so all slots appear in DMA
 - The audio task deinterleaves mic and ref from the TDM frame — they are inherently sample-aligned
 - The hardware ref is naturally silent when speaker is silent
-- The analog reference already reflects DAC hardware volume — no `aec_reference_volume` scaling needed
+- The analog reference already reflects DAC hardware volume
 
 **ES7210 TDM register configuration** (required in `on_boot` lambda):
 ```yaml
@@ -541,7 +541,7 @@ binary_sensor:
 - **Task Priority**: 19 (above lwIP at 18, below WiFi at 23). Configurable via `task_priority` YAML option.
 - **Core Affinity**: Pinned to Core 0 (canonical Espressif AEC pattern; frees Core 1 for MWW inference and LVGL). Configurable via `task_core` YAML option.
 - **AEC Gating**: Mono/stereo modes process AEC only when speaker had real audio within last 250ms. TDM mode is always-on (hardware ref captures silence naturally, no filter drift).
-- **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed` — including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`, `aec_ref_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`, `request_ref_prefill_`) to avoid concurrent access between main thread and audio task.
+- **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed` — including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
 - **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally).
 - **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure AEC (`aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of AEC and DC offset processing; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
@@ -617,7 +617,7 @@ With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Cor
 - **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless** — these components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
 - **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker has been silent for >250ms) is the workaround.
 - **TDM analog reference vs ES8311 digital feedback**: The digital feedback path (ES8311 stereo loopback) provides a cleaner reference signal for AEC than the TDM analog path (ES7210 MIC3 capturing speaker output). Analog loopback introduces non-linear distortion from the DAC/amplifier chain that the AEC linear adaptive filter cannot fully model. Expect ~95-98% echo cancellation with analog reference vs ~99% with digital feedback. Both are adequate for voice assistant and intercom use.
-- **AEC reference volume**: `aec_reference_volume` should ONLY be used with direct TX reference mode (mono, no stereo/TDM). Both ES8311 digital feedback and TDM analog reference already include the hardware volume in the reference signal.
+- **AEC reference**: The reference signal is always the exact post-volume PCM sent to the speaker, with no additional scaling. For hardware codec setups (ES8311, TDM), the reference naturally includes hardware volume. For software reference (no codec), the reference includes software volume. `mic_gain_pre_aec` is applied only to the mic signal, not the reference.
 
 ## License
 

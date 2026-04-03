@@ -735,10 +735,8 @@ void I2SAudioDuplex::audio_task_() {
 
     // Snapshot AEC gate state right before AEC decision for timing precision
     ctx.aec_enabled = this->aec_enabled_.load(std::memory_order_relaxed);
-    // aec_ref_volume only used in mono software-ref mode (not TDM, not stereo)
-    if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
-      ctx.aec_ref_volume = this->aec_ref_volume_.load(std::memory_order_relaxed);
-    }
+    // aec_ref_volume removed: reference must match exact post-volume PCM sent to speaker.
+    // No extra scaling. Espressif TYPE2 pattern: ref = playback as-is.
     ctx.now_ms = millis();
 
     this->process_aec_and_callbacks_(ctx);
@@ -886,12 +884,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
   if (ctx.use_tdm_ref && this->aec_ != nullptr && ctx.aec_enabled &&
       this->aec_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
     // TDM: hardware-synced reference, no speaker gating needed.
-    // TDM analog ref already reflects DAC volume — only match mic_attenuation.
-    if (ctx.mic_attenuation != 1.0f) {
-      for (size_t i = 0; i < ctx.out_frame_size; i++) {
-        ctx.spk_ref_buffer[i] = scale_sample(ctx.spk_ref_buffer[i], ctx.mic_attenuation);
-      }
-    }
+    // TDM analog ref already reflects DAC volume. No extra scaling on ref.
     this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.out_frame_size);
     ctx.output_buffer = ctx.aec_output;
   } else
@@ -901,26 +894,16 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)) {
 
     // Mono mode: get AEC reference (direct from TX or ring buffer)
+    // Reference is post-volume PCM, no additional scaling (Espressif TYPE2 pattern).
     if (!ctx.use_stereo_aec_ref) {
       if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
         this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
       } else {
         memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
       }
-
-      float ref_scale = ctx.aec_ref_volume * ctx.mic_attenuation;
-      if (ref_scale != 1.0f) {
-        for (size_t i = 0; i < ctx.out_frame_size; i++) {
-          ctx.spk_ref_buffer[i] = scale_sample(ctx.spk_ref_buffer[i], ref_scale);
-        }
-      }
     }
-    // Stereo mode: spk_ref_buffer already filled from deinterleave. Match mic_attenuation only.
-    if (ctx.use_stereo_aec_ref && ctx.mic_attenuation != 1.0f) {
-      for (size_t i = 0; i < ctx.out_frame_size; i++) {
-        ctx.spk_ref_buffer[i] = scale_sample(ctx.spk_ref_buffer[i], ctx.mic_attenuation);
-      }
-    }
+    // Stereo mode: spk_ref_buffer already filled from deinterleave. No extra scaling.
+    // TDM mode: spk_ref_buffer filled from TDM deinterleave. No extra scaling.
 
     this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.out_frame_size);
     ctx.output_buffer = ctx.aec_output;
