@@ -214,8 +214,8 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_AEC_REFERENCE_MODE, default="previous_frame"): cv.one_of(
             "previous_frame", "ring_buffer", lower=True,
         ),
-        # Ring buffer delay in ms (only used with aec_reference: ring_buffer)
-        cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=0, max=500),
+        # Ring buffer capacity in ms (only used with aec_reference: ring_buffer)
+        cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=32, max=500),
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
