@@ -585,6 +585,8 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 
 The integration exposes native Home Assistant services for intercom control. All services use **target device selectors**, so you pick devices from a dropdown in the automation editor (no need to know device IDs).
 
+> **Note:** The device picker shows all ESPHome devices. Select your intercom device under **Devices** tab (not Entities). Only devices with `intercom_api` configured will work. If you select a non-intercom device, the service logs an error and does nothing.
+
 ### Available Services
 
 | Service | Target | Fields | Description |
