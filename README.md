@@ -662,26 +662,6 @@ actions:
 mode: single
 ```
 
-#### Auto-decline after timeout
-
-If nobody answers within 30 seconds, decline the call automatically.
-
-```yaml
-alias: Intercom auto-decline after timeout
-triggers:
-  - trigger: event
-    event_type: esphome.intercom_call
-actions:
-  - delay: "00:00:30"
-  - condition: template
-    value_template: >
-      {{ states('sensor.' ~ trigger.event.data.caller | lower | replace(' ', '_') ~ '_intercom_state') == 'Outgoing' }}
-  - action: intercom_native.decline
-    target:
-      device_id: "{{ trigger.event.data.device_id }}"
-mode: single
-```
-
 #### Bridge two ESP devices from an automation
 
 Start a call between the kitchen and bedroom intercoms via an HA automation (e.g. triggered by a button or schedule).
