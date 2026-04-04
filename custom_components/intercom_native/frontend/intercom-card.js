@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "2.1.4";
+const INTERCOM_CARD_VERSION = "3.1.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -54,10 +54,19 @@ class IntercomCard extends HTMLElement {
 
     // Persistent error message (survives _render() DOM rebuild)
     this._errorMsg = "";
+
+    // Auto-answer
+    this._autoAnswer = false;
+    this._autoAnswering = false;  // Prevents re-entry during auto-answer
   }
 
   setConfig(config) {
     this.config = config;
+    // Load auto-answer preference from localStorage
+    const deviceId = config?.entity_id || config?.device_id;
+    if (deviceId) {
+      this._autoAnswer = localStorage.getItem(`intercom_auto_answer_${deviceId}`) === "true";
+    }
     this._render();
   }
 
@@ -116,6 +125,18 @@ class IntercomCard extends HTMLElement {
           this._cleanup();
         }
         this._errorMsg = "";
+        this._autoAnswering = false;
+      }
+
+      // Auto-answer: when incoming call detected and auto-answer enabled
+      if (espStateChanged && this._autoAnswer && !this._autoAnswering && !this._starting) {
+        const isIncoming = (newEspState === "ringing" || newEspState === "incoming")
+          || ((newEspState === "calling" || newEspState === "outgoing")
+              && this._getDestination() === "Home Assistant");
+        if (isIncoming) {
+          this._autoAnswering = true;
+          this._tryAutoAnswer();
+        }
       }
 
       if (needsRender) {
@@ -351,6 +372,12 @@ class IntercomCard extends HTMLElement {
 
         .stats { font-size: 0.75em; color: #666; margin-top: 8px; text-align: center; }
         .error { color: #f44336; font-size: 0.85em; text-align: center; margin-top: 8px; }
+        .auto-answer-row {
+          display: flex; align-items: center; justify-content: center;
+          gap: 8px; margin-top: 10px; font-size: 0.85em; color: var(--secondary-text-color);
+        }
+        .auto-answer-row input { cursor: pointer; }
+        .auto-answer-row label { cursor: pointer; user-select: none; }
         .version { font-size: 0.65em; color: #999; text-align: right; margin-top: 8px; }
       </style>
       <div class="card">
@@ -387,6 +414,12 @@ class IntercomCard extends HTMLElement {
           <span class="status-indicator ${statusClass}"></span>
           ${statusText}
         </div>
+        ${showCall ? `
+        <div class="auto-answer-row">
+          <input type="checkbox" id="auto-answer-cb" ${this._autoAnswer ? 'checked' : ''}>
+          <label for="auto-answer-cb">Auto Answer</label>
+        </div>
+        ` : ''}
         <div class="stats" id="stats">${isFullMode ? (destination === 'Home Assistant' ? 'Browser ↔ ESP' : 'ESP ↔ ESP') : 'Sent: 0 | Recv: 0'}</div>
         <div class="error" id="err">${this._errorMsg}</div>
         <div class="version">v${INTERCOM_CARD_VERSION}</div>
@@ -425,7 +458,9 @@ class IntercomCard extends HTMLElement {
     const declineBtn = this.shadowRoot.getElementById("decline-btn");
     const prevBtn = this.shadowRoot.getElementById("prev-btn");
     const nextBtn = this.shadowRoot.getElementById("next-btn");
+    const autoAnswerCb = this.shadowRoot.getElementById("auto-answer-cb");
 
+    if (autoAnswerCb) autoAnswerCb.onchange = () => this._toggleAutoAnswer();
     if (callBtn) callBtn.onclick = () => this._startCall();
     if (hangupBtn) hangupBtn.onclick = () => this._hangup();
     if (answerBtn) answerBtn.onclick = () => this._answer();
@@ -693,6 +728,48 @@ class IntercomCard extends HTMLElement {
     this._activeDeviceInfo = null;
     this._activeBridgeId = null;
     this._audioStreaming = false;
+  }
+
+  async _tryAutoAnswer() {
+    // Check if browser has persistent mic permission
+    try {
+      if (navigator.permissions?.query) {
+        const perm = await navigator.permissions.query({ name: "microphone" });
+        if (perm.state !== "granted") {
+          console.info("intercom: auto-answer skipped, mic permission not persistent");
+          this._autoAnswering = false;
+          return;
+        }
+      }
+      // permissions.query not available or permission granted: try answering
+      console.info("intercom: auto-answering call");
+      await this._answer();
+    } catch (e) {
+      console.warn("intercom: auto-answer failed", e);
+    } finally {
+      this._autoAnswering = false;
+    }
+  }
+
+  _toggleAutoAnswer() {
+    this._autoAnswer = !this._autoAnswer;
+    const deviceId = this.config?.entity_id || this.config?.device_id;
+    if (deviceId) {
+      localStorage.setItem(`intercom_auto_answer_${deviceId}`, this._autoAnswer.toString());
+    }
+    // If enabling, request mic permission now (user gesture from the toggle click)
+    if (this._autoAnswer && navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          // Got permission, release stream immediately
+          stream.getTracks().forEach(t => t.stop());
+          console.info("intercom: mic permission granted for auto-answer");
+        })
+        .catch(err => {
+          console.warn("intercom: mic permission denied, auto-answer may not work", err);
+        });
+    }
+    this._render();
   }
 
   async _getDeviceInfo() {

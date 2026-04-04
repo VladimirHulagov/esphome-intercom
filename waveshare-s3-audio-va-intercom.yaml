@@ -51,7 +51,10 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  core: !include packages/va_intercom.yaml
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/va_intercom.yaml
+    ref: main
 
 # =============================================================================
 # ESPHome Base
@@ -293,7 +296,7 @@ media_player:
 micro_wake_word:
   microphone: mic_main
   models:
-    - model: "wakewords/hey_trowyayoh.json"
+    - model: "${assets_base}wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
     - model: alexa

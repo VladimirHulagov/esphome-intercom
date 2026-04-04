@@ -38,7 +38,10 @@ substitutions:
 # Package: shared VA + Intercom state machine
 # =============================================================================
 packages:
-  core: !include packages/va_intercom.yaml
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/va_intercom.yaml
+    ref: main
 
 esphome:
   name: ${name}

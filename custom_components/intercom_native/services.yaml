@@ -1,0 +1,50 @@
+answer:
+  name: Answer Call
+  description: Answer an incoming intercom call on the selected device.
+  target:
+    device:
+      integration: esphome
+
+decline:
+  name: Decline Call
+  description: Decline an incoming intercom call on the selected device.
+  target:
+    device:
+      integration: esphome
+
+hangup:
+  name: Hangup
+  description: End the active intercom call on the selected device.
+  target:
+    device:
+      integration: esphome
+
+call:
+  name: Call
+  description: Start an intercom call to the selected device (ESP-to-ESP bridge via HA).
+  target:
+    device:
+      integration: esphome
+  fields:
+    source:
+      name: Source Device
+      description: The device that initiates the call. If omitted, calls from HA (browser P2P).
+      required: false
+      selector:
+        device:
+          integration: esphome
+
+forward:
+  name: Forward Call
+  description: Forward an active or ringing call to another device. Target is the caller device.
+  target:
+    device:
+      integration: esphome
+  fields:
+    forward_to:
+      name: Forward To
+      description: The device to forward the call to.
+      required: true
+      selector:
+        device:
+          integration: esphome

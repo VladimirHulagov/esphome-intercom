@@ -519,6 +519,181 @@ class BridgeSession:
             }
         )
 
+    async def forward_to(
+        self,
+        new_dest_device_id: str,
+        new_dest_host: str,
+        new_dest_name: str,
+    ) -> str:
+        """Forward call to a new destination (dest-leg replacement).
+
+        Keeps source leg alive. Tears down current dest, connects new dest.
+
+        Returns:
+            "connected" - New dest answered, audio flowing
+            "ringing" - New dest is ringing, waiting for answer
+            "error" - Forward failed, bridge stopped
+        """
+        async with self._stop_lock:
+            if not self._active or not self._source_client:
+                return "error"
+
+            old_dest_name = self.dest_name
+            bridge = self
+
+            _LOGGER.info(
+                "Forwarding call: %s -> %s (was %s)",
+                self.source_name, new_dest_name, old_dest_name,
+            )
+
+            # Fire forward event
+            self.hass.bus.async_fire("intercom_forward_state", {
+                "bridge_id": self.bridge_id,
+                "source_device_id": self.source_device_id,
+                "source_name": self.source_name,
+                "old_dest_name": old_dest_name,
+                "new_dest_name": new_dest_name,
+                "state": "forwarding",
+            })
+
+            # 1. Stop sender tasks
+            for task in [self._sender_s2d, self._sender_d2s]:
+                if task:
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=1.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
+                        pass
+            self._sender_s2d = None
+            self._sender_d2s = None
+
+            # 2. Clear audio queues
+            for q in [self._q_source_to_dest, self._q_dest_to_source]:
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
+            # 3. Disconnect old dest only
+            if self._dest_client:
+                await self._dest_client.stop_stream()
+                await self._dest_client.disconnect()
+                self._dest_client = None
+
+            # 4. Update dest info (bridge_id stays immutable for lifetime)
+            self.dest_device_id = new_dest_device_id
+            self.dest_host = new_dest_host
+            self.dest_name = new_dest_name
+
+            # 5. Create new dest client with callbacks
+            def on_new_dest_audio(data: bytes) -> None:
+                if bridge._active:
+                    bridge._push_audio(bridge._q_dest_to_source, data)
+
+            def on_new_dest_disconnected() -> None:
+                _LOGGER.debug("Bridge new dest disconnected: %s", bridge.bridge_id)
+                asyncio.create_task(bridge.stop())
+                bridge._fire_state_event("disconnected")
+
+            def on_new_dest_answered() -> None:
+                _LOGGER.info("Bridge new dest answered: %s", bridge.bridge_id)
+                if bridge._active and not bridge._sender_s2d:
+                    bridge._start_sender_tasks()
+                bridge.hass.bus.async_fire("intercom_forward_state", {
+                    "bridge_id": bridge.bridge_id,
+                    "source_name": bridge.source_name,
+                    "new_dest_name": bridge.dest_name,
+                    "state": "connected",
+                })
+
+            def on_new_dest_stop() -> None:
+                _LOGGER.info("Bridge new dest sent STOP: %s", bridge.bridge_id)
+                asyncio.create_task(bridge.stop())
+                bridge._fire_state_event("disconnected")
+
+            def on_new_dest_ringing() -> None:
+                _LOGGER.info("Bridge new dest ringing: %s", bridge.bridge_id)
+                bridge.hass.bus.async_fire("intercom_forward_state", {
+                    "bridge_id": bridge.bridge_id,
+                    "source_name": bridge.source_name,
+                    "new_dest_name": bridge.dest_name,
+                    "state": "ringing",
+                })
+
+            def on_new_dest_error(code: int) -> None:
+                _LOGGER.info("Bridge new dest ERROR (code=%d): %s", code, bridge.bridge_id)
+                asyncio.create_task(bridge.stop())
+
+            self._dest_client = IntercomTcpClient(
+                host=new_dest_host,
+                port=INTERCOM_PORT,
+                on_audio=on_new_dest_audio,
+                on_disconnected=on_new_dest_disconnected,
+                on_ringing=on_new_dest_ringing,
+                on_answered=on_new_dest_answered,
+                on_stop_received=on_new_dest_stop,
+                on_error_received=on_new_dest_error,
+            )
+
+            # 6. Connect and start stream to new dest
+            if not await self._dest_client.connect():
+                _LOGGER.error("Forward failed: cannot connect to %s", new_dest_host)
+                self.hass.bus.async_fire("intercom_forward_state", {
+                    "bridge_id": self.bridge_id,
+                    "source_name": self.source_name,
+                    "new_dest_name": new_dest_name,
+                    "state": "failed",
+                })
+                # Cleanup without calling stop() (would deadlock on _stop_lock)
+                self._active = False
+                if self._source_client:
+                    await self._source_client.stop_stream()
+                    await self._source_client.disconnect()
+                    self._source_client = None
+                _bridges.pop(self.bridge_id, None)
+                self._fire_state_event("idle")
+                return "error"
+
+            result = await self._dest_client.start_stream(
+                caller_name=self.source_name
+            )
+
+            if result == "error":
+                _LOGGER.error("Forward failed: stream start error for %s", new_dest_name)
+                self.hass.bus.async_fire("intercom_forward_state", {
+                    "bridge_id": self.bridge_id,
+                    "source_name": self.source_name,
+                    "new_dest_name": new_dest_name,
+                    "state": "failed",
+                })
+                # Cleanup without calling stop() (would deadlock on _stop_lock)
+                self._active = False
+                if self._dest_client:
+                    await self._dest_client.disconnect()
+                    self._dest_client = None
+                if self._source_client:
+                    await self._source_client.stop_stream()
+                    await self._source_client.disconnect()
+                    self._source_client = None
+                _bridges.pop(self.bridge_id, None)
+                self._fire_state_event("idle")
+                return "error"
+
+            if result == "ringing":
+                _LOGGER.info("Forward: new dest %s ringing", new_dest_name)
+                return "ringing"
+
+            # Connected directly, start senders
+            self._start_sender_tasks()
+            self.hass.bus.async_fire("intercom_forward_state", {
+                "bridge_id": self.bridge_id,
+                "source_name": self.source_name,
+                "new_dest_name": new_dest_name,
+                "state": "connected",
+            })
+            return "connected"
+
     async def stop(self) -> None:
         """Stop the bridge session."""
         async with self._stop_lock:
@@ -625,6 +800,14 @@ async def websocket_start(
     except Exception as err:
         _LOGGER.exception("Start exception: %s", err)
         connection.send_error(msg_id, "exception", str(err))
+
+
+def _find_bridge_by_source(source_device_id: str) -> "BridgeSession | None":
+    """Find an active bridge where the given device is the source (caller)."""
+    for bridge in _bridges.values():
+        if bridge.source_device_id == source_device_id and bridge._active:
+            return bridge
+    return None
 
 
 async def _stop_device_sessions(device_id: str) -> bool:

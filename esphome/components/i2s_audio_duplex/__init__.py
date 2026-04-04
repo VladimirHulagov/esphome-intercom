@@ -59,6 +59,8 @@ CONF_TASK_CORE = "task_core"
 CONF_TASK_STACK_SIZE = "task_stack_size"
 CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
+CONF_AEC_REFERENCE_MODE = "aec_reference"
+CONF_AEC_REF_BUFFER_MS = "aec_reference_buffer_ms"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
@@ -206,6 +208,14 @@ CONFIG_SCHEMA = cv.All(
         # Use PSRAM for non-DMA audio buffers (saves ~15KB internal RAM).
         # Requires PSRAM. DMA buffers (I2S RX/TX) always use internal RAM.
         cv.Optional(CONF_BUFFERS_IN_PSRAM, default=False): cv.boolean,
+        # AEC reference mode for no-codec setups (ignored if stereo/TDM ref is configured):
+        #   previous_frame: use the TX frame from the previous cycle (default, ~32ms delay)
+        #   ring_buffer: TYPE2-style ring buffer with configurable delay (better alignment)
+        cv.Optional(CONF_AEC_REFERENCE_MODE, default="previous_frame"): cv.one_of(
+            "previous_frame", "ring_buffer", lower=True,
+        ),
+        # Ring buffer capacity in ms (only used with aec_reference: ring_buffer)
+        cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=32, max=500),
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
@@ -333,6 +343,10 @@ async def to_code(config):
     cg.add(var.set_task_core(config[CONF_TASK_CORE]))
     cg.add(var.set_task_stack_size(config[CONF_TASK_STACK_SIZE]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
+
+    # AEC reference mode (only relevant for no-codec setups)
+    cg.add(var.set_aec_reference_mode(config[CONF_AEC_REFERENCE_MODE] == "ring_buffer"))
+    cg.add(var.set_aec_ref_buffer_ms(config[CONF_AEC_REF_BUFFER_MS]))
 
     # Link AEC if configured
     if CONF_AEC_ID in config:

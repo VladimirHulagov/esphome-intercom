@@ -31,6 +31,7 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
   - [Full Mode](#full-mode-esp--esp)
 - [Configuration Reference](#configuration-reference)
 - [Entities and Controls](#entities-and-controls)
+- [HA Services](#ha-services)
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
 - [i2s_audio_duplex](#i2s_audio_duplex)
@@ -75,7 +76,9 @@ graph TD
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Ready-to-flash YAML configs** - Optimized configurations for real, tested hardware that combine Voice Assistant, Micro Wake Word, and Intercom running simultaneously, creating the most complete hub possible for a full Voice Assistant experience
-- **Auto Answer** - Configurable automatic call acceptance
+- **Auto Answer** - Configurable automatic call acceptance (ESP-side switch + browser card checkbox)
+- **HA Services** - Native `intercom_native.answer`, `decline`, `hangup`, `call`, `forward` services for automation control
+- **Call Forwarding** - PBX-like call routing: forward active calls to other devices via automation
 - **Ringtone on incoming calls** - Devices play a looping ringtone sound while ringing
 - **Volume Control** - Adjustable speaker volume and microphone gain
 - **Contact Management** - Select call destination from discovered devices
@@ -422,15 +425,16 @@ graph LR
 2. Card sends `intercom_native/start` to HA
 3. HA opens TCP connection to ESP:6054
 4. HA sends START message (caller="Home Assistant")
-5. ESP enters Ringing state (or auto-answers)
-6. Bidirectional audio streaming begins
+5. ESP enters Ringing state (or auto-answers if enabled)
+6. User can answer on the ESP via GPIO button, LVGL touchscreen button, or HA automation
+7. Bidirectional audio streaming begins
 
 **Call Flow (ESP → Browser):**
-1. User presses "Call" on ESP (with destination set to "Home Assistant")
+1. User presses "Call" on ESP via GPIO button or LVGL touchscreen (with destination set to "Home Assistant")
 2. ESP sends RING message to HA
 3. HA notifies all connected browser cards
 4. Card shows incoming call with Answer/Decline buttons
-5. User clicks "Answer" in browser
+5. User clicks "Answer" in browser (or auto-answer if enabled on the card)
 6. Bidirectional audio streaming begins
 
 **Use Simple mode when:**
@@ -452,14 +456,14 @@ graph TB
 ```
 
 **Call Flow (ESP #1 calls ESP #2):**
-1. User selects "Bedroom" on ESP #1 display/button
-2. User presses Call button → ESP #1 enters "Outgoing" state
+1. User selects "Bedroom" on ESP #1 via display or button
+2. User presses Call (GPIO button or LVGL touchscreen) → ESP #1 enters "Outgoing" state
 3. HA detects state change via ESPHome API
 4. HA sends START to ESP #2 (caller="Kitchen")
 5. ESP #2 enters "Ringing" state
-6. User answers on ESP #2 (or auto-answer)
+6. User answers on ESP #2 (GPIO button, LVGL touch, or auto-answer if enabled)
 7. HA bridges audio: ESP #1 ↔ HA ↔ ESP #2
-8. Either device can hangup → STOP propagates to both
+8. Either device can hangup (button, touch, or HA service) → STOP propagates to both
 
 **Full mode features:**
 - Contact list auto-discovery from HA
@@ -575,6 +579,178 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `switch` | `auto_answer`, `aec` |
 | `number` | `speaker_volume` (0-100%), `mic_gain` (-20 to +20 dB) |
 | `button` | Call, Next Contact, Prev Contact, Decline (template) |
+
+---
+
+## HA Services
+
+The integration exposes native Home Assistant services for intercom control. All services use **target device selectors**, so you pick devices from a dropdown in the automation editor (no need to know device IDs).
+
+> **Note:** The device picker shows all ESPHome devices. Select your intercom device under **Devices** tab (not Entities). Only devices with `intercom_api` configured will work. If you select a non-intercom device, the service logs an error and does nothing.
+
+### Available Services
+
+| Service | Target | Fields | Description |
+|---------|--------|--------|-------------|
+| `intercom_native.answer` | Device | - | Answer an incoming call |
+| `intercom_native.decline` | Device | - | Decline an incoming call |
+| `intercom_native.hangup` | Device | - | End an active call |
+| `intercom_native.call` | Device (dest) | `source` (optional device) | Start a call. With `source`: ESP-to-ESP bridge. Without: HA-to-ESP P2P |
+| `intercom_native.forward` | Device (source/caller) | `forward_to` (device) | Forward an active or ringing call to another device |
+
+### ESP-to-ESP vs Browser-to-ESP
+
+| Capability | ESP-to-ESP (Bridge) | Browser-to-ESP (P2P) |
+|---|---|---|
+| `call` | Fully automatable | Opens TCP but no browser mic |
+| `answer` | Fully automatable | Works if mic permission is persistent |
+| `decline` / `hangup` | Fully automatable | Fully automatable |
+| `forward` | Fully automatable | Fully automatable |
+
+For browser P2P calls, the intercom card must be open and the browser must have granted persistent microphone permission (Chrome "Allow", not "Allow this time").
+
+### Auto Answer (Card)
+
+The intercom card has an **Auto Answer** checkbox (visible in idle state only):
+
+1. Enable the checkbox (this requests mic permission via user gesture)
+2. When an incoming call arrives and the checkbox is on, the card auto-answers if the browser has persistent mic permission
+3. If permission is not persistent, the card falls back to showing Answer/Decline buttons
+
+The preference is saved per device in localStorage.
+
+### Automation Examples
+
+#### Doorbell routing based on presence
+
+When the doorbell rings, forward to the indoor panel if someone is home, or send a push notification if everyone is away.
+
+```yaml
+alias: Doorbell call routing
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+actions:
+  - choose:
+      - conditions:
+          - condition: state
+            entity_id: person.daniele
+            state: "home"
+        sequence:
+          - action: intercom_native.forward
+            target:
+              device_id: "{{ trigger.event.data.device_id }}"
+            data:
+              forward_to: "<indoor_panel_device_id>"
+      - conditions:
+          - condition: state
+            entity_id: person.daniele
+            state: "not_home"
+        sequence:
+          - action: notify.mobile_app_phone
+            data:
+              title: "Doorbell"
+              message: "{{ trigger.event.data.caller }} is calling"
+              data:
+                clickAction: /lovelace/intercom
+                importance: high
+                channel: doorbell
+                actions:
+                  - action: URI
+                    title: "Open Intercom"
+                    uri: /lovelace/intercom
+mode: single
+```
+
+#### Bridge two ESP devices from an automation
+
+Start a call between the kitchen and bedroom intercoms via an HA automation (e.g. triggered by a button or schedule).
+
+```yaml
+alias: Call kitchen from bedroom
+triggers:
+  - trigger: state
+    entity_id: input_button.call_kitchen
+actions:
+  - action: intercom_native.call
+    target:
+      device_id: "<kitchen_device_id>"
+    data:
+      source: "<bedroom_device_id>"
+mode: single
+```
+
+#### Doorbell with actionable notification and decline
+
+Send a push notification with Answer and Decline actions. If the user taps Decline, the call is ended.
+
+```yaml
+alias: Doorbell notification with actions
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+actions:
+  - action: notify.mobile_app_phone
+    data:
+      title: "Doorbell"
+      message: "{{ trigger.event.data.caller }} is calling"
+      data:
+        tag: intercom
+        channel: doorbell
+        importance: high
+        clickAction: /lovelace/intercom
+        actions:
+          - action: URI
+            title: "Open Intercom"
+            uri: /lovelace/intercom
+          - action: DECLINE_INTERCOM
+            title: "Decline"
+  - wait_for_trigger:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: DECLINE_INTERCOM
+    timeout: "00:00:30"
+  - condition: template
+    value_template: "{{ wait.trigger is not none }}"
+  - action: intercom_native.decline
+    target:
+      device_id: "{{ trigger.event.data.device_id }}"
+  - action: notify.mobile_app_phone
+    data:
+      message: clear_notification
+      data:
+        tag: intercom
+mode: single
+```
+
+#### Night mode: auto-decline all calls
+
+During night hours, automatically decline all incoming calls.
+
+```yaml
+alias: Night mode auto-decline
+triggers:
+  - trigger: event
+    event_type: esphome.intercom_call
+conditions:
+  - condition: time
+    after: "23:00:00"
+    before: "07:00:00"
+actions:
+  - action: intercom_native.decline
+    target:
+      device_id: "{{ trigger.event.data.device_id }}"
+mode: single
+```
+
+### Events
+
+| Event | Payload | When |
+|-------|---------|------|
+| `esphome.intercom_call` | `caller`, `device_id` | ESP calls Home Assistant |
+| `intercom_bridge_state` | `bridge_id`, `source_device_id`, `dest_device_id`, `state` | Bridge state changes |
+| `intercom_forward_state` | `bridge_id`, `source_name`, `new_dest_name`, `state` | Call forwarded (forwarding/ringing/connected/failed) |
 
 ---
 

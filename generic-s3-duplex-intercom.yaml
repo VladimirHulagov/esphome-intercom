@@ -29,7 +29,10 @@ substitutions:
 # Package: shared intercom state machine
 # =============================================================================
 packages:
-  core: !include packages/intercom_only.yaml
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/intercom_only.yaml
+    ref: main
 
 esphome:
   name: ${name}

@@ -149,10 +149,6 @@ class I2SAudioDuplex : public Component {
   void set_speaker_volume(float volume) { this->speaker_volume_.store(volume, std::memory_order_relaxed); }
   float get_speaker_volume() const { return this->speaker_volume_.load(std::memory_order_relaxed); }
 
-  // AEC reference volume - for codecs with hardware volume (ES8311)
-  void set_aec_reference_volume(float volume) { this->aec_ref_volume_.store(volume, std::memory_order_relaxed); }
-  float get_aec_reference_volume() const { return this->aec_ref_volume_.load(std::memory_order_relaxed); }
-
   // ES8311 Digital Feedback mode: RX is stereo with L=DAC(ref), R=ADC(mic)
   void set_use_stereo_aec_reference(bool use) { this->use_stereo_aec_ref_ = use; }
   bool get_use_stereo_aec_reference() const { return this->use_stereo_aec_ref_; }
@@ -209,6 +205,8 @@ class I2SAudioDuplex : public Component {
   void set_task_core(int8_t core) { this->task_core_ = core; }
   void set_task_stack_size(uint32_t size) { this->task_stack_size_ = size; }
   void set_buffers_in_psram(bool psram) { this->buffers_in_psram_ = psram; }
+  void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
+  void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
 
  protected:
   bool init_i2s_duplex_();
@@ -263,7 +261,6 @@ class I2SAudioDuplex : public Component {
     float mic_gain{1.0f};
     float mic_attenuation{1.0f};
     float speaker_volume{1.0f};
-    float aec_ref_volume{1.0f};
     bool aec_enabled{false};
     bool speaker_running{false};
     bool speaker_paused{false};
@@ -335,11 +332,15 @@ class I2SAudioDuplex : public Component {
   int16_t *direct_aec_ref_{nullptr};     // AEC reference from previous TX frame (bus rate, mono mode)
   bool direct_aec_ref_valid_{false};     // True after first TX frame has been saved
 
+  // AEC ring buffer reference (TYPE2-style, for no-codec setups)
+  bool aec_use_ring_buffer_{false};      // Config: use ring buffer instead of previous frame
+  uint32_t aec_ref_buffer_ms_{80};       // Config: ring buffer size in ms
+  std::unique_ptr<RingBuffer> aec_ref_ring_buffer_;  // Ring buffer for AEC ref (bus rate, post-volume)
+
   // Volume control — atomic: written from main loop, read from audio task via snapshot.
   std::atomic<float> mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
-  std::atomic<float> aec_ref_volume_{1.0f};   // AEC reference scaling (set to codec's output volume for proper echo matching)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
 
