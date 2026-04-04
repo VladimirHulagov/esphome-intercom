@@ -65,6 +65,12 @@ substitutions:
   wake_word_probability_cutoff: "0.60"
   wake_word_sliding_window_size: "6"
 
+  # IC layout proportions (relative to display_height)
+  ic_btn_size: "25%"
+  ic_btn_offset: "2%"
+  ic_btn_below_center: "17%"
+  ic_peer_width: "58%"
+
   voice_assist_idle_phase_id: "1"
   voice_assist_listening_phase_id: "2"
   voice_assist_thinking_phase_id: "3"
@@ -800,7 +806,7 @@ script:
 
           // y_metrics: proportional UI grid (same formula as original)
           id(y_metrics).clear();
-          id(y_metrics).reserve(22);
+          id(y_metrics).reserve(14);
           id(y_metrics).push_back(0);            // [0] top
           id(y_metrics).push_back(h / 2);        // [1] center
           id(y_metrics).push_back(h);             // [2] height
@@ -815,18 +821,6 @@ script:
           id(y_metrics).push_back(h - h / 16);    // [11] bottom status
           id(y_metrics).push_back(h - 2);          // [12] page counter
           id(y_metrics).push_back(h * 3 / 20);    // [13] timer box height
-
-          // IC page positions (scalable from display dimensions)
-          int ic_pad = h / 24;
-          int ic_gap = h / 16;
-          id(y_metrics).push_back(ic_pad + ic_gap);          // [14] ic_title
-          id(y_metrics).push_back(ic_pad + ic_gap * 2);      // [15] ic_subtitle
-          id(y_metrics).push_back(ic_pad + ic_gap * 3);      // [16] ic_state
-          id(y_metrics).push_back(ic_pad + ic_gap * 4);      // [17] ic_info (used by ringing/call pages)
-          id(y_metrics).push_back(h / 2);                    // [18] ic_peer (center)
-          id(y_metrics).push_back(h - ic_pad - ic_gap * 3);  // [19] ic_contacts
-          id(y_metrics).push_back(h - ic_pad - ic_gap * 2);  // [20] ic_wifi
-          id(y_metrics).push_back(h - ic_pad - ic_gap);      // [21] ic_ha
 
           // text_row_y + chord_widths_cache: VA text rows for circular wrapping
           id(text_row_y).clear();
@@ -870,48 +864,7 @@ script:
             lv_obj_set_y(obj, y_center - fh / 2);
           };
 
-          // --- IC idle page (7 labels + 2 arrows + 2 floating buttons) ---
-          // Children: [0]title [1]intercom [2]state [3]peer [4]contacts [5]wifi [6]HA [7]arrow_up [8]arrow_down
-          lv_obj_t* p = id(ic_idle_page)->obj;
-          set_center_y(lv_obj_get_child(p, 0), ym[14]); // title
-          set_center_y(lv_obj_get_child(p, 1), ym[15]); // "Intercom:"
-          set_center_y(lv_obj_get_child(p, 2), ym[16]); // "IDLE"
-          {
-            lv_obj_t* peer = lv_obj_get_child(p, 3);
-            int r = ym[2] / 2;
-            int peer_w = r * 2 - 100;
-            if (peer_w < 80) peer_w = 80;
-            lv_obj_set_width(peer, peer_w);
-            lv_obj_align(peer, LV_ALIGN_CENTER, 0, 0);
-          }
-          set_center_y(lv_obj_get_child(p, 4), ym[19]); // contacts
-          set_center_y(lv_obj_get_child(p, 5), ym[20]); // wifi
-          set_center_y(lv_obj_get_child(p, 6), ym[21]); // HA
-
-          // --- IC ringing in/out/call (6 labels, peer centered as block) ---
-          {
-            int r = ym[2] / 2;
-            int chord = (int)(2.0f * sqrtf((float)(r * r)));
-            int peer_w = chord - 100;
-            if (peer_w < 80) peer_w = 80;
-
-            lv_obj_t* ic_pages[] = {
-              id(ic_ringing_in_page)->obj,
-              id(ic_ringing_out_page)->obj,
-              id(ic_in_call_page)->obj
-            };
-            for (auto *pg : ic_pages) {
-              set_center_y(lv_obj_get_child(pg, 0), ym[14]); // title
-              set_center_y(lv_obj_get_child(pg, 1), ym[15]); // subtitle
-              set_center_y(lv_obj_get_child(pg, 2), ym[16]); // state
-              set_center_y(lv_obj_get_child(pg, 3), ym[17]); // info
-              // peer: width + center align
-              lv_obj_t* peer = lv_obj_get_child(pg, 4);
-              lv_obj_set_width(peer, peer_w);
-              lv_obj_align(peer, LV_ALIGN_CENTER, 0, 0);
-              set_center_y(lv_obj_get_child(pg, 5), ym[19]); // hint (unused, hidden)
-            }
-          }
+          // --- IC pages: percentages + align handle positioning, no reposition needed ---
 
           // --- Thinking page: chord-width labels (10 children after image) ---
           lv_obj_t* think[] = {
@@ -1176,21 +1129,13 @@ script:
           id: ic_idle_peer_label
           text: !lambda 'return id(peer_name);'
       - lvgl.label.update:
-          id: ic_idle_contacts_label
+          id: ic_idle_status_label
           text: !lambda |-
             auto csv = id(intercom).get_contacts_csv();
             int count = csv.empty() ? 0 : std::count(csv.begin(), csv.end(), ',') + 1;
-            char buf[32];
-            snprintf(buf, sizeof(buf), "Contacts: %d", count);
+            char buf[48];
+            snprintf(buf, sizeof(buf), "IDLE  \U000F06CB %d", count);
             return std::string(buf);
-      - lvgl.label.update:
-          id: ic_idle_wifi_label
-          text:
-            format: "WiFi: %.0f%%"
-            args: ['id(wifi_pct).state']
-      - lvgl.label.update:
-          id: ic_idle_ha_label
-          text: !lambda 'return id(node_status).state ? std::string("HA: OK") : std::string("HA: --");'
       - lambda: |-
           lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, -2);
           lv_obj_align_to(id(ic_idle_arrow_down), id(ic_idle_peer_label), LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
@@ -1229,6 +1174,7 @@ script:
                   else if (wifi < 55) ret += "\U000F08BC";
                   else if (wifi < 80) ret += "\U000F08BD";
                   else ret += "\U000F08BE";
+                  ret += api::global_api_server->is_connected() ? "\U000F02DC" : "\U000F1A46";
                   return ret;
           else:
             - lvgl.label.update:
@@ -2089,6 +2035,8 @@ font:
           - "\U000F08BC" # wifi-strength-1 (<55%)
           - "\U000F08BD" # wifi-strength-2 (<80%)
           - "\U000F08BE" # wifi-strength-3 (>=80%)
+          - "\U000F02DC" # home (HA connected)
+          - "\U000F1A46" # home-off (HA disconnected)
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: ic_icons
     size: 42
@@ -2258,15 +2206,15 @@ lvgl:
       # Clock + battery/wifi status bar (always visible)
       - label:
           id: top_clock_label
-          align: BOTTOM_MID
-          y: -2
+          align: TOP_MID
+          y: 90%
           text: ""
           text_color: 0xFFFFFF
           text_font: font_clock
       - label:
           id: top_battery_label
-          align: BOTTOM_MID
-          y: -22
+          align: TOP_MID
+          y: 82%
           text: ""
           text_color: 0xFFFFFF
           text_font: font_clock
@@ -2649,66 +2597,33 @@ lvgl:
     - id: ic_idle_page
       bg_color: 0x0000FF
       widgets:
-        # Labels: positioned by reposition_widgets
-        # [0]title [1]intercom [2]state [3]dest [4]peer [5]contacts [6]wifi [7]HA
         - label:
             align: TOP_MID
-            y: 0
+            y: 8%
             text: "${friendly_name}"
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
+        # State + contacts count on one line: "IDLE 📖 3"
         - label:
+            id: ic_idle_status_label
             align: TOP_MID
-            y: 0
-            text: "Intercom:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "IDLE"
+            y: 17%
+            text: "IDLE  \U000F06CB 0"
             text_color: 0x00FF00
-            text_font: font_info
+            text_font: font_state
             text_align: CENTER
+        # Peer name: centered, WRAP for long names
         - label:
             id: ic_idle_peer_label
-            align: TOP_MID
-            y: 0
+            align: CENTER
             text: "Home Assistant"
             text_color: 0xFFFFFF
             text_font: font_title
-            width: 160
+            width: ${ic_peer_width}
             text_align: CENTER
             long_mode: WRAP
-        - label:
-            id: ic_idle_contacts_label
-            align: TOP_MID
-            y: 0
-            text: "Contacts: 0"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            width: 200
-            text_align: CENTER
-            long_mode: DOT
-        - label:
-            id: ic_idle_wifi_label
-            align: TOP_MID
-            y: 0
-            text: "WiFi: --%"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            id: ic_idle_ha_label
-            align: TOP_MID
-            y: 0
-            text: "HA: --"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        # Swipe hint arrows (re-anchored by update_ic_idle_labels)
+        # Swipe hint arrows (anchored to peer label)
         - label:
             id: ic_idle_arrow_up
             floating: true
@@ -2723,13 +2638,13 @@ lvgl:
             text_color: 0x8080FF
             text_font: font_debug
             text_align: CENTER
-        # Floating buttons: call, hangup, prev, next
+        # Floating call/hangup buttons
         - button:
             floating: true
             align: LEFT_MID
-            x: 4
-            width: 60
-            height: 60
+            x: ${ic_btn_offset}
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             widgets:
@@ -2743,9 +2658,9 @@ lvgl:
         - button:
             floating: true
             align: RIGHT_MID
-            x: -4
-            width: 60
-            height: 60
+            x: -5
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             clickable: false
@@ -2762,60 +2677,36 @@ lvgl:
     - id: ic_ringing_in_page
       bg_color: 0xFF0000
       widgets:
-        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
-            y: 0
+            y: 8%
             text: "${friendly_name}"
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
         - label:
             align: TOP_MID
-            y: 0
-            text: "Status:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
+            y: 17%
             text: "RINGING"
             text_color: 0xFFFF00
-            text_font: font_info
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "Incoming call from:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
+            text_font: font_state
             text_align: CENTER
         - label:
             id: ic_ringing_in_peer_label
-            align: TOP_MID
-            y: 0
+            align: CENTER
             text: ""
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
             long_mode: WRAP
-            width: 160
-        - label:
-            align: TOP_MID
-            y: 0
-            text: ""
-            text_color: 0xFFFF00
-            text_font: font_debug
-            text_align: CENTER
-        # Answer (green) and Decline (red) below peer name
+            width: ${ic_peer_width}
+        # Answer (green left) / Decline (red right) at sides like idle
         - button:
             floating: true
             align: LEFT_MID
-            x: 20
-            y: 40
-            width: 60
-            height: 60
+            x: ${ic_btn_offset}
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             widgets:
@@ -2829,17 +2720,16 @@ lvgl:
         - button:
             floating: true
             align: RIGHT_MID
-            x: -20
-            y: 40
-            width: 60
-            height: 60
+            x: -5
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             widgets:
               - label:
                   text: "\U000F03F5"
                   align: CENTER
-                  text_color: 0xFF0000
+                  text_color: 0xFFFFFF
                   text_font: ic_icons
             on_short_click:
               - button.press: decline_button
@@ -2850,59 +2740,36 @@ lvgl:
     - id: ic_ringing_out_page
       bg_color: 0xFF9900
       widgets:
-        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
-            y: 0
+            y: 8%
             text: "${friendly_name}"
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
         - label:
             align: TOP_MID
-            y: 0
-            text: "Status:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
+            y: 17%
             text: "CALLING"
             text_color: 0x000000
-            text_font: font_info
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "Calling:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
+            text_font: font_state
             text_align: CENTER
         - label:
             id: ic_ringing_out_peer_label
-            align: TOP_MID
-            y: 0
+            align: CENTER
             text: ""
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
             long_mode: WRAP
-            width: 160
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "Waiting for answer..."
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        # Hangup below peer name, centered
+            width: ${ic_peer_width}
+        # Hangup below center
         - button:
             floating: true
             align: CENTER
-            y: 50
-            width: 60
-            height: 60
+            y: ${ic_btn_below_center}
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             widgets:
@@ -2920,59 +2787,36 @@ lvgl:
     - id: ic_in_call_page
       bg_color: 0x008800
       widgets:
-        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
-            y: 0
+            y: 8%
             text: "${friendly_name}"
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
         - label:
             align: TOP_MID
-            y: 0
-            text: "Status:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
+            y: 17%
             text: "IN CALL"
             text_color: 0x0000FF
-            text_font: font_info
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "Connected to:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
+            text_font: font_state
             text_align: CENTER
         - label:
             id: ic_in_call_peer_label
-            align: TOP_MID
-            y: 0
+            align: CENTER
             text: ""
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
             long_mode: WRAP
-            width: 160
-        - label:
-            align: TOP_MID
-            y: 0
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_debug
-            text_align: CENTER
-        # Hangup below peer name, centered
+            width: ${ic_peer_width}
+        # Hangup below center
         - button:
             floating: true
             align: CENTER
-            y: 50
-            width: 60
-            height: 60
+            y: ${ic_btn_below_center}
+            width: ${ic_btn_size}
+            height: ${ic_btn_size}
             bg_opa: TRANSP
             shadow_opa: TRANSP
             widgets:
