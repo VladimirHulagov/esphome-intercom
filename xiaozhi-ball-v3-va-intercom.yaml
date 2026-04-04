@@ -232,10 +232,14 @@ time:
 # I2C BUS (ES8311 codec control)
 # =============================================================================
 i2c:
-  id: i2c_bus
-  sda: GPIO15
-  scl: GPIO14
-  scan: false
+  - id: i2c_bus
+    sda: GPIO15
+    scl: GPIO14
+    scan: false
+  - id: touchscreen_i2c_bus
+    sda: GPIO11
+    scl: GPIO7
+    scan: false
 
 # =============================================================================
 # AUDIO CODEC (ES8311)
@@ -243,6 +247,7 @@ i2c:
 audio_dac:
   - platform: es8311
     id: es8311_dac
+    i2c_id: i2c_bus
     bits_per_sample: 16bit
     sample_rate: 48000
     mic_gain: 24DB
@@ -795,7 +800,7 @@ script:
 
           // y_metrics: proportional UI grid (same formula as original)
           id(y_metrics).clear();
-          id(y_metrics).reserve(14);
+          id(y_metrics).reserve(22);
           id(y_metrics).push_back(0);            // [0] top
           id(y_metrics).push_back(h / 2);        // [1] center
           id(y_metrics).push_back(h);             // [2] height
@@ -810,6 +815,18 @@ script:
           id(y_metrics).push_back(h - h / 16);    // [11] bottom status
           id(y_metrics).push_back(h - 2);          // [12] page counter
           id(y_metrics).push_back(h * 3 / 20);    // [13] timer box height
+
+          // IC page positions (scalable from display dimensions)
+          int ic_pad = h / 24;
+          int ic_gap = h / 16;
+          id(y_metrics).push_back(ic_pad + ic_gap);          // [14] ic_title
+          id(y_metrics).push_back(ic_pad + ic_gap * 2);      // [15] ic_subtitle
+          id(y_metrics).push_back(ic_pad + ic_gap * 3);      // [16] ic_state
+          id(y_metrics).push_back(ic_pad + ic_gap * 4);      // [17] ic_info (used by ringing/call pages)
+          id(y_metrics).push_back(h / 2);                    // [18] ic_peer (center)
+          id(y_metrics).push_back(h - ic_pad - ic_gap * 3);  // [19] ic_contacts
+          id(y_metrics).push_back(h - ic_pad - ic_gap * 2);  // [20] ic_wifi
+          id(y_metrics).push_back(h - ic_pad - ic_gap);      // [21] ic_ha
 
           // text_row_y + chord_widths_cache: VA text rows for circular wrapping
           id(text_row_y).clear();
@@ -853,43 +870,48 @@ script:
             lv_obj_set_y(obj, y_center - fh / 2);
           };
 
-          // --- IC idle page (8 children in YAML order) ---
+          // --- IC idle page (7 labels + 2 arrows + 2 floating buttons) ---
+          // Children: [0]title [1]intercom [2]state [3]peer [4]contacts [5]wifi [6]HA [7]arrow_up [8]arrow_down
           lv_obj_t* p = id(ic_idle_page)->obj;
-          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
-          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Intercom:"
-          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "IDLE"
-          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Destination:"
-          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer name
-          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // contacts
-          set_center_y(lv_obj_get_child(p, 6), ym[10]);  // wifi
-          set_center_y(lv_obj_get_child(p, 7), ym[11]);  // HA
+          set_center_y(lv_obj_get_child(p, 0), ym[14]); // title
+          set_center_y(lv_obj_get_child(p, 1), ym[15]); // "Intercom:"
+          set_center_y(lv_obj_get_child(p, 2), ym[16]); // "IDLE"
+          {
+            lv_obj_t* peer = lv_obj_get_child(p, 3);
+            int r = ym[2] / 2;
+            int peer_w = r * 2 - 100;
+            if (peer_w < 80) peer_w = 80;
+            lv_obj_set_width(peer, peer_w);
+            lv_obj_align(peer, LV_ALIGN_CENTER, 0, 0);
+          }
+          set_center_y(lv_obj_get_child(p, 4), ym[19]); // contacts
+          set_center_y(lv_obj_get_child(p, 5), ym[20]); // wifi
+          set_center_y(lv_obj_get_child(p, 6), ym[21]); // HA
 
-          // --- IC ringing in page (6 children) ---
-          p = id(ic_ringing_in_page)->obj;
-          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
-          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
-          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "RINGING"
-          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Incoming call from:"
-          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+          // --- IC ringing in/out/call (6 labels, peer centered as block) ---
+          {
+            int r = ym[2] / 2;
+            int chord = (int)(2.0f * sqrtf((float)(r * r)));
+            int peer_w = chord - 100;
+            if (peer_w < 80) peer_w = 80;
 
-          // --- IC ringing out page (6 children) ---
-          p = id(ic_ringing_out_page)->obj;
-          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
-          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
-          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "CALLING"
-          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Calling:"
-          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
-
-          // --- IC in call page (6 children) ---
-          p = id(ic_in_call_page)->obj;
-          set_center_y(lv_obj_get_child(p, 0), ym[3]);   // title
-          set_center_y(lv_obj_get_child(p, 1), ym[4]);   // "Status:"
-          set_center_y(lv_obj_get_child(p, 2), ym[5]);   // "IN CALL"
-          set_center_y(lv_obj_get_child(p, 3), ym[6]);   // "Connected to:"
-          set_center_y(lv_obj_get_child(p, 4), ym[7]);   // peer
-          set_center_y(lv_obj_get_child(p, 5), ym[8]);   // action hint (moved up for round display)
+            lv_obj_t* ic_pages[] = {
+              id(ic_ringing_in_page)->obj,
+              id(ic_ringing_out_page)->obj,
+              id(ic_in_call_page)->obj
+            };
+            for (auto *pg : ic_pages) {
+              set_center_y(lv_obj_get_child(pg, 0), ym[14]); // title
+              set_center_y(lv_obj_get_child(pg, 1), ym[15]); // subtitle
+              set_center_y(lv_obj_get_child(pg, 2), ym[16]); // state
+              set_center_y(lv_obj_get_child(pg, 3), ym[17]); // info
+              // peer: width + center align
+              lv_obj_t* peer = lv_obj_get_child(pg, 4);
+              lv_obj_set_width(peer, peer_w);
+              lv_obj_align(peer, LV_ALIGN_CENTER, 0, 0);
+              set_center_y(lv_obj_get_child(pg, 5), ym[19]); // hint (unused, hidden)
+            }
+          }
 
           // --- Thinking page: chord-width labels (10 children after image) ---
           lv_obj_t* think[] = {
@@ -1119,6 +1141,17 @@ script:
                       id: voice_assistant_phase
                       value: '${voice_assist_idle_phase_id}'
 
+  # Swipe gesture: toggle between VA and intercom modes
+  - id: swipe_toggle_mode
+    then:
+      - if:
+          condition:
+            binary_sensor.is_on: is_idle_screen
+          then:
+            - script.execute: switch_to_intercom
+          else:
+            - script.execute: switch_to_va
+
   # Mode switching scripts
   - id: switch_to_va
     then:
@@ -1158,12 +1191,15 @@ script:
       - lvgl.label.update:
           id: ic_idle_ha_label
           text: !lambda 'return id(node_status).state ? std::string("HA: OK") : std::string("HA: --");'
+      - lambda: |-
+          lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, -2);
+          lv_obj_align_to(id(ic_idle_arrow_down), id(ic_idle_peer_label), LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
 
   # Update clock and battery labels on idle page
   - id: update_idle_labels
     then:
       - lvgl.label.update:
-          id: idle_clock_label
+          id: top_clock_label
           text:
             format: "%02d:%02d"
             args: ['id(my_time).now().hour', 'id(my_time).now().minute']
@@ -1172,7 +1208,7 @@ script:
             - lambda: return id(battery_percentage).has_state() && !std::isnan(id(battery_percentage).state);
           then:
             - lvgl.label.update:
-                id: idle_battery_label
+                id: top_battery_label
                 text: !lambda |-
                   bool charging = id(usb_connected).state;
                   float bat = id(battery_percentage).state;
@@ -1196,7 +1232,7 @@ script:
                   return ret;
           else:
             - lvgl.label.update:
-                id: idle_battery_label
+                id: top_battery_label
                 text: ""
 
   # Update replying page labels with current page of wrapped text
@@ -1470,21 +1506,6 @@ binary_sensor:
     on_release:
       - script.execute: backlight_timer
 
-  # Capacitive touch
-  - platform: gpio
-    pin:
-      number: GPIO12
-      mode: INPUT_PULLUP
-      inverted: true
-    id: touch_input
-    on_press:
-      then:
-        - script.execute: backlight_timer
-        - if:
-            condition:
-              switch.is_on: timer_ringing
-            then:
-              - switch.turn_off: timer_ringing
 
 # =============================================================================
 # OUTPUTS AND LIGHTS
@@ -2068,6 +2089,14 @@ font:
           - "\U000F08BC" # wifi-strength-1 (<55%)
           - "\U000F08BD" # wifi-strength-2 (<80%)
           - "\U000F08BE" # wifi-strength-3 (>=80%)
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: ic_icons
+    size: 42
+    glyphs:
+      - "\U000F03F2" # phone
+      - "\U000F03F5" # phone-hangup
+      - "\U000F0731" # arrow left bold
+      - "\U000F0734" # arrow right bold
   # Intercom fonts
   - file:
       type: gfonts
@@ -2075,24 +2104,88 @@ font:
       weight: 700
     id: font_title
     size: 24
+    glyphsets:
+      - GF_Latin_Core
   - file:
       type: gfonts
       family: Roboto
       weight: 500
     id: font_state
     size: 28
+    glyphsets:
+      - GF_Latin_Core
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F06CB" # contacts (address book)
   - file:
       type: gfonts
       family: Roboto
       weight: 400
     id: font_info
     size: 20
+    glyphsets:
+      - GF_Latin_Core
   - file:
       type: gfonts
       family: Roboto Mono
       weight: 400
     id: font_debug
     size: 14
+    glyphsets:
+      - GF_Latin_Core
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F0143" # chevron-up
+          - "\U000F0140" # chevron-down
+
+# =============================================================================
+# TOUCHSCREEN (CST816)
+# =============================================================================
+touchscreen:
+  - platform: cst816
+    id: touch
+    display: s3_box_lcd
+    i2c_id: touchscreen_i2c_bus
+    interrupt_pin: GPIO12
+    reset_pin: GPIO6
+    on_touch:
+      - script.execute: backlight_timer
+      - if:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - switch.turn_off: timer_ringing
+    on_update:
+      lambda: |-
+        static bool swipe_fired = false;
+        for (auto touch : touches) {
+          if (touch.state <= 2) {
+            if (swipe_fired) continue;
+            int dx = touch.x - touch.x_org;
+            int dy = touch.y - touch.y_org;
+            // Vertical swipe in center zone: change contact
+            if (abs(dy) > 50 && abs(dy) > abs(dx) && id(current_mode) == 1) {
+              int h = ${display_height};
+              if (abs(touch.y_org - h / 2) < h / 4) {
+                if (dy > 0) id(prev_contact_button)->press();
+                else id(next_contact_button)->press();
+                id(peer_name) = id(intercom).get_current_destination();
+                id(update_ic_idle_labels)->execute();
+                id(draw_display)->execute();
+                swipe_fired = true;
+              }
+            }
+            // Horizontal swipe: toggle VA/intercom
+            else if (abs(dx) > 50 && abs(dx) > abs(dy)) {
+              id(swipe_toggle_mode)->execute();
+              swipe_fired = true;
+            }
+          } else {
+            swipe_fired = false;
+          }
+        }
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2103,10 +2196,10 @@ spi:
     mosi_pin: 2
 
 # =============================================================================
-# DISPLAY (ILI9XXX - stripped of pages, LVGL handles rendering)
+# DISPLAY (mipi_spi - LVGL handles rendering)
 # =============================================================================
 display:
-  - platform: ili9xxx
+  - platform: mipi_spi
     id: s3_box_lcd
     model: GC9A01A
     invert_colors: true
@@ -2162,6 +2255,21 @@ lvgl:
                 text: ""
                 text_color: 0x000000
                 text_font: font_timer
+      # Clock + battery/wifi status bar (always visible)
+      - label:
+          id: top_clock_label
+          align: BOTTOM_MID
+          y: -2
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
+      - label:
+          id: top_battery_label
+          align: BOTTOM_MID
+          y: -22
+          text: ""
+          text_color: 0xFFFFFF
+          text_font: font_clock
   pages:
     # ========================================================================
     # INITIALIZATION PAGE
@@ -2242,20 +2350,6 @@ lvgl:
               - idle_01
             duration: 6600ms
             auto_start: false
-        - label:
-            id: idle_clock_label
-            align: BOTTOM_MID
-            y: -2
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_clock
-        - label:
-            id: idle_battery_label
-            align: BOTTOM_MID
-            y: -22
-            text: ""
-            text_color: 0xFFFFFF
-            text_font: font_clock
 
     # ========================================================================
     # VA: LISTENING PAGE (placeholder)
@@ -2555,8 +2649,8 @@ lvgl:
     - id: ic_idle_page
       bg_color: 0x0000FF
       widgets:
-        # All y positions set dynamically by reposition_widgets from y_metrics
-        # Child order: [0]title [1]intercom [2]state [3]dest [4]peer [5]contacts [6]wifi [7]HA
+        # Labels: positioned by reposition_widgets
+        # [0]title [1]intercom [2]state [3]dest [4]peer [5]contacts [6]wifi [7]HA
         - label:
             align: TOP_MID
             y: 0
@@ -2576,14 +2670,7 @@ lvgl:
             y: 0
             text: "IDLE"
             text_color: 0x00FF00
-            text_font: font_state
-            text_align: CENTER
-        - label:
-            align: TOP_MID
-            y: 0
-            text: "Destination:"
-            text_color: 0xFFFFFF
-            text_font: font_debug
+            text_font: font_info
             text_align: CENTER
         - label:
             id: ic_idle_peer_label
@@ -2591,10 +2678,10 @@ lvgl:
             y: 0
             text: "Home Assistant"
             text_color: 0xFFFFFF
-            text_font: font_info
-            width: 200
+            text_font: font_title
+            width: 160
             text_align: CENTER
-            long_mode: DOT
+            long_mode: WRAP
         - label:
             id: ic_idle_contacts_label
             align: TOP_MID
@@ -2621,6 +2708,53 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        # Swipe hint arrows (re-anchored by update_ic_idle_labels)
+        - label:
+            id: ic_idle_arrow_up
+            floating: true
+            text: "\U000F0143"
+            text_color: 0x8080FF
+            text_font: font_debug
+            text_align: CENTER
+        - label:
+            id: ic_idle_arrow_down
+            floating: true
+            text: "\U000F0140"
+            text_color: 0x8080FF
+            text_font: font_debug
+            text_align: CENTER
+        # Floating buttons: call, hangup, prev, next
+        - button:
+            floating: true
+            align: LEFT_MID
+            x: 4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            floating: true
+            align: RIGHT_MID
+            x: -4
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            clickable: false
+            widgets:
+              - label:
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0x808080
+                  text_font: ic_icons
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -2628,8 +2762,7 @@ lvgl:
     - id: ic_ringing_in_page
       bg_color: 0xFF0000
       widgets:
-        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
-        # All y set by reposition_widgets from y_metrics
+        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
             y: 0
@@ -2649,7 +2782,7 @@ lvgl:
             y: 0
             text: "RINGING"
             text_color: 0xFFFF00
-            text_font: font_state
+            text_font: font_info
             text_align: CENTER
         - label:
             align: TOP_MID
@@ -2664,15 +2797,52 @@ lvgl:
             y: 0
             text: ""
             text_color: 0xFFFFFF
-            text_font: font_info
+            text_font: font_title
             text_align: CENTER
+            long_mode: WRAP
+            width: 160
         - label:
             align: TOP_MID
             y: 0
-            text: "Press button to answer"
+            text: ""
             text_color: 0xFFFF00
             text_font: font_debug
             text_align: CENTER
+        # Answer (green) and Decline (red) below peer name
+        - button:
+            floating: true
+            align: LEFT_MID
+            x: 20
+            y: 40
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  text: "\U000F03F2"
+                  align: CENTER
+                  text_color: 0x00FF00
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
+        - button:
+            floating: true
+            align: RIGHT_MID
+            x: -20
+            y: 40
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: decline_button
 
     # ========================================================================
     # INTERCOM: RINGING OUT PAGE
@@ -2680,8 +2850,7 @@ lvgl:
     - id: ic_ringing_out_page
       bg_color: 0xFF9900
       widgets:
-        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
-        # All y set by reposition_widgets from y_metrics
+        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
             y: 0
@@ -2701,7 +2870,7 @@ lvgl:
             y: 0
             text: "CALLING"
             text_color: 0x000000
-            text_font: font_state
+            text_font: font_info
             text_align: CENTER
         - label:
             align: TOP_MID
@@ -2716,8 +2885,10 @@ lvgl:
             y: 0
             text: ""
             text_color: 0xFFFFFF
-            text_font: font_info
+            text_font: font_title
             text_align: CENTER
+            long_mode: WRAP
+            width: 160
         - label:
             align: TOP_MID
             y: 0
@@ -2725,15 +2896,31 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        # Hangup below peer name, centered
+        - button:
+            floating: true
+            align: CENTER
+            y: 50
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: decline_button
 
     # ========================================================================
     # INTERCOM: IN CALL PAGE
     # ========================================================================
     - id: ic_in_call_page
-      bg_color: 0x00FF00
+      bg_color: 0x008800
       widgets:
-        # Child order: [0]title [1]status [2]state [3]info [4]peer [5]hint
-        # All y set by reposition_widgets from y_metrics
+        # [0]title [1]subtitle [2]state [3]info [4]peer [5]hint
         - label:
             align: TOP_MID
             y: 0
@@ -2753,7 +2940,7 @@ lvgl:
             y: 0
             text: "IN CALL"
             text_color: 0x0000FF
-            text_font: font_state
+            text_font: font_info
             text_align: CENTER
         - label:
             align: TOP_MID
@@ -2768,15 +2955,34 @@ lvgl:
             y: 0
             text: ""
             text_color: 0xFFFFFF
-            text_font: font_info
+            text_font: font_title
             text_align: CENTER
+            long_mode: WRAP
+            width: 160
         - label:
             align: TOP_MID
             y: 0
-            text: "Press button to hang up"
+            text: ""
             text_color: 0xFFFFFF
             text_font: font_debug
             text_align: CENTER
+        # Hangup below peer name, centered
+        - button:
+            floating: true
+            align: CENTER
+            y: 50
+            width: 60
+            height: 60
+            bg_opa: TRANSP
+            shadow_opa: TRANSP
+            widgets:
+              - label:
+                  text: "\U000F03F5"
+                  align: CENTER
+                  text_color: 0xFF0000
+                  text_font: ic_icons
+            on_short_click:
+              - button.press: call_button
 
 # =============================================================================
 # PERIODIC UPDATES
