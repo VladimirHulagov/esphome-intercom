@@ -16,7 +16,7 @@
 #   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
 #   - Custom wake word model (hey_trowyayoh) instead of built-in models
 #   - All images, animations, and sounds stored locally (no external downloads)
-#   - Removed battery monitoring, touchscreen, startup/wake sounds
+#   - Added battery monitoring, CST816 touchscreen with swipe gestures
 #   - Removed wake_word_engine_location select (always on-device MWW)
 #   - Removed show_text, show_battery_status switches
 #   - Added backlight auto-off timer with configurable timeout
@@ -190,19 +190,7 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
-  logs:
-    intercom_api: INFO
-    i2s_duplex: DEBUG
-    micro_wake_word: DEBUG
-    voice_assistant: DEBUG
-    component: INFO
-    wifi: INFO
-    api: INFO
-    ota: INFO
-    mdns: INFO
-    sensor: INFO
-    switch: INFO
+  level: INFO
     light: INFO
     display: INFO
     image: INFO
@@ -264,13 +252,13 @@ audio_dac:
 # sr_low_cost: Linear-only AEC (esp_aec3 engine, no residual echo suppressor).
 #   Preserves spectral features for MWW neural detection (10/10 vs 2/10 with VOIP).
 #   Uses ~60% less CPU than VOIP modes (22% vs 58%).
-#   Frame size: 512 samples (32ms) — requires buffers_in_psram.
+#   Frame size: 512 samples (32ms) -- requires buffers_in_psram.
 # =============================================================================
 esp_aec:
-  id: aec_component
+  id: aec_processor
   sample_rate: 16000
   filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
-  mode: sr_low_cost    # Linear AEC — preserves spectral features for MWW
+  mode: sr_low_cost    # Linear AEC -- preserves spectral features for MWW
 
 # =============================================================================
 # I2S AUDIO DUPLEX (single bus for ES8311)
@@ -288,12 +276,12 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8
   sample_rate: 48000             # I2S bus rate (ES8311 native)
   output_sample_rate: 16000      # Mic/AEC/MWW/VA output rate (FIR decimation x3)
-  aec_id: aec_component
+  aec_id: aec_processor
   # ES8311 digital feedback: RX is stereo L=DAC(reference), R=ADC(mic).
   # Sample-accurate reference alignment, no ring buffer delay needed.
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
   use_stereo_aec_reference: true
-  buffers_in_psram: true       # All audio buffers in PSRAM — required for sr_low_cost (512-sample frames)
+  buffers_in_psram: true       # All audio buffers in PSRAM -- required for sr_low_cost (512-sample frames)
 
 # =============================================================================
 # MICROPHONE
@@ -497,8 +485,6 @@ intercom_api:
   speaker: intercom_speaker
   ringing_timeout: 30s
 
-  on_answered:
-    - logger.log: "Call answered"
 
 # =============================================================================
 # GLOBALS
@@ -897,7 +883,7 @@ script:
 
           ESP_LOGI("layout", "Repositioned all widgets from computed metrics");
 
-  # Main display rendering — single lambda for page routing + animation control
+  # Main display rendering -- single lambda for page routing + animation control
   - id: draw_display
     mode: restart
     then:
@@ -971,6 +957,16 @@ script:
             lv_obj_invalidate(lv_disp_get_scr_act(nullptr));
           }
 
+          // Hide top layer status bar on replying/thinking pages (text overlap)
+          bool show_status = (target != id(replying_page)->obj && target != id(thinking_page)->obj);
+          if (show_status) {
+            lv_obj_clear_flag(id(top_clock_label), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(top_battery_label), LV_OBJ_FLAG_HIDDEN);
+          } else {
+            lv_obj_add_flag(id(top_clock_label), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(top_battery_label), LV_OBJ_FLAG_HIDDEN);
+          }
+
       # Update dynamic labels when on idle page
       - if:
           condition:
@@ -1042,7 +1038,7 @@ script:
           uint32_t sec = t.seconds_left;
           uint32_t total = t.total_seconds;
 
-          // Bar as simple background — fixed at 100%
+          // Bar as simple background -- fixed at 100%
           lv_bar_set_value(id(timer_bar), 100, LV_ANIM_OFF);
 
           // Bar color: green active, grey paused
@@ -1083,7 +1079,7 @@ script:
                 condition:
                   media_player.is_playing:
                 then:
-                  # Music playing — show neutral mood screen instead of idle animation
+                  # Music playing -- show neutral mood screen instead of idle animation
                   - lambda: |-
                       lv_img_set_src(id(mood_bg), id(mood_neutral));
                   - globals.set:
@@ -1137,7 +1133,7 @@ script:
             snprintf(buf, sizeof(buf), "IDLE  \U000F06CB %d", count);
             return std::string(buf);
       - lambda: |-
-          lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, -2);
+          lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, 0);
           lv_obj_align_to(id(ic_idle_arrow_down), id(ic_idle_peer_label), LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
 
   # Update clock and battery labels on idle page
@@ -1528,7 +1524,7 @@ switch:
   - id: !remove mute
   - id: !remove speaker_mute
 
-  # Mic Mute — uses mic_aec + display updates
+  # Mic Mute -- uses mic_aec + display updates
   - platform: template
     name: Mic Mute
     id: mute
@@ -1540,7 +1536,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute ON — microphone silenced, MWW stopped"
+          format: "Mic mute ON -- microphone silenced, MWW stopped"
       - voice_assistant.stop:
       - micro_wake_word.stop:
       - microphone.mute: mic_aec
@@ -1553,7 +1549,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute OFF — microphone active, MWW started"
+          format: "Mic mute OFF -- microphone active, MWW started"
       - microphone.unmute: mic_aec
       - globals.set:
           id: voice_assistant_phase
@@ -1567,7 +1563,7 @@ switch:
       - script.execute: draw_display
       - script.execute: update_status
 
-  # Speaker Mute — device override: adds amp enable/disable
+  # Speaker Mute -- device override: adds amp enable/disable
   - platform: template
     name: Speaker Mute
     id: speaker_mute
@@ -1579,7 +1575,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute ON — DAC muted, amplifier off"
+          format: "Speaker mute ON -- DAC muted, amplifier off"
       - speaker.mute_on: hw_speaker
       - delay: 50ms
       - output.turn_off: speaker_enable
@@ -1588,7 +1584,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute OFF — amplifier on, DAC unmuted"
+          format: "Speaker mute OFF -- amplifier on, DAC unmuted"
       - output.turn_on: speaker_enable
       - delay: 50ms
       - speaker.mute_off: hw_speaker
@@ -1691,7 +1687,7 @@ select:
                   - micro_wake_word.stop:
                   - i2s_audio_duplex.stop: i2s_duplex
                   - esp_aec.set_mode:
-                      id: aec_component
+                      id: aec_processor
                       mode: !lambda 'return x;'
                   - i2s_audio_duplex.start: i2s_duplex
                   - delay: 300ms
@@ -2170,6 +2166,8 @@ display:
 lvgl:
   displays:
     - s3_box_lcd
+  touchscreens:
+    - touch
   buffer_size: 50%
   color_depth: 16
   log_level: WARN
