@@ -73,7 +73,10 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
 packages:
-  core: !include packages/va_intercom.yaml
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/va_intercom.yaml
+    ref: main
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION

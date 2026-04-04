@@ -37,7 +37,10 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  core: !include packages/va_intercom.yaml
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/va_intercom.yaml
+    ref: main
 
 # =============================================================================
 # ESPHome Base
