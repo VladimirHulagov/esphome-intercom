@@ -1,7 +1,4 @@
 # ESPHome Intercom
-
-> **This repository was renamed from `intercom-api` to `esphome-intercom`.** All old URLs redirect automatically. Update your bookmarks and HACS custom repository URL to `https://github.com/n-IA-hane/esphome-intercom`.
-
 From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, intercom, and ready-to-flash configs for tested ESP32 hardware.
 
 ![Dashboard Preview](readme-img/dashboard.png)
