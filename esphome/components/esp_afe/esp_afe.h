@@ -143,7 +143,7 @@ class EspAfe : public Component, public AudioProcessor {
   std::atomic<float> input_volume_dbfs_{-120.0f};
   std::atomic<float> output_rms_dbfs_{-120.0f};
   int warmup_remaining_{3};
-  uint32_t frame_count_{0};
+  std::atomic<uint32_t> frame_count_{0};
 };
 
 class AfeSwitchBase : public switch_::Switch, public Component, public Parented<EspAfe> {

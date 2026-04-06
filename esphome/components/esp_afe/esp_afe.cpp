@@ -361,7 +361,7 @@ void EspAfe::dump_config() {
                 this->vad_min_noise_ms_, this->vad_delay_ms_);
   ESP_LOGCONFIG(TAG, "  AGC: %s (gain=%ddB, target=-%ddBFS)",
                 this->agc_enabled_ ? "ON" : "OFF", this->agc_compression_gain_, this->agc_target_level_);
-  ESP_LOGCONFIG(TAG, "  SE (Beamforming): %s", (this->mic_num_ >= 2) ? "ON" : "OFF");
+  ESP_LOGCONFIG(TAG, "  SE (Beamforming): OFF (not implemented)");
   ESP_LOGCONFIG(TAG, "  Alloc: %s, linear_gain=%.2f", this->memory_alloc_mode_to_str_(), this->afe_linear_gain_);
   ESP_LOGCONFIG(TAG, "  Task: core=%d, priority=%d, ringbuf=%d", this->task_core_, this->task_priority_, this->ringbuf_size_);
   ESP_LOGCONFIG(TAG, "  Feed: %d samples, Fetch: %d samples, Channels: %d",

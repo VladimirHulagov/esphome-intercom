@@ -58,7 +58,6 @@ async def to_code(config):
     cg.add(var.set_filter_length(config[CONF_FILTER_LENGTH]))
     cg.add(var.set_mode(config[CONF_MODE]))
 
-    cg.add_define("USE_ESP_AEC")
     cg.add_define("USE_AUDIO_PROCESSOR")
 
     # Add ESP-SR as IDF component dependency (uses IDF component registry)

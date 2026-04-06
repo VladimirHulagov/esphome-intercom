@@ -127,7 +127,6 @@ async def to_code(config):
     cg.add(var.set_ringbuf_size(config[CONF_RINGBUF_SIZE]))
 
     cg.add_define("USE_AUDIO_PROCESSOR")
-    cg.add_define("USE_ESP_AFE")
 
     add_idf_component(name="espressif/esp-sr", ref="~2.3.0")
 
