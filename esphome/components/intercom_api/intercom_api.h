@@ -20,7 +20,11 @@
 #include "esphome/components/text_sensor/text_sensor.h"
 
 #ifdef USE_ESP_AEC
+#ifdef USE_ESP_AFE
+#include "esphome/components/esp_afe/aec_processor.h"
+#else
 #include "esphome/components/esp_aec/aec_processor.h"
+#endif
 #endif
 
 #include "intercom_protocol.h"

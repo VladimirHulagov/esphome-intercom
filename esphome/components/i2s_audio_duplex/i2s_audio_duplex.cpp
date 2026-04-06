@@ -9,7 +9,11 @@
 #include "esphome/core/log.h"
 
 #ifdef USE_ESP_AEC
+#ifdef USE_ESP_AFE
+#include "../esp_afe/aec_processor.h"
+#else
 #include "../esp_aec/aec_processor.h"
+#endif
 #endif
 #include "audio_utils.h"
 
