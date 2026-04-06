@@ -7,7 +7,7 @@ from esphome.components.esp32 import add_idf_component
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
-AUTO_LOAD = ["switch", "binary_sensor", "sensor"]
+AUTO_LOAD = ["audio_processor", "switch", "binary_sensor", "sensor"]
 
 _SUPPORTED_VARIANTS = ("ESP32S3", "ESP32P4")
 
@@ -24,10 +24,10 @@ def _validate_esp32_variant(config):
     return config
 
 
-AecProcessor = cg.esphome_ns.class_("AecProcessor")
+AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
 
 esp_afe_ns = cg.esphome_ns.namespace("esp_afe")
-EspAfe = esp_afe_ns.class_("EspAfe", cg.Component, AecProcessor)
+EspAfe = esp_afe_ns.class_("EspAfe", cg.Component, AudioProcessor)
 SetModeAction = esp_afe_ns.class_("SetModeAction", automation.Action)
 
 CONF_ESP_AFE_ID = "esp_afe_id"
@@ -126,8 +126,7 @@ async def to_code(config):
     cg.add(var.set_task_priority(config[CONF_TASK_PRIORITY]))
     cg.add(var.set_ringbuf_size(config[CONF_RINGBUF_SIZE]))
 
-    # Required for i2s_audio_duplex AEC code path (#ifdef USE_ESP_AEC)
-    cg.add_define("USE_ESP_AEC")
+    cg.add_define("USE_AUDIO_PROCESSOR")
     cg.add_define("USE_ESP_AFE")
 
     add_idf_component(name="espressif/esp-sr", ref="~2.3.0")

@@ -19,12 +19,8 @@
 #include "esphome/components/number/number.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 
-#ifdef USE_ESP_AEC
-#ifdef USE_ESP_AFE
-#include "esphome/components/esp_afe/aec_processor.h"
-#else
-#include "esphome/components/esp_aec/aec_processor.h"
-#endif
+#ifdef USE_AUDIO_PROCESSOR
+#include "esphome/components/audio_processor/audio_processor.h"
 #endif
 
 #include "intercom_protocol.h"
@@ -126,8 +122,8 @@ class IntercomApi : public Component {
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
 
-#ifdef USE_ESP_AEC
-  void set_aec(AecProcessor *aec) { this->aec_ = aec; }
+#ifdef USE_AUDIO_PROCESSOR
+  void set_aec(AudioProcessor *aec) { this->aec_ = aec; }
   void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
   void set_aec_enabled(bool enabled);
   bool is_aec_enabled() const { return this->aec_enabled_; }
@@ -190,7 +186,7 @@ class IntercomApi : public Component {
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_volume_number(number::Number *num) { this->volume_number_ = num; }
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   void register_aec_switch(switch_::Switch *sw) { this->aec_switch_ = sw; }
 #endif
 
@@ -225,8 +221,8 @@ class IntercomApi : public Component {
  protected:
   // Returns true when intercom_api has its own AEC (aec_id configured on intercom_api component)
   // When false, speaker_task and tx_task are eliminated to save ~34KB internal RAM
-  bool has_intercom_aec_() const {
-#ifdef USE_ESP_AEC
+  bool has_intercom_processor_() const {
+#ifdef USE_AUDIO_PROCESSOR
     return this->aec_ != nullptr;
 #else
     return false;
@@ -234,17 +230,17 @@ class IntercomApi : public Component {
   }
 
   // Server task - handles incoming connections and receiving data
-  // When !has_intercom_aec_(), also handles TX (mic→network) and direct speaker playback
+  // When !has_intercom_processor_(), also handles TX (mic→network) and direct speaker playback
   static void server_task(void *param);
   void server_task_();
 
   // TX task - handles mic capture and sending to network (Core 0)
-  // Only created when has_intercom_aec_() (AEC processing needs dedicated task)
+  // Only created when has_intercom_processor_() (AEC processing needs dedicated task)
   static void tx_task(void *param);
   void tx_task_();
 
   // Speaker task - handles playback from speaker buffer (Core 0)
-  // Only created when has_intercom_aec_() (needs to feed AEC reference buffer)
+  // Only created when has_intercom_processor_() (needs to feed AEC reference buffer)
   static void speaker_task(void *param);
   void speaker_task_();
 
@@ -277,7 +273,7 @@ class IntercomApi : public Component {
   void set_call_state_(CallState new_state);
   void end_call_(CallEndReason reason);
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // AEC helper
   void reset_aec_buffers_();
 #endif
@@ -306,7 +302,7 @@ class IntercomApi : public Component {
   switch_::Switch *auto_answer_switch_{nullptr};
   number::Number *volume_number_{nullptr};
   number::Number *mic_gain_number_{nullptr};
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   switch_::Switch *aec_switch_{nullptr};
 #endif
 
@@ -382,9 +378,9 @@ class IntercomApi : public Component {
   int16_t *mic_converted_{nullptr};     // Mic callback processing (MAX_SAMPLES = 512 samples)
   int16_t *spk_ref_scaled_{nullptr};    // Speaker AEC ref scaling (AUDIO_CHUNK_SIZE*4/2 = 1024 samples)
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // AEC (Acoustic Echo Cancellation)
-  AecProcessor *aec_{nullptr};
+  AudioProcessor *aec_{nullptr};
   bool aec_enabled_{false};
   uint32_t aec_ref_delay_ms_{80};  // Configurable via YAML (default 80ms)
 
@@ -550,8 +546,8 @@ class PublishEntityStatesAction : public Action<Ts...>, public Parented<Intercom
 
 // === Switch platform classes with restore support ===
 
-// AEC switch (only available when USE_ESP_AEC is defined)
-#ifdef USE_ESP_AEC
+// AEC switch (only available when USE_AUDIO_PROCESSOR is defined)
+#ifdef USE_AUDIO_PROCESSOR
 class IntercomAecSwitch : public switch_::Switch, public Parented<IntercomApi> {
  public:
   void write_state(bool state) override {

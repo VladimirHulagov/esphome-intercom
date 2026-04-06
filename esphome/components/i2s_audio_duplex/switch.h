@@ -16,7 +16,7 @@ class AECSwitch : public switch_::Switch, public Component {
   void setup() override {
     // Initialize state from parent
     if (this->parent_ != nullptr) {
-      this->publish_state(this->parent_->is_aec_enabled());
+      this->publish_state(this->parent_->is_processor_enabled());
     }
   }
 
@@ -27,7 +27,7 @@ class AECSwitch : public switch_::Switch, public Component {
  protected:
   void write_state(bool state) override {
     if (this->parent_ != nullptr) {
-      this->parent_->set_aec_enabled(state);
+      this->parent_->set_processor_enabled(state);
       this->publish_state(state);
     }
   }

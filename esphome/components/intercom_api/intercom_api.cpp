@@ -31,8 +31,8 @@ void IntercomApi::setup() {
     return;
   }
 
-  const bool use_intercom_aec = this->has_intercom_aec_();
-  ESP_LOGI(TAG, "Intercom AEC: %s (tasks: %s)", use_intercom_aec ? "YES" : "NO",
+  const bool use_intercom_aec = this->has_intercom_processor_();
+  ESP_LOGI(TAG, "Intercom Processor: %s (tasks: %s)", use_intercom_aec ? "YES" : "NO",
            use_intercom_aec ? "server+tx+speaker" : "server only");
 
   if (use_intercom_aec) {
@@ -113,11 +113,11 @@ void IntercomApi::setup() {
   }
 #endif
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // Validate AEC but defer buffer allocation to set_aec_enabled(true)
   // This saves ~13KB of internal RAM when AEC is disabled (the default)
   if (this->aec_ != nullptr && this->aec_->is_initialized()) {
-    this->aec_frame_samples_ = this->aec_->get_frame_size();
+    this->aec_frame_samples_ = this->aec_->frame_spec().input_samples;
     if (this->aec_frame_samples_ <= 0 || this->aec_frame_samples_ > 1024) {
       ESP_LOGW(TAG, "AEC frame_size invalid (%d)", this->aec_frame_samples_);
     } else {
@@ -246,14 +246,14 @@ void IntercomApi::dump_config() {
 #ifdef USE_SPEAKER
   ESP_LOGCONFIG(TAG, "  Speaker: %s", this->speaker_ ? "configured" : "none");
 #endif
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   if (this->aec_ != nullptr) {
     ESP_LOGCONFIG(TAG, "  AEC: configured (frame_size=%d samples)", this->aec_frame_samples_);
   } else {
     ESP_LOGCONFIG(TAG, "  AEC: none");
   }
 #endif
-  ESP_LOGCONFIG(TAG, "  Tasks: %s", this->has_intercom_aec_() ?
+  ESP_LOGCONFIG(TAG, "  Tasks: %s", this->has_intercom_processor_() ?
                 "server+tx+speaker" : "server only");
 }
 
@@ -270,7 +270,7 @@ void IntercomApi::publish_entity_states() {
     }
   }
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // AEC switch: restore state and enable AEC if needed
   if (this->aec_switch_ != nullptr) {
     auto initial = this->aec_switch_->get_initial_state_with_restore_mode();
@@ -283,7 +283,7 @@ void IntercomApi::publish_entity_states() {
   }
 #endif
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   ESP_LOGI(TAG, "Entity states synced (vol=%.0f%%, mic=%.1fdB, auto=%s, aec=%s)",
            this->volume_ * 100.0f, this->mic_gain_db_,
            this->auto_answer_ ? "ON" : "OFF", this->aec_enabled_ ? "ON" : "OFF");
@@ -474,7 +474,7 @@ void IntercomApi::set_mic_gain_db(float db) {
   this->schedule_save_settings_();
 }
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
 void IntercomApi::reset_aec_buffers_() {
   if (!this->aec_enabled_ || this->spk_ref_buffer_ == nullptr) return;
 
@@ -714,7 +714,7 @@ void IntercomApi::set_active_(bool on) {
 
 #ifdef USE_SPEAKER
     if (this->speaker_) {
-      if (this->has_intercom_aec_() && this->speaker_stopped_sem_) {
+      if (this->has_intercom_processor_() && this->speaker_stopped_sem_) {
         // AEC mode: use single-owner model. speaker_task owns the hardware
         // 1. Request speaker_task to stop the speaker
         // 2. Wait for acknowledgment (with timeout)
@@ -750,12 +750,12 @@ void IntercomApi::set_streaming_(bool on) {
     if (this->mic_buffer_) {
       this->mic_buffer_->reset();
     }
-    if (this->speaker_buffer_) {  // Only exists when has_intercom_aec_()
+    if (this->speaker_buffer_) {  // Only exists when has_intercom_processor_()
       this->speaker_buffer_->reset();
     }
     this->dc_offset_ = 0;  // Reset DC filter state for new session
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
     // Reset AEC state for new call - critical for proper echo cancellation
     this->reset_aec_buffers_();
 #endif
@@ -910,7 +910,7 @@ void IntercomApi::server_task_() {
       // Inline TX: when no tx_task exists, read mic_buffer and send from server_task
       // Cannot call send() from mic callback (runs in audio_task prio 19 on Core 0)
       // so we use mic_buffer as the bridge, same as tx_task does
-      if (!this->has_intercom_aec_() &&
+      if (!this->has_intercom_processor_() &&
           this->active_.load(std::memory_order_acquire) &&
           this->client_.streaming.load(std::memory_order_acquire) &&
           client_fd >= 0) {
@@ -948,7 +948,7 @@ void IntercomApi::tx_task_() {
     if (!this->active_.load(std::memory_order_acquire) ||
         this->client_.socket.load() < 0 ||
         !this->client_.streaming.load()) {
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
       // Reset AEC accumulator when paused
       this->aec_mic_fill_ = 0;
 #endif
@@ -969,7 +969,7 @@ void IntercomApi::tx_task_() {
       continue;
     }
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
     // AEC Processing: accumulate mic samples, process in AEC-frame-sized chunks.
     // Mic chunk (AUDIO_CHUNK_SIZE) can be larger than AEC frame (e.g. 512 vs 256 in VOIP mode).
     // Uses a while loop to process ALL complete frames from each chunk, avoiding buffer overflow.
@@ -1004,7 +1004,7 @@ void IntercomApi::tx_task_() {
             memset(this->aec_ref_, 0, ref_bytes_needed);
           }
 
-          this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_, frame_size);
+          this->aec_->process(this->aec_mic_, this->aec_ref_, this->aec_out_);
           this->aec_mic_fill_ = 0;
 
           // Send processed audio
@@ -1133,7 +1133,7 @@ void IntercomApi::speaker_task_() {
     if (read > 0 && this->volume_ > 0.001f) {
       this->speaker_->play(audio_chunk, read, 0);
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
       // Feed speaker reference buffer for AEC
       // IMPORTANT: Apply same volume scaling as speaker output so reference matches actual echo
       if (this->aec_enabled_ && this->spk_ref_buffer_ != nullptr) {

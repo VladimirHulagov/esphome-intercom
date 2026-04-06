@@ -8,12 +8,8 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
-#ifdef USE_ESP_AEC
-#ifdef USE_ESP_AFE
-#include "../esp_afe/aec_processor.h"
-#else
-#include "../esp_aec/aec_processor.h"
-#endif
+#ifdef USE_AUDIO_PROCESSOR
+#include "../audio_processor/audio_processor.h"
 #endif
 #include "audio_utils.h"
 
@@ -101,7 +97,7 @@ void I2SAudioDuplex::setup() {
 
   // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
   // Direct from previous TX frame, no ring buffer needed (single-bus = same DMA cycle).
-  if (this->aec_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
+  if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
     this->direct_aec_ref_ = static_cast<int16_t *>(
         heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
@@ -115,9 +111,9 @@ void I2SAudioDuplex::setup() {
   ESP_LOGI(TAG, "I2S Audio Duplex ready (speaker_buf=%u bytes)", (unsigned)this->speaker_buffer_size_);
 }
 
-void I2SAudioDuplex::set_aec(AecProcessor *aec) {
-  this->aec_ = aec;
-  this->aec_enabled_.store(aec != nullptr, std::memory_order_relaxed);
+void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
+  this->processor_ = processor;
+  this->processor_enabled_.store(processor != nullptr, std::memory_order_relaxed);
   // Note: direct_aec_ref_ is allocated in setup() after decimation_ratio_ is computed
 }
 
@@ -159,7 +155,7 @@ void I2SAudioDuplex::dump_config() {
     ESP_LOGCONFIG(TAG, "  TDM Reference: %u slots, mic_slot=%u, ref_slot=%u",
                   this->tdm_total_slots_, this->tdm_mic_slot_, this->tdm_ref_slot_);
   }
-  ESP_LOGCONFIG(TAG, "  AEC: %s", this->aec_ != nullptr ? "enabled" : "disabled");
+  ESP_LOGCONFIG(TAG, "  AEC: %s", this->processor_ != nullptr ? "enabled" : "disabled");
   ESP_LOGCONFIG(TAG, "  Task: priority=%u, core=%d, stack=%u",
                 this->task_priority_, this->task_core_, (unsigned)this->task_stack_size_);
 }
@@ -469,7 +465,7 @@ void I2SAudioDuplex::start() {
   this->ref_decimator_.reset();
   this->play_ref_decimator_.reset();
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   if (this->use_stereo_aec_ref_) {
     ESP_LOGD(TAG, "ES8311 digital feedback - reference is sample-aligned");
   }
@@ -617,10 +613,11 @@ void I2SAudioDuplex::audio_task_() {
   // Determine frame sizes: processors may consume and produce different frame lengths.
   ctx.input_frame_size = DEFAULT_FRAME_SIZE;
   ctx.output_frame_size = DEFAULT_FRAME_SIZE;
-#ifdef USE_ESP_AEC
-  if (this->aec_ != nullptr && this->aec_->is_initialized()) {
-    ctx.input_frame_size = this->aec_->get_frame_size();
-    ctx.output_frame_size = this->aec_->get_output_frame_size();
+#ifdef USE_AUDIO_PROCESSOR
+  if (this->processor_ != nullptr && this->processor_->is_initialized()) {
+    auto spec = this->processor_->frame_spec();
+    ctx.input_frame_size = spec.input_samples;
+    ctx.output_frame_size = spec.output_samples;
     uint32_t out_rate = this->get_output_sample_rate();
     ESP_LOGD(TAG, "AEC frame sizes: input=%u, output=%u samples (%ums @ %uHz)",
              (unsigned) ctx.input_frame_size, (unsigned) ctx.output_frame_size,
@@ -690,8 +687,8 @@ void I2SAudioDuplex::audio_task_() {
     this->task_exited_.store(true, std::memory_order_relaxed);
   };
 
-#ifdef USE_ESP_AEC
-  if (this->aec_ != nullptr) {
+#ifdef USE_AUDIO_PROCESSOR
+  if (this->processor_ != nullptr) {
     if (!ctx.spk_ref_buffer && !ctx.use_tdm_ref)
       ctx.spk_ref_buffer = static_cast<int16_t *>(
           heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
@@ -727,8 +724,8 @@ void I2SAudioDuplex::audio_task_() {
   if (ctx.use_tdm_ref && ctx.ratio > 1 && (!ctx.tdm_deint_mic || !ctx.tdm_deint_ref)) {
     alloc_fail("TDM decimation buffers"); goto cleanup;
   }
-#ifdef USE_ESP_AEC
-  if (this->aec_ != nullptr) {
+#ifdef USE_AUDIO_PROCESSOR
+  if (this->processor_ != nullptr) {
     if (!ctx.aec_output) { alloc_fail("AEC output buffer"); goto cleanup; }
     if ((ctx.use_stereo_aec_ref || ctx.use_tdm_ref) && !ctx.spk_ref_buffer) {
       alloc_fail("AEC reference buffer"); goto cleanup;
@@ -762,7 +759,7 @@ void I2SAudioDuplex::audio_task_() {
 
     this->process_rx_path_(ctx);
 
-    ctx.aec_enabled = this->aec_enabled_.load(std::memory_order_relaxed);
+    ctx.processor_enabled = this->processor_enabled_.load(std::memory_order_relaxed);
     ctx.now_ms = millis();
 
     this->process_aec_and_callbacks_(ctx);
@@ -905,19 +902,19 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
     }
   }
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
 #if SOC_I2S_SUPPORTS_TDM
-  if (ctx.use_tdm_ref && this->aec_ != nullptr && ctx.aec_enabled &&
-      this->aec_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
+  if (ctx.use_tdm_ref && this->processor_ != nullptr && ctx.processor_enabled &&
+      this->processor_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
     // TDM: hardware-synced reference, no speaker gating needed.
     // TDM analog ref already reflects DAC volume. No extra scaling on ref.
-    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.input_frame_size);
+    this->processor_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output);
     ctx.output_buffer = ctx.aec_output;
     ctx.current_output_frame_size = ctx.output_frame_size;
     ctx.current_output_frame_bytes = ctx.output_frame_bytes;
   } else
 #endif
-  if (!ctx.use_tdm_ref && this->aec_ != nullptr && ctx.aec_enabled && this->aec_->is_initialized() &&
+  if (!ctx.use_tdm_ref && this->processor_ != nullptr && ctx.processor_enabled && this->processor_->is_initialized() &&
       ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr && ctx.speaker_running &&
       (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)) {
 
@@ -955,7 +952,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
     // Stereo mode: spk_ref_buffer already filled from deinterleave. No extra scaling.
     // TDM mode: spk_ref_buffer filled from TDM deinterleave. No extra scaling.
 
-    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.input_frame_size);
+    this->processor_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output);
     ctx.output_buffer = ctx.aec_output;
     ctx.current_output_frame_size = ctx.output_frame_size;
     ctx.current_output_frame_bytes = ctx.output_frame_bytes;
@@ -1007,7 +1004,7 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
   }
 
   // Save post-volume TX data as AEC reference
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   if (this->aec_ref_ring_buffer_) {
     // Ring buffer mode: write post-volume PCM for TYPE2-style reference
     if (ctx.speaker_running && !ctx.speaker_paused) {

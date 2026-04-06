@@ -7,6 +7,7 @@ from esphome.components.esp32 import add_idf_component
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
+AUTO_LOAD = ["audio_processor"]
 
 # Only available on ESP32-S3 or ESP32-P4 with ESP-SR
 _AEC_SUPPORTED_VARIANTS = ("ESP32S3", "ESP32P4")
@@ -21,10 +22,10 @@ def _validate_esp32_variant(config):
             )
     return config
 
-AecProcessor = cg.esphome_ns.class_("AecProcessor")
+AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
 
 esp_aec_ns = cg.esphome_ns.namespace("esp_aec")
-EspAec = esp_aec_ns.class_("EspAec", cg.Component, AecProcessor)
+EspAec = esp_aec_ns.class_("EspAec", cg.Component, AudioProcessor)
 SetModeAction = esp_aec_ns.class_("SetModeAction", automation.Action)
 
 CONF_FILTER_LENGTH = "filter_length"
@@ -57,8 +58,8 @@ async def to_code(config):
     cg.add(var.set_filter_length(config[CONF_FILTER_LENGTH]))
     cg.add(var.set_mode(config[CONF_MODE]))
 
-    # Add build flag to enable AEC code paths
     cg.add_define("USE_ESP_AEC")
+    cg.add_define("USE_AUDIO_PROCESSOR")
 
     # Add ESP-SR as IDF component dependency (uses IDF component registry)
     add_idf_component(name="espressif/esp-sr", ref="~2.3.0")

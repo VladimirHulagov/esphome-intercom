@@ -5,7 +5,7 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
-#include "aec_processor.h"
+#include "../audio_processor/audio_processor.h"
 
 #ifdef USE_ESP32
 
@@ -19,19 +19,20 @@
 namespace esphome {
 namespace esp_afe {
 
-class EspAfe : public Component, public AecProcessor {
+class EspAfe : public Component, public AudioProcessor {
  public:
   void setup() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
 
-  // AecProcessor interface
+  // AudioProcessor interface
   bool is_initialized() const override { return this->afe_data_ != nullptr; }
-  int get_frame_size() const override { return this->feed_chunksize_; }
-  int get_output_frame_size() const override { return this->fetch_chunksize_; }
-  int get_mic_num() const override { return this->mic_num_; }
-  void process(const int16_t *mic_in, const int16_t *ref_in,
-               int16_t *out, int frame_size) override;
+  FrameSpec frame_spec() const override;
+  bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) override;
+  FeatureControl feature_control(AudioFeature feature) const override;
+  bool set_feature(AudioFeature feature, bool enabled) override;
+  ProcessorTelemetry telemetry() const override;
+  bool reconfigure(int type, int mode) override;
 
   // Config setters (called from Python codegen)
   void set_afe_type(int type) { this->afe_type_ = type; }

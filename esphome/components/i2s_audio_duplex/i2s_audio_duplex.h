@@ -18,9 +18,9 @@
 #include <functional>
 #include <vector>
 
-// Forward declare AEC processor interface (esp_aec/aec_processor.h)
+// Forward declare audio processor interface
 namespace esphome {
-class AecProcessor;
+class AudioProcessor;
 }  // namespace esphome
 
 namespace esphome {
@@ -135,9 +135,9 @@ class I2SAudioDuplex : public Component {
   void set_slot_bit_width(uint8_t sbw) { this->slot_bit_width_ = sbw; }
 
   // AEC setter
-  void set_aec(AecProcessor *aec);
-  void set_aec_enabled(bool enabled) { this->aec_enabled_.store(enabled, std::memory_order_relaxed); }
-  bool is_aec_enabled() const { return this->aec_enabled_.load(std::memory_order_relaxed); }
+  void set_processor(AudioProcessor *aec);
+  void set_processor_enabled(bool enabled) { this->processor_enabled_.store(enabled, std::memory_order_relaxed); }
+  bool is_processor_enabled() const { return this->processor_enabled_.load(std::memory_order_relaxed); }
 
   // Volume control (0.0 - 1.0). Atomic: written from main loop, read from audio task.
   void set_mic_gain(float gain) { this->mic_gain_.store(gain, std::memory_order_relaxed); }
@@ -265,7 +265,7 @@ class I2SAudioDuplex : public Component {
     float mic_gain{1.0f};
     float mic_attenuation{1.0f};
     float speaker_volume{1.0f};
-    bool aec_enabled{false};
+    bool processor_enabled{false};
     bool speaker_running{false};
     bool speaker_paused{false};
     bool mic_running{false};
@@ -331,8 +331,8 @@ class I2SAudioDuplex : public Component {
   size_t speaker_buffer_size_{0};  // Actual allocated size (scales with decimation_ratio_)
 
   // AEC support
-  AecProcessor *aec_{nullptr};
-  std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
+  AudioProcessor *processor_{nullptr};
+  std::atomic<bool> processor_enabled_{false};  // Runtime toggle (only enabled when processor_ is set)
   int16_t *direct_aec_ref_{nullptr};     // AEC reference from previous TX frame (bus rate, mono mode)
   bool direct_aec_ref_valid_{false};     // True after first TX frame has been saved
 

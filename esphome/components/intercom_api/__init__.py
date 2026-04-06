@@ -167,7 +167,7 @@ async def to_code(config):
         aec = await cg.get_variable(config[CONF_AEC_ID])
         cg.add(var.set_aec(aec))
         cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
-        cg.add_define("USE_ESP_AEC")
+        cg.add_define("USE_AUDIO_PROCESSOR")
 
     # Ringing timeout (auto-decline if not answered)
     if CONF_RINGING_TIMEOUT in config:

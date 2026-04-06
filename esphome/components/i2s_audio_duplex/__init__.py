@@ -36,7 +36,7 @@ CONF_I2S_MCLK_PIN = "i2s_mclk_pin"
 CONF_I2S_DIN_PIN = "i2s_din_pin"
 CONF_I2S_DOUT_PIN = "i2s_dout_pin"
 CONF_OUTPUT_SAMPLE_RATE = "output_sample_rate"
-CONF_AEC_ID = "aec_id"
+CONF_PROCESSOR_ID = "processor_id"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
@@ -67,9 +67,9 @@ I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
 StartAction = i2s_audio_duplex_ns.class_("StartAction", automation.Action)
 StopAction = i2s_audio_duplex_ns.class_("StopAction", automation.Action)
 
-# AecProcessor abstract interface (defined in esp_aec/aec_processor.h)
+# AudioProcessor abstract interface (defined in audio_processor/audio_processor.h)
 # Both esp_aec::EspAec and future esp_afe::EspAfe inherit from this.
-AecProcessor = cg.esphome_ns.class_("AecProcessor")
+AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
 
 # I2S port count per SoC variant (from SOC_I2S_NUM in soc_caps.h)
 I2S_PORTS = {
@@ -188,7 +188,7 @@ CONFIG_SCHEMA = cv.All(
         # Output sample rate for mic/AEC/MWW/VA (decimated from bus rate)
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
-        cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
+        cv.Optional(CONF_PROCESSOR_ID): cv.use_id(AudioProcessor),
         # Pre-AEC mic gain/attenuation: <1.0 attenuates (hot mics), >1.0 amplifies (weak mics)
         cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=32.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
@@ -268,13 +268,13 @@ def _final_validate(config):
 
     intercom_configs = full_config.get("intercom_api", [])
     if intercom_configs:
-        has_duplex_aec = CONF_AEC_ID in config and config.get(CONF_AEC_ID) is not None
+        has_duplex_aec = CONF_PROCESSOR_ID in config and config.get(CONF_PROCESSOR_ID) is not None
         for ic in (intercom_configs if isinstance(intercom_configs, list) else [intercom_configs]):
-            if isinstance(ic, dict) and ic.get("aec_id") is not None and has_duplex_aec:
+            if isinstance(ic, dict) and ic.get("processor_id") is not None and has_duplex_aec:
                 raise cv.Invalid(
-                    "Both i2s_audio_duplex and intercom_api have aec_id configured. "
+                    "Both i2s_audio_duplex and intercom_api have processor_id configured. "
                     "This causes a race condition on the AEC processor. "
-                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
+                    "Use processor_id on only ONE component (i2s_audio_duplex recommended)."
                 )
 
     return config
@@ -348,12 +348,11 @@ async def to_code(config):
     cg.add(var.set_aec_reference_mode(config[CONF_AEC_REFERENCE_MODE] == "ring_buffer"))
     cg.add(var.set_aec_ref_buffer_ms(config[CONF_AEC_REF_BUFFER_MS]))
 
-    # Link AEC if configured
-    if CONF_AEC_ID in config:
-        aec = await cg.get_variable(config[CONF_AEC_ID])
-        cg.add(var.set_aec(aec))
-        # Enable AEC compilation in i2s_audio_duplex
-        cg.add_define("USE_ESP_AEC")
+    # Link audio processor if configured
+    if CONF_PROCESSOR_ID in config:
+        processor = await cg.get_variable(config[CONF_PROCESSOR_ID])
+        cg.add(var.set_processor(processor))
+        cg.add_define("USE_AUDIO_PROCESSOR")
 
 
 # === Actions ===
