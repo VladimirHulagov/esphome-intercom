@@ -56,7 +56,8 @@ class EspAfe : public Component, public AudioProcessor {
   void set_task_core(int core) { this->task_core_ = core; }
   void set_task_priority(int prio) { this->task_priority_ = prio; }
   void set_ringbuf_size(int size) { this->ringbuf_size_ = size; }
-  void set_telemetry_enabled(bool en) { this->telemetry_enabled_ = en; }
+  void set_input_volume_sensor_enabled(bool en) { this->input_volume_sensor_enabled_ = en; }
+  void set_output_rms_sensor_enabled(bool en) { this->output_rms_sensor_enabled_ = en; }
 
   // Runtime toggles (for switches and automations)
   bool enable_aec();
@@ -143,7 +144,8 @@ class EspAfe : public Component, public AudioProcessor {
   std::atomic<bool> voice_present_{false};
   std::atomic<float> input_volume_dbfs_{-120.0f};
   std::atomic<float> output_rms_dbfs_{-120.0f};
-  bool telemetry_enabled_{false};
+  bool input_volume_sensor_enabled_{false};
+  bool output_rms_sensor_enabled_{false};
   int warmup_remaining_{3};
   std::atomic<uint32_t> frame_count_{0};
 };

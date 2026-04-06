@@ -472,8 +472,10 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
       memset(reinterpret_cast<uint8_t *>(out) + copy_bytes, 0, output_bytes - copy_bytes);
     }
     this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH, std::memory_order_relaxed);
-    if (this->telemetry_enabled_) {
-      this->input_volume_dbfs_.store(compute_rms_dbfs(in_mic, fs), std::memory_order_relaxed);
+    if (this->input_volume_sensor_enabled_) {
+      this->input_volume_dbfs_.store(result->data_volume, std::memory_order_relaxed);
+    }
+    if (this->output_rms_sensor_enabled_) {
       this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
     }
     this->frame_count_++;

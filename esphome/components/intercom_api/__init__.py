@@ -116,11 +116,11 @@ def _final_validate(config):
     # If duplex exists, check for AEC conflict
     if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
         for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
-            if isinstance(duplex, dict) and "aec_id" in duplex and duplex["aec_id"] is not None:
+            if isinstance(duplex, dict) and duplex.get("processor_id") is not None:
                 raise cv.Invalid(
-                    "Both intercom_api and i2s_audio_duplex have aec_id configured. "
-                    "This causes a race condition on the AEC processor. "
-                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
+                    "Both intercom_api.aec_id and i2s_audio_duplex.processor_id are configured. "
+                    "This causes a race condition on the audio processor. "
+                    "Use the processor on only ONE component (i2s_audio_duplex recommended)."
                 )
 
     # Warn about DC offset double-filtering
