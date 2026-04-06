@@ -25,10 +25,23 @@ static inline bool is_valid_func(const void *ptr) {
 }
 
 static inline void copy_passthrough_frame(const int16_t *in, int input_samples,
-                                          int16_t *out, int output_samples) {
+                                          int mic_channels, int16_t *out, int output_samples) {
+  if (out == nullptr || output_samples <= 0) {
+    return;
+  }
+  if (in == nullptr || input_samples <= 0) {
+    memset(out, 0, output_samples * sizeof(int16_t));
+    return;
+  }
   size_t copy_samples = std::min(input_samples, output_samples);
   if (copy_samples > 0) {
-    memcpy(out, in, copy_samples * sizeof(int16_t));
+    if (mic_channels <= 1) {
+      memcpy(out, in, copy_samples * sizeof(int16_t));
+    } else {
+      for (size_t i = 0; i < copy_samples; i++) {
+        out[i] = in[i * mic_channels];
+      }
+    }
   }
   if (output_samples > static_cast<int>(copy_samples)) {
     memset(out + copy_samples, 0, (output_samples - copy_samples) * sizeof(int16_t));
@@ -56,6 +69,13 @@ aec_mode_t EspAfe::derive_aec_mode_() const {
   return (this->afe_mode_ == AFE_MODE_HIGH_PERF) ? AEC_MODE_VOIP_HIGH_PERF : AEC_MODE_VOIP_LOW_COST;
 }
 
+int EspAfe::afe_mic_channels_() const {
+  if (this->mic_num_ < 2) {
+    return 1;
+  }
+  return this->se_enabled_ ? 2 : 1;
+}
+
 const char *EspAfe::memory_alloc_mode_to_str_() const {
   switch (this->memory_alloc_mode_) {
     case AFE_MEMORY_ALLOC_MORE_INTERNAL:
@@ -74,7 +94,8 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
     return false;
   }
 
-  std::string fmt(this->mic_num_, 'M');
+  const int afe_mic_channels = this->afe_mic_channels_();
+  std::string fmt(afe_mic_channels, 'M');
   fmt += 'R';
 
   afe_config_t *cfg = afe_config_init(fmt.c_str(), nullptr,
@@ -102,7 +123,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->aec_filter_length = this->aec_filter_length_;
   cfg->aec_mode = this->derive_aec_mode_();
 
-  cfg->se_init = false;  // SE/beamforming requires real dual-mic path (not yet implemented)
+  cfg->se_init = afe_mic_channels >= 2 && this->se_enabled_;
 
   cfg->ns_init = this->ns_enabled_;
   cfg->ns_model_name = nullptr;
@@ -152,6 +173,10 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
 
   int feed_chunksize = handle->get_feed_chunksize(data);
   int fetch_chunksize = handle->get_fetch_chunksize(data);
+  int process_chunksize = std::gcd(feed_chunksize, fetch_chunksize);
+  if (process_chunksize <= 0) {
+    process_chunksize = (fetch_chunksize > 0) ? fetch_chunksize : feed_chunksize;
+  }
   int total_channels = cfg->pcm_config.total_ch_num;
   size_t feed_bytes = static_cast<size_t>(feed_chunksize) * total_channels * sizeof(int16_t);
 
@@ -172,10 +197,11 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   instance->feed_buf = feed_buf;
   instance->feed_chunksize = feed_chunksize;
   instance->fetch_chunksize = fetch_chunksize;
+  instance->process_chunksize = process_chunksize;
   instance->total_channels = total_channels;
 
-  ESP_LOGI(TAG, "AFE ready: feed=%d fetch=%d ch=%d fmt=%s",
-           feed_chunksize, fetch_chunksize, total_channels, fmt.c_str());
+  ESP_LOGI(TAG, "AFE ready: process=%d feed=%d fetch=%d ch=%d fmt=%s (transport_mics=%d)",
+           process_chunksize, feed_chunksize, fetch_chunksize, total_channels, fmt.c_str(), this->mic_num_);
   return true;
 }
 
@@ -198,6 +224,7 @@ void EspAfe::destroy_instance_(AfeInstance *instance) {
   instance->handle = nullptr;
   instance->feed_chunksize = 0;
   instance->fetch_chunksize = 0;
+  instance->process_chunksize = 0;
   instance->total_channels = 0;
 }
 
@@ -208,7 +235,10 @@ void EspAfe::install_instance_(AfeInstance *instance) {
   this->feed_buf_ = instance->feed_buf;
   this->feed_chunksize_ = instance->feed_chunksize;
   this->fetch_chunksize_ = instance->fetch_chunksize;
+  this->process_chunksize_ = instance->process_chunksize;
   this->total_channels_ = instance->total_channels;
+  this->staged_input_samples_ = 0;
+  this->fetch_started_ = false;
 
   instance->handle = nullptr;
   instance->data = nullptr;
@@ -216,6 +246,7 @@ void EspAfe::install_instance_(AfeInstance *instance) {
   instance->feed_buf = nullptr;
   instance->feed_chunksize = 0;
   instance->fetch_chunksize = 0;
+  instance->process_chunksize = 0;
   instance->total_channels = 0;
 }
 
@@ -227,6 +258,7 @@ EspAfe::AfeInstance EspAfe::detach_instance_() {
   instance.feed_buf = this->feed_buf_;
   instance.feed_chunksize = this->feed_chunksize_;
   instance.fetch_chunksize = this->fetch_chunksize_;
+  instance.process_chunksize = this->process_chunksize_;
   instance.total_channels = this->total_channels_;
 
   this->afe_handle_ = nullptr;
@@ -235,7 +267,10 @@ EspAfe::AfeInstance EspAfe::detach_instance_() {
   this->feed_buf_ = nullptr;
   this->feed_chunksize_ = 0;
   this->fetch_chunksize_ = 0;
+  this->process_chunksize_ = 0;
   this->total_channels_ = 0;
+  this->staged_input_samples_ = 0;
+  this->fetch_started_ = false;
 
   return instance;
 }
@@ -256,7 +291,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 
   // esp-sr FFT resources are global: only one AFE instance can exist.
   // Must destroy old before creating new.
-  int old_feed = this->feed_chunksize_;
+  int old_process = this->process_chunksize_;
   int old_fetch = this->fetch_chunksize_;
   AfeInstance old = this->detach_instance_();
   this->destroy_instance_(&old);
@@ -268,10 +303,10 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
-  if (require_same_frame_sizes &&
-      (next.feed_chunksize != old_feed || next.fetch_chunksize != old_fetch)) {
-    ESP_LOGW(TAG, "Reinit changed frame sizes (%d/%d -> %d/%d), rejecting",
-             old_feed, old_fetch, next.feed_chunksize, next.fetch_chunksize);
+  if (require_same_frame_sizes && old_process > 0 && old_fetch > 0 &&
+      (next.process_chunksize != old_process || next.fetch_chunksize != old_fetch)) {
+    ESP_LOGW(TAG, "Reinit changed external frame sizes (%d/%d -> %d/%d), rejecting",
+             old_process, old_fetch, next.process_chunksize, next.fetch_chunksize);
     this->destroy_instance_(&next);
     xSemaphoreGive(this->config_mutex_);
     return false;
@@ -325,6 +360,12 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   }
   bool old_value = flag;
   flag = enabled;
+  if (!this->is_initialized() || this->config_mutex_ == nullptr || this->feed_chunksize_ == 0 ||
+      this->fetch_chunksize_ == 0) {
+    ESP_LOGD(TAG, "Deferring %s=%s until AFE is initialized",
+             name, enabled ? "true" : "false");
+    return true;
+  }
   if (this->recreate_instance_(true)) {
     return true;
   }
@@ -348,7 +389,7 @@ void EspAfe::dump_config() {
   ESP_LOGCONFIG(TAG, "ESP AFE (Audio Front End):");
   ESP_LOGCONFIG(TAG, "  Type: %s", this->afe_type_ == AFE_TYPE_SR ? "SR" : "VC");
   ESP_LOGCONFIG(TAG, "  Mode: %s", this->afe_mode_ == AFE_MODE_LOW_COST ? "LOW_COST" : "HIGH_PERF");
-  ESP_LOGCONFIG(TAG, "  Microphones: %d", this->mic_num_);
+  ESP_LOGCONFIG(TAG, "  Microphones: transport=%d, afe=%d", this->mic_num_, this->afe_mic_channels_());
   ESP_LOGCONFIG(TAG, "  AEC: %s (filter_length=%d)", this->aec_enabled_ ? "ON" : "OFF", this->aec_filter_length_);
   ESP_LOGCONFIG(TAG, "  NS: %s (WebRTC)", this->ns_enabled_ ? "ON" : "OFF");
   ESP_LOGCONFIG(TAG, "  VAD: %s (mode=%d, speech=%dms, noise=%dms, delay=%dms)",
@@ -356,20 +397,26 @@ void EspAfe::dump_config() {
                 this->vad_min_noise_ms_, this->vad_delay_ms_);
   ESP_LOGCONFIG(TAG, "  AGC: %s (gain=%ddB, target=-%ddBFS)",
                 this->agc_enabled_ ? "ON" : "OFF", this->agc_compression_gain_, this->agc_target_level_);
-  ESP_LOGCONFIG(TAG, "  SE (Beamforming): OFF (not implemented)");
+  if (this->mic_num_ >= 2) {
+    ESP_LOGCONFIG(TAG, "  SE (Beamforming): %s", this->se_enabled_ ? "ON" : "OFF");
+  } else {
+    ESP_LOGCONFIG(TAG, "  SE (Beamforming): unavailable (mic_num < 2)");
+  }
   ESP_LOGCONFIG(TAG, "  Alloc: %s, linear_gain=%.2f", this->memory_alloc_mode_to_str_(), this->afe_linear_gain_);
   ESP_LOGCONFIG(TAG, "  Task: core=%d, priority=%d, ringbuf=%d", this->task_core_, this->task_priority_, this->ringbuf_size_);
-  ESP_LOGCONFIG(TAG, "  Feed: %d samples, Fetch: %d samples, Channels: %d",
-                this->feed_chunksize_, this->fetch_chunksize_, this->total_channels_);
+  ESP_LOGCONFIG(TAG, "  Process: %d samples, Feed: %d samples, Fetch: %d samples, Channels: %d",
+                this->process_chunksize_, this->feed_chunksize_, this->fetch_chunksize_, this->total_channels_);
   ESP_LOGCONFIG(TAG, "  Initialized: %s", this->is_initialized() ? "YES" : "NO");
 }
 
 FrameSpec EspAfe::frame_spec() const {
   FrameSpec spec;
   spec.sample_rate = 16000;
+  // Keep the transport contract stable: if hardware provides 2 mics, duplex continues
+  // to feed both channels and the AFE wrapper decides whether to use both or just mic #1.
   spec.mic_channels = this->mic_num_;
   spec.ref_channels = 1;
-  spec.input_samples = this->feed_chunksize_;
+  spec.input_samples = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   spec.output_samples = this->fetch_chunksize_;
   return spec;
 }
@@ -383,7 +430,7 @@ FeatureControl EspAfe::feature_control(AudioFeature feature) const {
     case AudioFeature::VAD:
       return FeatureControl::RESTART_REQUIRED;
     case AudioFeature::SE:
-      return FeatureControl::NOT_SUPPORTED;  // dual-mic not yet implemented
+      return this->mic_num_ >= 2 ? FeatureControl::RESTART_REQUIRED : FeatureControl::NOT_SUPPORTED;
     default:
       return FeatureControl::NOT_SUPPORTED;
   }
@@ -392,6 +439,7 @@ FeatureControl EspAfe::feature_control(AudioFeature feature) const {
 bool EspAfe::set_feature(AudioFeature feature, bool enabled) {
   switch (feature) {
     case AudioFeature::AEC: return enabled ? this->enable_aec() : this->disable_aec();
+    case AudioFeature::SE:  return enabled ? this->enable_se()  : this->disable_se();
     case AudioFeature::NS:  return enabled ? this->enable_ns()  : this->disable_ns();
     case AudioFeature::VAD: return enabled ? this->enable_vad() : this->disable_vad();
     case AudioFeature::AGC: return enabled ? this->enable_agc() : this->disable_agc();
@@ -422,47 +470,69 @@ bool EspAfe::reconfigure(int type, int mode) {
 }
 
 bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) {
-  int fs = this->feed_chunksize_;
+  const int transport_mic_channels = this->mic_num_;
+  const int afe_mic_channels = this->afe_mic_channels_();
+  int qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   int os = this->fetch_chunksize_;
   if (!this->is_initialized() || this->config_mutex_ == nullptr) {
-    if (fs > 0 && os > 0) copy_passthrough_frame(in_mic, fs, out, os);
+    if (qs > 0 && os > 0) copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     return false;
   }
 
   if (xSemaphoreTake(this->config_mutex_, PROCESS_MUTEX_TIMEOUT) != pdTRUE) {
-    copy_passthrough_frame(in_mic, fs, out, os);
+    copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     return false;
   }
 
-  fs = this->feed_chunksize_;
+  qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   os = this->fetch_chunksize_;
-
-  if (this->warmup_remaining_ > 0) {
-    memset(this->feed_buf_, 0,
-           static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t));
-    this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
-    this->warmup_remaining_--;
-    copy_passthrough_frame(in_mic, fs, out, os);
+  int fs = this->feed_chunksize_;
+  if (qs <= 0 || os <= 0 || fs <= 0 || this->feed_buf_ == nullptr) {
+    copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
 
-  if (this->mic_num_ == 1) {
-    for (int i = 0; i < fs; i++) {
-      this->feed_buf_[i * 2] = in_mic[i];
-      this->feed_buf_[i * 2 + 1] = (in_ref != nullptr) ? in_ref[i] : 0;
-    }
-  } else {
-    for (int i = 0; i < fs; i++) {
-      this->feed_buf_[i * 3] = in_mic[i];
-      this->feed_buf_[i * 3 + 1] = in_mic[i];
-      this->feed_buf_[i * 3 + 2] = (in_ref != nullptr) ? in_ref[i] : 0;
-    }
+  int offset = this->staged_input_samples_;
+  if (offset + qs > fs) {
+    ESP_LOGW(TAG, "AFE staging overflow (%d + %d > %d), dropping staged input", offset, qs, fs);
+    offset = 0;
   }
 
-  this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
+  if (afe_mic_channels == 1) {
+    for (int i = 0; i < qs; i++) {
+      int dst = (offset + i) * 2;
+      this->feed_buf_[dst] = in_mic[i * transport_mic_channels];
+      this->feed_buf_[dst + 1] = (in_ref != nullptr) ? in_ref[i] : 0;
+    }
+  } else {
+    for (int i = 0; i < qs; i++) {
+      int dst = (offset + i) * 3;
+      this->feed_buf_[dst] = in_mic[i * 2];
+      this->feed_buf_[dst + 1] = in_mic[i * 2 + 1];
+      this->feed_buf_[dst + 2] = (in_ref != nullptr) ? in_ref[i] : 0;
+    }
+  }
+  offset += qs;
 
-  afe_fetch_result_t *result = this->afe_handle_->fetch_with_delay(this->afe_data_, pdMS_TO_TICKS(100));
+  bool fed = false;
+  if (offset == fs) {
+    if (this->warmup_remaining_ > 0) {
+      memset(this->feed_buf_, 0, static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t));
+      this->warmup_remaining_--;
+    }
+    this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
+    this->fetch_started_ = true;
+    offset = 0;
+    fed = true;
+  }
+  this->staged_input_samples_ = offset;
+
+  afe_fetch_result_t *result = nullptr;
+  if (this->fetch_started_) {
+    TickType_t wait = fed ? pdMS_TO_TICKS(2) : 0;
+    result = this->afe_handle_->fetch_with_delay(this->afe_data_, wait);
+  }
   bool processed = false;
   if (result != nullptr && result->ret_value == ESP_OK && result->data != nullptr) {
     size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
@@ -481,7 +551,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
     this->frame_count_++;
     processed = true;
   } else {
-    copy_passthrough_frame(in_mic, fs, out, os);
+    copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     this->voice_present_.store(false, std::memory_order_relaxed);
     this->frame_count_++;
   }
@@ -505,6 +575,20 @@ bool EspAfe::reinit_by_name(const std::string &name) {
 
 bool EspAfe::enable_aec() { return this->set_aec_enabled_runtime_(true); }
 bool EspAfe::disable_aec() { return this->set_aec_enabled_runtime_(false); }
+bool EspAfe::enable_se() {
+  if (this->mic_num_ < 2) {
+    ESP_LOGW(TAG, "SE requires mic_num >= 2");
+    return false;
+  }
+  return this->set_reinit_flag_(this->se_enabled_, true, "se_enabled");
+}
+bool EspAfe::disable_se() {
+  if (this->mic_num_ < 2) {
+    ESP_LOGW(TAG, "SE requires mic_num >= 2");
+    return false;
+  }
+  return this->set_reinit_flag_(this->se_enabled_, false, "se_enabled");
+}
 bool EspAfe::enable_ns() { return this->set_reinit_flag_(this->ns_enabled_, true, "ns_enabled"); }
 bool EspAfe::disable_ns() { return this->set_reinit_flag_(this->ns_enabled_, false, "ns_enabled"); }
 bool EspAfe::enable_vad() { return this->set_reinit_flag_(this->vad_enabled_, true, "vad_enabled"); }

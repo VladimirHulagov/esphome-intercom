@@ -15,6 +15,7 @@
 #include <freertos/semphr.h>
 
 #include <atomic>
+#include <numeric>
 
 namespace esphome {
 namespace esp_afe {
@@ -40,6 +41,7 @@ class EspAfe : public Component, public AudioProcessor {
   void set_mic_num(int num) { this->mic_num_ = num; }
   void set_aec_enabled(bool en) { this->aec_enabled_ = en; }
   void set_aec_filter_length(int len) { this->aec_filter_length_ = len; }
+  void set_se_enabled(bool en) { this->se_enabled_ = en; }
   void set_ns_enabled(bool en) { this->ns_enabled_ = en; }
   void set_vad_enabled(bool en) { this->vad_enabled_ = en; }
   void set_vad_mode(int mode) { this->vad_mode_ = mode; }
@@ -64,12 +66,15 @@ class EspAfe : public Component, public AudioProcessor {
   bool disable_aec();
   bool enable_ns();
   bool disable_ns();
+  bool enable_se();
+  bool disable_se();
   bool enable_vad();
   bool disable_vad();
   bool enable_agc();
   bool disable_agc();
 
   bool is_aec_enabled() const { return this->aec_enabled_; }
+  bool is_se_enabled() const { return this->mic_num_ >= 2 && this->se_enabled_; }
   bool is_ns_enabled() const { return this->ns_enabled_; }
   bool is_vad_enabled() const { return this->vad_enabled_; }
   bool is_agc_enabled() const { return this->agc_enabled_; }
@@ -86,6 +91,7 @@ class EspAfe : public Component, public AudioProcessor {
  protected:
   // Derive aec_mode_t from afe_type + afe_mode
   aec_mode_t derive_aec_mode_() const;
+  int afe_mic_channels_() const;
 
   struct AfeInstance {
     const esp_afe_sr_iface_t *handle{nullptr};
@@ -94,6 +100,7 @@ class EspAfe : public Component, public AudioProcessor {
     int16_t *feed_buf{nullptr};
     int feed_chunksize{0};
     int fetch_chunksize{0};
+    int process_chunksize{0};
     int total_channels{0};
   };
 
@@ -115,14 +122,18 @@ class EspAfe : public Component, public AudioProcessor {
   int16_t *feed_buf_{nullptr};
   int feed_chunksize_{0};   // per-channel samples expected by feed()
   int fetch_chunksize_{0};  // mono output samples returned by fetch()
+  int process_chunksize_{0};  // external process() input chunk size
   int total_channels_{2};   // 2 for "MR", 3 for "MMR"
+  int staged_input_samples_{0};
+  bool fetch_started_{false};
 
   // Config (set from Python, used in setup())
   int afe_type_{0};         // AFE_TYPE_SR
   int afe_mode_{0};         // AFE_MODE_LOW_COST
-  int mic_num_{1};
+  int mic_num_{1};  // physical microphone channels available from transport
   bool aec_enabled_{true};
   int aec_filter_length_{4};
+  bool se_enabled_{false};
   bool ns_enabled_{true};
   bool vad_enabled_{false};
   int vad_mode_{VAD_MODE_3};
@@ -201,6 +212,22 @@ class AfeNsSwitch : public AfeSwitchBase {
 
  protected:
   bool get_parent_state_() const override { return this->parent_->is_ns_enabled(); }
+};
+
+class AfeSeSwitch : public AfeSwitchBase {
+ public:
+  void write_state(bool state) override {
+    if (this->parent_ == nullptr)
+      return;
+    if ((state && this->parent_->enable_se()) || (!state && this->parent_->disable_se())) {
+      this->publish_state(state);
+    } else {
+      this->publish_parent_state_();
+    }
+  }
+
+ protected:
+  bool get_parent_state_() const override { return this->parent_->is_se_enabled(); }
 };
 
 class AfeVadSwitch : public AfeSwitchBase {

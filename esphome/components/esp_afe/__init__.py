@@ -24,6 +24,12 @@ def _validate_esp32_variant(config):
     return config
 
 
+def _validate_feature_config(config):
+    if config[CONF_SE_ENABLED] and config[CONF_MIC_NUM] < 2:
+        raise cv.Invalid("se_enabled requires mic_num: 2")
+    return config
+
+
 AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
 
 esp_afe_ns = cg.esphome_ns.namespace("esp_afe")
@@ -34,6 +40,7 @@ CONF_ESP_AFE_ID = "esp_afe_id"
 CONF_MIC_NUM = "mic_num"
 CONF_AEC_ENABLED = "aec_enabled"
 CONF_AEC_FILTER_LENGTH = "aec_filter_length"
+CONF_SE_ENABLED = "se_enabled"
 CONF_NS_ENABLED = "ns_enabled"
 CONF_VAD_ENABLED = "vad_enabled"
 CONF_AGC_ENABLED = "agc_enabled"
@@ -73,9 +80,10 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(EspAfe),
             cv.Optional(CONF_TYPE, default="sr"): cv.enum(AFE_TYPES, lower=True),
             cv.Optional(CONF_MODE, default="low_cost"): cv.enum(AFE_MODES, lower=True),
-            cv.Optional(CONF_MIC_NUM, default=1): cv.int_range(min=1, max=1),  # dual-mic not yet implemented
+            cv.Optional(CONF_MIC_NUM, default=1): cv.int_range(min=1, max=2),
             cv.Optional(CONF_AEC_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_AEC_FILTER_LENGTH, default=4): cv.int_range(min=1, max=8),
+            cv.Optional(CONF_SE_ENABLED, default=False): cv.boolean,
             cv.Optional(CONF_NS_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_VAD_ENABLED, default=False): cv.boolean,
             cv.Optional(CONF_VAD_MODE, default=3): cv.int_range(min=0, max=4),
@@ -97,6 +105,7 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_esp32_variant,
+    _validate_feature_config,
 )
 
 
@@ -109,6 +118,7 @@ async def to_code(config):
     cg.add(var.set_mic_num(config[CONF_MIC_NUM]))
     cg.add(var.set_aec_enabled(config[CONF_AEC_ENABLED]))
     cg.add(var.set_aec_filter_length(config[CONF_AEC_FILTER_LENGTH]))
+    cg.add(var.set_se_enabled(config[CONF_SE_ENABLED]))
     cg.add(var.set_ns_enabled(config[CONF_NS_ENABLED]))
     cg.add(var.set_vad_enabled(config[CONF_VAD_ENABLED]))
     cg.add(var.set_vad_mode(config[CONF_VAD_MODE]))

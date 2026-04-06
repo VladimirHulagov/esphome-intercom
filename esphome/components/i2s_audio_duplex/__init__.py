@@ -28,7 +28,7 @@ from esphome.components.esp32.const import (
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
-AUTO_LOAD = ["switch", "number"]
+AUTO_LOAD = ["switch", "number", "sensor"]
 
 CONF_I2S_LRCLK_PIN = "i2s_lrclk_pin"
 CONF_I2S_BCLK_PIN = "i2s_bclk_pin"
@@ -52,6 +52,7 @@ CONF_I2S_COMM_FMT = "i2s_comm_fmt"
 CONF_USE_TDM_REFERENCE = "use_tdm_reference"
 CONF_TDM_TOTAL_SLOTS = "tdm_total_slots"
 CONF_TDM_MIC_SLOT = "tdm_mic_slot"
+CONF_TDM_MIC_SLOTS = "tdm_mic_slots"
 CONF_TDM_REF_SLOT = "tdm_ref_slot"
 CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 CONF_TASK_PRIORITY = "task_priority"
@@ -121,15 +122,19 @@ def _validate_tdm_config(config):
 
     if use_tdm:
         total_slots = config.get(CONF_TDM_TOTAL_SLOTS, 4)
-        mic_slot = config.get(CONF_TDM_MIC_SLOT, 0)
         ref_slot = config.get(CONF_TDM_REF_SLOT, 1)
+        mic_slots = config.get(CONF_TDM_MIC_SLOTS, [config.get(CONF_TDM_MIC_SLOT, 0)])
 
-        if mic_slot == ref_slot:
-            raise cv.Invalid(
-                f"tdm_mic_slot ({mic_slot}) and tdm_ref_slot ({ref_slot}) must differ"
-            )
+        if len(set(mic_slots)) != len(mic_slots):
+            raise cv.Invalid("tdm_mic_slots must not contain duplicates")
 
-        max_slot = max(mic_slot, ref_slot)
+        for mic_slot in mic_slots:
+            if mic_slot == ref_slot:
+                raise cv.Invalid(
+                    f"tdm_mic_slots contains ref slot {ref_slot}; microphone and reference slots must differ"
+                )
+
+        max_slot = max([ref_slot, *mic_slots])
         if total_slots <= max_slot:
             raise cv.Invalid(
                 f"tdm_total_slots ({total_slots}) must be > {max_slot} "
@@ -200,6 +205,10 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_USE_TDM_REFERENCE, default=False): cv.boolean,
         cv.Optional(CONF_TDM_TOTAL_SLOTS, default=4): cv.int_range(min=2, max=8),
         cv.Optional(CONF_TDM_MIC_SLOT, default=0): cv.int_range(min=0, max=7),
+        cv.Optional(CONF_TDM_MIC_SLOTS): cv.All(
+            cv.ensure_list(cv.int_range(min=0, max=7)),
+            cv.Length(min=1, max=2),
+        ),
         cv.Optional(CONF_TDM_REF_SLOT, default=1): cv.int_range(min=0, max=7),
         # Audio task tuning (advanced)
         cv.Optional(CONF_TASK_PRIORITY, default=19): cv.int_range(min=1, max=24),
@@ -335,7 +344,10 @@ async def to_code(config):
     if config[CONF_USE_TDM_REFERENCE]:
         cg.add(var.set_use_tdm_reference(True))
         cg.add(var.set_tdm_total_slots(config[CONF_TDM_TOTAL_SLOTS]))
-        cg.add(var.set_tdm_mic_slot(config[CONF_TDM_MIC_SLOT]))
+        mic_slots = config.get(CONF_TDM_MIC_SLOTS, [config[CONF_TDM_MIC_SLOT]])
+        cg.add(var.set_tdm_mic_slot(mic_slots[0]))
+        if len(mic_slots) > 1:
+            cg.add(var.set_secondary_tdm_mic_slot(mic_slots[1]))
         cg.add(var.set_tdm_ref_slot(config[CONF_TDM_REF_SLOT]))
 
     # Audio task tuning

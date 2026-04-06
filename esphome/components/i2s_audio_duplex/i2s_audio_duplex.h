@@ -14,6 +14,7 @@
 #include <freertos/task.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -161,7 +162,15 @@ class I2SAudioDuplex : public Component {
   void set_use_tdm_reference(bool use) { this->use_tdm_ref_ = use; }
   void set_tdm_total_slots(uint8_t n) { this->tdm_total_slots_ = n; }
   void set_tdm_mic_slot(uint8_t slot) { this->tdm_mic_slot_ = slot; }
+  void set_secondary_tdm_mic_slot(int8_t slot) { this->tdm_second_mic_slot_ = slot; }
   void set_tdm_ref_slot(uint8_t slot) { this->tdm_ref_slot_ = slot; }
+  void set_tdm_slot_level_sensor_enabled(uint8_t slot, bool enabled) {
+    if (slot < 8) this->tdm_slot_level_sensor_enabled_[slot] = enabled;
+  }
+  float get_tdm_slot_level_dbfs(uint8_t slot) const {
+    if (slot >= 8) return -120.0f;
+    return this->tdm_slot_level_dbfs_[slot].load(std::memory_order_relaxed);
+  }
 
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
@@ -228,13 +237,16 @@ class I2SAudioDuplex : public Component {
     bool correct_dc_offset{false};
     uint8_t tdm_total_slots{0};
     uint8_t tdm_mic_slot{0};
+    int8_t tdm_second_mic_slot{-1};
     uint8_t tdm_ref_slot{0};
+    uint8_t processor_mic_channels{1};
 
     // ── Frame sizing ──
     size_t input_frame_size{0};
     size_t output_frame_size{0};
     size_t bus_frame_size{0};
     size_t input_frame_bytes{0};
+    size_t processor_input_frame_bytes{0};
     size_t output_frame_bytes{0};
     size_t bus_frame_bytes{0};
     size_t rx_frame_bytes{0};
@@ -243,11 +255,14 @@ class I2SAudioDuplex : public Component {
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
     int16_t *rx_buffer{nullptr};
     int16_t *mic_buffer{nullptr};
+    int16_t *secondary_mic_buffer{nullptr};
+    int16_t *processor_mic_buffer{nullptr};
     int16_t *spk_buffer{nullptr};
     int16_t *spk_ref_buffer{nullptr};
     int16_t *deint_ref{nullptr};
     int16_t *deint_mic{nullptr};
     int16_t *tdm_deint_mic{nullptr};
+    int16_t *tdm_deint_mic_secondary{nullptr};
     int16_t *tdm_deint_ref{nullptr};
     int16_t *tdm_tx_buffer{nullptr};
     int16_t *aec_output{nullptr};
@@ -256,6 +271,9 @@ class I2SAudioDuplex : public Component {
     int consecutive_i2s_errors{0};
     int32_t dc_prev_input{0};
     int32_t dc_prev_output{0};
+    int32_t dc_prev_input_secondary{0};
+    int32_t dc_prev_output_secondary{0};
+    const int16_t *processor_input{nullptr};
     int16_t *output_buffer{nullptr};  // points to mic_buffer or aec_output
     size_t current_output_frame_bytes{0};
     size_t current_output_frame_size{0};
@@ -276,6 +294,7 @@ class I2SAudioDuplex : public Component {
   void process_rx_path_(AudioTaskCtx &ctx);
   void process_aec_and_callbacks_(AudioTaskCtx &ctx);
   void process_tx_path_(AudioTaskCtx &ctx);
+  void update_tdm_slot_levels_(const AudioTaskCtx &ctx);
 
   // Pin configuration
   int lrclk_pin_{-1};
@@ -301,6 +320,7 @@ class I2SAudioDuplex : public Component {
 
   // FIR decimators for mic path
   FirDecimator mic_decimator_;
+  FirDecimator secondary_mic_decimator_;
   FirDecimator ref_decimator_;          // Stereo mode: RX L channel ref
   FirDecimator play_ref_decimator_;     // Mono mode: bus-rate ref from play() decimated in audio_task
 
@@ -352,7 +372,11 @@ class I2SAudioDuplex : public Component {
   bool use_tdm_ref_{false};
   uint8_t tdm_total_slots_{4};
   uint8_t tdm_mic_slot_{0};    // TDM slot index for voice mic
+  int8_t tdm_second_mic_slot_{-1};  // Optional second mic slot for dual-mic AFE
   uint8_t tdm_ref_slot_{1};    // TDM slot index for AEC reference
+  bool tdm_slot_level_sensor_enabled_[8] = {false};
+  std::atomic<float> tdm_slot_level_dbfs_[8] = {};
+  uint8_t tdm_slot_level_divider_{0};
 
   // AEC gating: only run echo canceller while speaker has recent real audio.
   std::atomic<uint32_t> last_speaker_audio_ms_{0};

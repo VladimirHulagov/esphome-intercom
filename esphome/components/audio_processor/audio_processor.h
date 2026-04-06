@@ -54,7 +54,10 @@ class AudioProcessor {
   virtual FrameSpec frame_spec() const = 0;
 
   /// Process one frame.
-  /// @param in_mic  mic input, frame_spec().input_samples per channel
+  /// @param in_mic  mic input. For mic_channels == 1 this is a mono buffer with
+  ///                frame_spec().input_samples samples. For mic_channels > 1 the
+  ///                samples are interleaved by channel:
+  ///                [mic1_0, mic2_0, mic1_1, mic2_1, ...]
   /// @param in_ref  reference input (speaker loopback), same size. May be nullptr.
   /// @param out     output buffer, frame_spec().output_samples
   /// @return true if processed by DSP, false if passthrough (unprocessed copy)
