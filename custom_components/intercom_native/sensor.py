@@ -41,7 +41,7 @@ class IntercomActiveDevicesSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         """Run when entity is added to hass."""
-        # Initial scan — builds _tracked_entities cache
+        # Initial scan: builds _tracked_entities cache
         await self._update_active_devices()
 
         @callback

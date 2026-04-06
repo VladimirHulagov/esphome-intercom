@@ -1,5 +1,5 @@
 # =============================================================================
-# Waveshare ESP32-S3-AUDIO-Board -- VA + Intercom + MWW (no display)
+# Waveshare ESP32-S3-AUDIO-Board: VA + Intercom + MWW (no display)
 # =============================================================================
 #
 # Hardware:
@@ -256,7 +256,7 @@ speaker:
     task_stack_in_psram: true
 
 # =============================================================================
-# Media Player (platform component -- must be in device, not package)
+# Media Player (platform component; must be in device, not package)
 # =============================================================================
 media_player:
   - platform: speaker
@@ -291,7 +291,7 @@ media_player:
       - script.execute: update_status
 
 # =============================================================================
-# Micro Wake Word -- Hardware config (callbacks from package)
+# Micro Wake Word: Hardware config (callbacks from package)
 # =============================================================================
 micro_wake_word:
   microphone: mic_main
@@ -302,7 +302,7 @@ micro_wake_word:
     - model: alexa
 
 # =============================================================================
-# Voice Assistant -- Hardware config (callbacks from package)
+# Voice Assistant: Hardware config (callbacks from package)
 # =============================================================================
 voice_assistant:
   microphone: mic_main
@@ -313,7 +313,7 @@ voice_assistant:
   volume_multiplier: 2.0
 
 # =============================================================================
-# Intercom API -- Hardware config (callbacks from package)
+# Intercom API: Hardware config (callbacks from package)
 # =============================================================================
 intercom_api:
   mode: full
@@ -328,7 +328,7 @@ binary_sensor:
   - platform: status
     name: Status
 
-  # BOOT button (GPIO0) -- multi-click
+  # BOOT button (GPIO0), multi-click
   - platform: gpio
     name: Boot Button
     id: boot_button
@@ -373,7 +373,7 @@ binary_sensor:
         then:
           - switch.toggle: mute
 
-  # KEY1 (TCA9555 EXIO9) -- Call/Answer/Hangup
+  # KEY1 (TCA9555 EXIO9): Call/Answer/Hangup
   - platform: gpio
     name: Key 1
     id: key1
@@ -387,7 +387,7 @@ binary_sensor:
     on_press:
       - intercom_api.call_toggle: intercom
 
-  # KEY2 (TCA9555 EXIO10) -- Next contact
+  # KEY2 (TCA9555 EXIO10): Next contact
   - platform: gpio
     name: Key 2
     id: key2
@@ -401,7 +401,7 @@ binary_sensor:
     on_press:
       - intercom_api.next_contact: intercom
 
-  # KEY3 (TCA9555 EXIO11) -- Decline / Previous contact
+  # KEY3 (TCA9555 EXIO11): Decline / Previous contact
   - platform: gpio
     name: Key 3
     id: key3

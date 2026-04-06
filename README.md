@@ -331,7 +331,7 @@ button:
 
 #### Direct GPIO Calls (Apartment Intercom)
 
-Each GPIO button can call a different room — like a condominium intercom panel:
+Each GPIO button can call a different room, like a condominium intercom panel:
 
 ```yaml
 binary_sensor:
@@ -362,11 +362,11 @@ binary_sensor:
           id: intercom
 ```
 
-> ⚠️ **Name matching is exact (case-sensitive).** The `contact` value must match the device name exactly as it appears in the contacts list. There is no fuzzy matching or validation — a typo will silently fail and fire `on_call_failed`.
+> ⚠️ **Name matching is exact (case-sensitive).** The `contact` value must match the device name exactly as it appears in the contacts list. There is no fuzzy matching or validation; a typo will silently fail and fire `on_call_failed`.
 >
 > Contact names come from the `name:` substitution in each device's YAML. Home Assistant converts the ESPHome name to a display name: `name: kitchen-intercom` → HA device name `Kitchen Intercom` (hyphens become spaces, words capitalized).
 >
-> **How to verify the correct name:** check the `sensor.{name}_destination` entity in HA — cycle through contacts and note the exact string shown for each device.
+> **How to verify the correct name:** check the `sensor.{name}_destination` entity in HA, cycle through contacts, and note the exact string shown for each device.
 
 ### 3. Lovelace Card
 
@@ -967,7 +967,7 @@ AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU co
 esp_aec:
   sample_rate: 16000
   filter_length: 4       # 64ms tail, sufficient for integrated codecs
-  mode: sr_low_cost      # Linear AEC — best for MWW + VA, lowest CPU
+  mode: sr_low_cost      # Linear AEC, best for MWW + VA, lowest CPU
 
 i2s_audio_duplex:
   # ... pins ...

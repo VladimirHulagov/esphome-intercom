@@ -11,7 +11,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this._buffer = [];
-    this._targetSamples = 512; // 32ms chunks @ 16kHz — matches ESP AUDIO_CHUNK_SIZE
+    this._targetSamples = 512; // 32ms chunks @ 16kHz, matches ESP AUDIO_CHUNK_SIZE
     this._frameCount = 0;
     this._chunksSent = 0;
     this._totalSamplesProcessed = 0;

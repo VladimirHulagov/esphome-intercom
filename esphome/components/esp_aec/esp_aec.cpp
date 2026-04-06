@@ -90,7 +90,7 @@ void EspAec::process(const int16_t *mic_in, const int16_t *ref_in, int16_t *out,
   if (this->handle_ == nullptr || frame_size != this->cached_frame_size_) {
     // Passthrough if not initialized or frame size mismatch after mode change
     if (this->handle_ != nullptr && frame_size != this->cached_frame_size_) {
-      ESP_LOGW(TAG, "Frame size mismatch: got %d, expected %d — passthrough", frame_size, this->cached_frame_size_);
+      ESP_LOGW(TAG, "Frame size mismatch: got %d, expected %d, passthrough", frame_size, this->cached_frame_size_);
     }
     memcpy(out, mic_in, frame_size * sizeof(int16_t));
     return;

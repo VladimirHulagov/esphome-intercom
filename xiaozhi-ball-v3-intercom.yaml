@@ -1,5 +1,5 @@
 # ==============================================================================
-# Xiaozhi Ball V3 — Intercom Only (no VA, no MWW, no LVGL)
+# Xiaozhi Ball V3: Intercom Only (no VA, no MWW, no LVGL)
 # ==============================================================================
 #
 # Xiaozhi Ball V3 with ES8311 codec, GC9A01A round display, and WS2812 LED.

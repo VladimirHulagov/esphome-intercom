@@ -81,7 +81,7 @@ graph TD
 | `mixer` (ESPHome) | Any | 10 | Mix VA + intercom audio to speaker |
 | `MWW inference` (ESPHome) | Unpinned | 3→**8** | Wake word TFLite inference (boost via on_boot lambda) |
 | ESPHome main loop / LVGL | Core 1 | 1 | Switches, sensors, display, etc. |
-| WiFi driver (ESP-IDF) | Core 0 | 23 | System — can briefly preempt audio_task |
+| WiFi driver (ESP-IDF) | Core 0 | 23 | System; can briefly preempt audio_task |
 
 **Core allocation rationale:**
 - **Core 0**: Real-time audio (I2S + AEC). WiFi (prio 23) briefly preempts for sub-ms bursts.
@@ -230,7 +230,7 @@ i2s_audio_duplex:
 
 **How it works:**
 - ES8311 register 0x44 is configured to output DAC+ADC on ASDOUT as stereo
-- L channel = DAC loopback (reference signal), R channel = ADC (microphone) — configurable via `reference_channel`
+- L channel = DAC loopback (reference signal), R channel = ADC (microphone), configurable via `reference_channel`
 - Reference is **sample-accurate** (same I2S frame as mic) → best possible AEC
 - The reference comes directly from the I2S RX deinterleave, sample-accurate
 
@@ -253,7 +253,7 @@ i2s_audio_duplex:
 - ES7210 operates in TDM mode with 4 interleaved slots per I2S frame
 - MIC1 (slot 0) captures voice, MIC3 (slot 1) captures the ES8311 analog output
 - I2S is configured as `I2S_SLOT_MODE_STEREO` with TDM slot mask so all slots appear in DMA
-- The audio task deinterleaves mic and ref from the TDM frame — they are inherently sample-aligned
+- The audio task deinterleaves mic and ref from the TDM frame; they are inherently sample-aligned
 - The hardware ref is naturally silent when speaker is silent
 - The analog reference already reflects DAC hardware volume
 
@@ -282,7 +282,7 @@ esphome:
 
 ### Multi-Rate: 48kHz I2S Bus with FIR Decimation
 
-Many audio codecs (ES8311, ES7210, WM8960) operate **natively at 48kHz**. Running the I2S bus at 16kHz forces the codec's internal PLL to generate a non-standard clock, which often results in audible artifacts, worse SNR, and suboptimal DAC/ADC performance. At 48kHz the codec produces noticeably cleaner audio — lower noise floor, better high-frequency response for TTS and media playback.
+Many audio codecs (ES8311, ES7210, WM8960) operate **natively at 48kHz**. Running the I2S bus at 16kHz forces the codec's internal PLL to generate a non-standard clock, which often results in audible artifacts, worse SNR, and suboptimal DAC/ADC performance. At 48kHz the codec produces noticeably cleaner audio: lower noise floor, better high-frequency response for TTS and media playback.
 
 The challenge: AEC (ESP-SR), Micro Wake Word (TFLite Micro), Voice Assistant STT, and intercom all require **16kHz** input. The solution is to run the I2S bus at 48kHz and internally decimate the mic path to 16kHz using a FIR anti-alias filter.
 
@@ -296,9 +296,9 @@ I2S bus: 48kHz ─────┤
                     └─── Mic path (48kHz) ───┘──→ 16kHz ──→ AEC / MWW / VA / intercom
 ```
 
-The FIR decimator uses a **31-tap lowpass filter** (Kaiser window β=8.0, cutoff 7.5kHz, ~35dB stopband attenuation (adequate for speech)) implemented in **float32** on the ESP32-S3 hardware FPU. It is applied separately to the mic channel and the AEC reference channel. CPU overhead at ratio=3 is approximately **0.5% of Core 0** per frame — negligible.
+The FIR decimator uses a **31-tap lowpass filter** (Kaiser window β=8.0, cutoff 7.5kHz, ~35dB stopband attenuation (adequate for speech)) implemented in **float32** on the ESP32-S3 hardware FPU. It is applied separately to the mic channel and the AEC reference channel. CPU overhead at ratio=3 is approximately **0.5% of Core 0** per frame, which is negligible.
 
-If `output_sample_rate` is omitted the decimation ratio is 1 and the FIR code is **completely bypassed** — zero overhead, fully backward compatible.
+If `output_sample_rate` is omitted the decimation ratio is 1 and the FIR code is **completely bypassed**: zero overhead, fully backward compatible.
 
 | Parameter | Value |
 |-----------|-------|
@@ -317,7 +317,7 @@ If `output_sample_rate` is omitted the decimation ratio is 1 and the FIR code is
 i2s_audio_duplex:
   id: i2s_duplex
   # ... pins ...
-  sample_rate: 48000           # I2S bus rate — ES8311/ES7210 native, best DAC quality
+  sample_rate: 48000           # I2S bus rate (ES8311/ES7210 native, best DAC quality)
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR filter
   aec_id: aec_component
   use_stereo_aec_reference: true    # Reference from I2S RX stereo deinterleave (no delay needed)
@@ -326,7 +326,7 @@ esp_aec:
   id: aec_component
   sample_rate: 16000           # AEC always operates on 16kHz audio
   filter_length: 4
-  mode: sr_low_cost      # Linear AEC — preserves spectral features for MWW
+  mode: sr_low_cost      # Linear AEC, preserves spectral features for MWW
 ```
 
 #### Speaker Path: ResamplerSpeaker + Mixer
@@ -335,7 +335,7 @@ Since the I2S bus runs at 48kHz the speaker must also receive 48kHz audio. ESPHo
 
 ```yaml
 speaker:
-  # Hardware output — writes 48kHz PCM to the I2S bus
+  # Hardware output: writes 48kHz PCM to the I2S bus
   - platform: i2s_audio_duplex
     id: hw_speaker
     i2s_audio_duplex_id: i2s_duplex
@@ -541,7 +541,7 @@ binary_sensor:
 - **Task Priority**: 19 (above lwIP at 18, below WiFi at 23). Configurable via `task_priority` YAML option.
 - **Core Affinity**: Pinned to Core 0 (canonical Espressif AEC pattern; frees Core 1 for MWW inference and LVGL). Configurable via `task_core` YAML option.
 - **AEC Gating**: Mono/stereo modes process AEC only when speaker had real audio within last 250ms. TDM mode is always-on (hardware ref captures silence naturally, no filter drift).
-- **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed` — including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
+- **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed`, including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
 - **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally).
 - **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure AEC (`aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of AEC and DC offset processing; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
@@ -553,8 +553,8 @@ For reliable audio on PSRAM-based devices, these sdkconfig options are **critica
 **ESP32-S3:**
 ```yaml
 sdkconfig_options:
-  CONFIG_ESP32S3_DATA_CACHE_64KB: "y"       # Default is 32KB — too small for audio+PSRAM
-  CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"   # Default is 32B — 64B reduces cache misses
+  CONFIG_ESP32S3_DATA_CACHE_64KB: "y"       # Default is 32KB, too small for audio+PSRAM
+  CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"   # Default is 32B; 64B reduces cache misses
   CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"     # Move code to PSRAM, frees internal SRAM
   CONFIG_SPIRAM_RODATA: "y"                 # Move read-only data to PSRAM
   CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"    # TLS buffers in PSRAM (saves ~40KB internal)
@@ -563,7 +563,7 @@ sdkconfig_options:
 **ESP32-P4:**
 ```yaml
 sdkconfig_options:
-  CONFIG_CACHE_L2_CACHE_256KB: "y"          # Default is 128KB — 256KB for MIPI DSI+audio+LVGL
+  CONFIG_CACHE_L2_CACHE_256KB: "y"          # Default is 128KB; 256KB for MIPI DSI+audio+LVGL
   CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
   CONFIG_SPIRAM_RODATA: "y"
   CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"       # esp32_hosted + MIPI can block main loop
@@ -590,10 +590,10 @@ Removing any of these causes audio glitch at stream startup (cache cold-start: e
 3. Adjust `filter_length` (4 for integrated codec, 8 for separate speaker)
 
 ### TDM Mode: Audio Corruption (Whistle/Machine Gun Noise)
-1. Ensure I2S uses `I2S_SLOT_MODE_STEREO` (not MONO) for TDM — MONO only puts slot 0 in DMA
+1. Ensure I2S uses `I2S_SLOT_MODE_STEREO` (not MONO) for TDM. MONO only puts slot 0 in DMA
 2. Check ES7210 TDM register initialization (reg 0x12 = 0x02 for TDM mode)
 3. Verify `tdm_total_slots` matches the actual ES7210 slot count
-4. Check DMA buffer size — at 4 slots, `dma_frame_num` should be 256 (2048 bytes/descriptor, under 4092 limit)
+4. Check DMA buffer size: at 4 slots, `dma_frame_num` should be 256 (2048 bytes/descriptor, under 4092 limit)
 
 ### MWW Not Detecting During TTS
 1. **Use `sr_low_cost` AEC mode** (not VOIP). See [AEC Mode Comparison](#aec-mode-comparison).
@@ -606,7 +606,7 @@ Removing any of these causes audio glitch at stream startup (cache cold-start: e
 With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Core 1. This issue is resolved by correct core assignment. If you still see display slowness, check that no other high-priority task is pinned to Core 1.
 
 ### SPI Errors (err 101) With AEC
-1. Use `mode: sr_low_cost` or `mode: voip_low_cost` — `sr_high_perf` exhausts DMA memory on ESP32-S3
+1. Use `mode: sr_low_cost` or `mode: voip_low_cost`. `sr_high_perf` exhausts DMA memory on ESP32-S3
 2. Enable `buffers_in_psram: true` to free internal heap
 3. Reduce display update interval (500ms+) to avoid SPI bus contention
 4. Check free heap in logs after boot
@@ -614,7 +614,7 @@ With `i2s_duplex` on **Core 0**, AEC no longer competes with LVGL/display on Cor
 ## Known Limitations
 
 - **Media files should match bus sample rate**: For best quality, use media files at the bus `sample_rate` (e.g. 48kHz). The `resampler` speaker handles conversion from any rate, but native rate avoids resampling artifacts.
-- **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless** — these components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
+- **loopTask long-operation warnings during 48kHz streaming**: ESPHome reports `[W] mixer.speaker took a long time (110ms)` and similar warnings for `resampler.speaker`, `api`, `wifi` during audio playback. This is **expected and harmless**. These components run in loopTask (Core 1, prio 1) and process audio/network chunks that take >30ms. All real-time audio runs in dedicated tasks on Core 0 and is unaffected.
 - **AEC is ESP-SR closed-source**: Cannot reset the adaptive filter without recreating the handle. Gating (timeout-based bypass when speaker has been silent for >250ms) is the workaround.
 - **TDM analog reference vs ES8311 digital feedback**: The digital feedback path (ES8311 stereo loopback) provides a cleaner reference signal for AEC than the TDM analog path (ES7210 MIC3 capturing speaker output). Analog loopback introduces non-linear distortion from the DAC/amplifier chain that the AEC linear adaptive filter cannot fully model. Expect ~95-98% echo cancellation with analog reference vs ~99% with digital feedback. Both are adequate for voice assistant and intercom use.
 - **AEC reference**: The reference signal is always the exact post-volume PCM sent to the speaker, with no additional scaling. For hardware codec setups (ES8311, TDM), the reference naturally includes hardware volume. For software reference (no codec), the reference includes software volume. `mic_gain_pre_aec` is applied only to the mic signal, not the reference.

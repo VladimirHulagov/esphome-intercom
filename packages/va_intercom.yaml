@@ -1,16 +1,16 @@
 # =============================================================================
-# VA + Intercom Package -- Shared state machine for ALL devices
+# VA + Intercom Package: Shared state machine for ALL devices
 # =============================================================================
 #
 # Package owns ALL callbacks. Devices customize via hook scripts only.
 #
 # Hook scripts (placeholders, devices !extend):
-#   update_led           -- LED control from g_applied_led
-#   ui_state_changed     -- display routing after state change (mode: restart)
-#   ui_tts_started(text) -- TTS text for display (emoticon parse, show text)
-#   ui_stt_ended(text)   -- STT text for display (show request)
-#   ui_ic_call(peer)     -- intercom call display (peer label, mode switch)
-#   va_end_cleanup       -- display cleanup after VA ends
+#   update_led            LED control from g_applied_led
+#   ui_state_changed      display routing after state change (mode: restart)
+#   ui_tts_started(text)  TTS text for display (emoticon parse, show text)
+#   ui_stt_ended(text)    STT text for display (show request)
+#   ui_ic_call(peer)      intercom call display (peer label, mode switch)
+#   va_end_cleanup        display cleanup after VA ends
 #
 # Substitutions: ${friendly_name}, ${mic_id} (default: mic_main)
 # =============================================================================
@@ -307,7 +307,7 @@ script:
                       id: g_ducking_active
                       value: "0"
 
-  # --- Hook placeholders (devices !extend) ---
+  # Hook placeholders (devices !extend)
   - id: update_led
     mode: restart
     then: []
@@ -329,7 +329,7 @@ script:
   - id: va_end_cleanup
     then: []
 
-  # --- Core scripts ---
+  # Core scripts
   - id: va_end_handler
     mode: restart
     then:

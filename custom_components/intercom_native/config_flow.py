@@ -1,4 +1,4 @@
-"""Config flow for Intercom Native — single-click setup, no fields needed."""
+"""Config flow for Intercom Native. Single-click setup, no fields needed."""
 
 from homeassistant.config_entries import ConfigFlow
 
@@ -11,7 +11,7 @@ class IntercomNativeConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input=None):
-        """Handle the initial step — just confirm installation."""
+        """Handle the initial step: just confirm installation."""
         if user_input is not None:
             # Prevent duplicate entries
             await self.async_set_unique_id(DOMAIN)

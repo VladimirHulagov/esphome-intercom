@@ -266,7 +266,7 @@ Navigate contact list (Full mode only).
 
 ### intercom_api.set_contact
 
-Select a specific contact by name and optionally start a call. This is the key building block for **GPIO-triggered calls** — each button can call a different device.
+Select a specific contact by name and optionally start a call. This is the key building block for **GPIO-triggered calls**: each button can call a different device.
 
 ```yaml
 - intercom_api.set_contact:
@@ -278,7 +278,7 @@ Select a specific contact by name and optionally start a call. This is the key b
 
 #### Example: Multi-Button Intercom (Apartment Doorbell)
 
-Each GPIO button calls a different room — like a condominium intercom panel:
+Each GPIO button calls a different room, like a condominium intercom panel:
 
 ```yaml
 binary_sensor:
@@ -478,7 +478,7 @@ api:
 | tx_task | 0 | 5 | 12288 | **Only created when `aec_id` is set on `intercom_api`**. Mic→network + AEC. |
 | speaker_task | 0 | 4 | 8192 | **Only created when `aec_id` is set on `intercom_api`**. Network→speaker, AEC ref. |
 
-> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case — AEC is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
+> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case, where AEC is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
 
 ## Troubleshooting
 

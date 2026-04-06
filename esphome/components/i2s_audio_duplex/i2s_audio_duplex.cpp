@@ -29,7 +29,7 @@ static i2s_mclk_multiple_t get_mclk_multiple(uint32_t mult) {
 }
 
 // Helper: get STD slot config for the configured comm format (0=philips, 1=msb, 2=pcm_short, 3=pcm_long)
-// Note: PCM short/long are TDM-only in ESP-IDF — fall back to Philips in STD mode
+// Note: PCM short/long are TDM-only in ESP-IDF; falls back to Philips in STD mode
 static i2s_std_slot_config_t get_std_slot_config(uint8_t fmt, i2s_data_bit_width_t bw, i2s_slot_mode_t mode) {
   switch (fmt) {
     case 1: return I2S_STD_MSB_SLOT_DEFAULT_CONFIG(bw, mode);
@@ -95,7 +95,7 @@ void I2SAudioDuplex::setup() {
     return;
   }
 
-  // AEC reference (mono mode only — stereo/TDM get ref from I2S RX).
+  // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
   // Direct from previous TX frame, no ring buffer needed (single-bus = same DMA cycle).
   if (this->aec_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
@@ -639,7 +639,7 @@ void I2SAudioDuplex::audio_task_() {
 
   // ESP-IDF new I2S driver manages its own internal DMA ring buffers.
   // i2s_channel_read/write use memcpy to/from user buffers (verified in i2s_common.c:1337,1387).
-  // User buffers do NOT need MALLOC_CAP_DMA — they can safely be in PSRAM.
+  // User buffers do NOT need MALLOC_CAP_DMA; they can safely be in PSRAM.
   // With buffers_in_psram=true, all buffers go to PSRAM (~28KB internal heap saved).
   // Required for sr_low_cost AEC mode (512-sample frames = larger buffers).
   const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;

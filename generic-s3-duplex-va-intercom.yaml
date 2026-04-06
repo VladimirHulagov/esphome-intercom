@@ -189,7 +189,7 @@ media_player:
       - script.execute: update_status
 
 # =============================================================================
-# Micro Wake Word -- Device part
+# Micro Wake Word: Device part
 # =============================================================================
 micro_wake_word:
   microphone: mic_main
@@ -199,7 +199,7 @@ micro_wake_word:
       sliding_window_size: ${wake_word_sliding_window_size}
 
 # =============================================================================
-# Voice Assistant -- Device part
+# Voice Assistant: Device part
 # =============================================================================
 voice_assistant:
   microphone: mic_main
@@ -210,7 +210,7 @@ voice_assistant:
   volume_multiplier: 2.0
 
 # =============================================================================
-# Intercom API -- Device part
+# Intercom API: Device part
 # =============================================================================
 intercom_api:
   mode: full

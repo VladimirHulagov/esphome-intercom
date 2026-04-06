@@ -64,7 +64,7 @@ void IntercomApi::setup() {
     }
   }
 
-  // Allocate frame buffers (internal RAM — intercom_api must work on devices without PSRAM)
+  // Allocate frame buffers (internal RAM; intercom_api must work on devices without PSRAM)
   this->tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
   this->rx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
 
@@ -715,7 +715,7 @@ void IntercomApi::set_active_(bool on) {
 #ifdef USE_SPEAKER
     if (this->speaker_) {
       if (this->has_intercom_aec_() && this->speaker_stopped_sem_) {
-        // AEC mode: use single-owner model — speaker_task owns the hardware
+        // AEC mode: use single-owner model. speaker_task owns the hardware
         // 1. Request speaker_task to stop the speaker
         // 2. Wait for acknowledgment (with timeout)
         this->speaker_stop_requested_.store(true, std::memory_order_release);
@@ -725,7 +725,7 @@ void IntercomApi::set_active_(bool on) {
         this->speaker_stop_requested_.store(false, std::memory_order_release);
       } else {
         // No AEC: no speaker_task exists, stop speaker directly from server_task (Core 1)
-        // speaker_->stop() is safe here — it just sets state + signals the mixer
+        // speaker_->stop() is safe here; it just sets state + signals the mixer
         this->speaker_->stop();
       }
     }
@@ -815,7 +815,7 @@ void IntercomApi::end_call_(CallEndReason reason) {
     this->hangup_trigger_.trigger(reason_str);
   }
 
-  // NOTE: stop_trigger_ is NOT fired here — set_active_(false) already fires it.
+  // NOTE: stop_trigger_ is NOT fired here. set_active_(false) already fires it.
   // Callers must ensure set_active_(false) is called before end_call_().
 
   this->set_call_state_(CallState::IDLE);
@@ -914,13 +914,13 @@ void IntercomApi::server_task_() {
           this->active_.load(std::memory_order_acquire) &&
           this->client_.streaming.load(std::memory_order_acquire) &&
           client_fd >= 0) {
-        // Drain mic_buffer — send all available chunks
+        // Drain mic_buffer: send all available chunks
         while (this->mic_buffer_->available() >= AUDIO_CHUNK_SIZE) {
           uint8_t audio_chunk[AUDIO_CHUNK_SIZE];
           size_t read = this->mic_buffer_->read(audio_chunk, AUDIO_CHUNK_SIZE, 0);
           if (read != AUDIO_CHUNK_SIZE) break;
 
-          // Use send_message_ (takes send_mutex_, uses tx_buffer_) — safe because
+          // Use send_message_ (takes send_mutex_, uses tx_buffer_). Safe because
           // server_task is the only sender when tx_task doesn't exist
           this->send_message_(client_fd, MessageType::AUDIO, MessageFlags::NONE,
                               audio_chunk, AUDIO_CHUNK_SIZE);
@@ -1320,7 +1320,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
           }
         }
       } else if (this->speaker_) {
-        // No AEC: play directly from server_task — speaker_->play() is non-blocking
+        // No AEC: play directly from server_task. speaker_->play() is non-blocking
         // (writes to mixer ring buffer, mixer task does the actual I2S output)
         if (this->volume_ > 0.001f) {
           this->speaker_->play(data, header.length, 0);
@@ -1439,7 +1439,7 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
     case MessageType::ERROR:
       if (header.length > 0) {
         ESP_LOGE(TAG, "Received ERROR: %d", data[0]);
-        // Close connection and fail the call — e.g. BUSY means remote device rejected us
+        // Close connection and fail the call (e.g. BUSY means remote device rejected us)
         this->close_client_socket_();
         this->set_active_(false);
         this->state_ = ConnectionState::DISCONNECTED;

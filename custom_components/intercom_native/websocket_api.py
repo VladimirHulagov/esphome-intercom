@@ -1305,7 +1305,7 @@ async def start_auto_bridge(hass: HomeAssistant, intercom_state_entity_id: str) 
     if not dest_entity_id:
         # No destination entity = simple mode device (no contacts list).
         # Simple mode calls go directly to browser/card, no bridge needed.
-        _LOGGER.debug("Auto-bridge: skipping %s (no destination entity — simple mode)", source_name)
+        _LOGGER.debug("Auto-bridge: skipping %s (no destination entity, simple mode)", source_name)
         return
 
     if dest_entity_id:

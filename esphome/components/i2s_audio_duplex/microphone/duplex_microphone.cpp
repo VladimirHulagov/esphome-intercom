@@ -95,7 +95,7 @@ void I2SAudioDuplexMicrophone::on_audio_data_(const uint8_t *data, size_t len) {
   }
 
   if (this->mute_state_) {
-    // Send silence — keeps pipeline running but no real audio leaks
+    // Send silence; keeps pipeline running but no real audio leaks
     this->audio_buffer_.assign(len, 0);
   } else {
     this->audio_buffer_.assign(data, data + len);

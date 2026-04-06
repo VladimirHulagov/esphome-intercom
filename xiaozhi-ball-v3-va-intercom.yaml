@@ -194,6 +194,7 @@ ota:
 logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO
+  logs:
     light: INFO
     display: INFO
     image: INFO
@@ -255,13 +256,13 @@ audio_dac:
 # sr_low_cost: Linear-only AEC (esp_aec3 engine, no residual echo suppressor).
 #   Preserves spectral features for MWW neural detection (10/10 vs 2/10 with VOIP).
 #   Uses ~60% less CPU than VOIP modes (22% vs 58%).
-#   Frame size: 512 samples (32ms) -- requires buffers_in_psram.
+#   Frame size: 512 samples (32ms); requires buffers_in_psram.
 # =============================================================================
 esp_aec:
   id: aec_processor
   sample_rate: 16000
   filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
-  mode: sr_low_cost    # Linear AEC -- preserves spectral features for MWW
+  mode: sr_low_cost    # Linear AEC, preserves spectral features for MWW
 
 # =============================================================================
 # I2S AUDIO DUPLEX (single bus for ES8311)
@@ -284,7 +285,7 @@ i2s_audio_duplex:
   # Sample-accurate reference alignment, no ring buffer delay needed.
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
   use_stereo_aec_reference: true
-  buffers_in_psram: true       # All audio buffers in PSRAM -- required for sr_low_cost (512-sample frames)
+  buffers_in_psram: true       # All audio buffers in PSRAM; required for sr_low_cost (512-sample frames)
 
 # =============================================================================
 # MICROPHONE
@@ -886,7 +887,7 @@ script:
 
           ESP_LOGI("layout", "Repositioned all widgets from computed metrics");
 
-  # Main display rendering -- single lambda for page routing + animation control
+  # Main display rendering: single lambda for page routing + animation control
   - id: draw_display
     mode: restart
     then:
@@ -1041,7 +1042,7 @@ script:
           uint32_t sec = t.seconds_left;
           uint32_t total = t.total_seconds;
 
-          // Bar as simple background -- fixed at 100%
+          // Bar as simple background, fixed at 100%
           lv_bar_set_value(id(timer_bar), 100, LV_ANIM_OFF);
 
           // Bar color: green active, grey paused
@@ -1082,7 +1083,7 @@ script:
                 condition:
                   media_player.is_playing:
                 then:
-                  # Music playing -- show neutral mood screen instead of idle animation
+                  # Music playing: show neutral mood screen instead of idle animation
                   - lambda: |-
                       lv_img_set_src(id(mood_bg), id(mood_neutral));
                   - globals.set:
@@ -1173,7 +1174,7 @@ script:
                   else if (wifi < 55) ret += "\U000F08BC";
                   else if (wifi < 80) ret += "\U000F08BD";
                   else ret += "\U000F08BE";
-                  ret += api::global_api_server->is_connected() ? "\U000F02DC" : "\U000F1A46";
+                  ret += api::global_api_server->is_connected() ? "\U000F07D0" : "\U000F15D0";
                   return ret;
           else:
             - lvgl.label.update:
@@ -1527,7 +1528,7 @@ switch:
   - id: !remove mute
   - id: !remove speaker_mute
 
-  # Mic Mute -- uses mic_aec + display updates
+  # Mic Mute: uses mic_aec + display updates
   - platform: template
     name: Mic Mute
     id: mute
@@ -1539,7 +1540,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute ON -- microphone silenced, MWW stopped"
+          format: "Mic mute ON: microphone silenced, MWW stopped"
       - voice_assistant.stop:
       - micro_wake_word.stop:
       - microphone.mute: mic_aec
@@ -1552,7 +1553,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute OFF -- microphone active, MWW started"
+          format: "Mic mute OFF: microphone active, MWW started"
       - microphone.unmute: mic_aec
       - globals.set:
           id: voice_assistant_phase
@@ -1566,7 +1567,7 @@ switch:
       - script.execute: draw_display
       - script.execute: update_status
 
-  # Speaker Mute -- device override: adds amp enable/disable
+  # Speaker Mute (device override): adds amp enable/disable
   - platform: template
     name: Speaker Mute
     id: speaker_mute
@@ -1578,7 +1579,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute ON -- DAC muted, amplifier off"
+          format: "Speaker mute ON: DAC muted, amplifier off"
       - speaker.mute_on: hw_speaker
       - delay: 50ms
       - output.turn_off: speaker_enable
@@ -1587,7 +1588,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute OFF -- amplifier on, DAC unmuted"
+          format: "Speaker mute OFF: amplifier on, DAC unmuted"
       - output.turn_on: speaker_enable
       - delay: 50ms
       - speaker.mute_off: hw_speaker
@@ -2034,8 +2035,8 @@ font:
           - "\U000F08BC" # wifi-strength-1 (<55%)
           - "\U000F08BD" # wifi-strength-2 (<80%)
           - "\U000F08BE" # wifi-strength-3 (>=80%)
-          - "\U000F02DC" # home (HA connected)
-          - "\U000F1A46" # home-off (HA disconnected)
+          - "\U000F07D0" # Home Assistant (HA connected)
+          - "\U000F15D0" # Home Alert (HA disconnected)
   - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: ic_icons
     size: 42

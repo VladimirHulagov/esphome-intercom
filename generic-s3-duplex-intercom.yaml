@@ -135,7 +135,7 @@ speaker:
     bits_per_sample: 16
 
 # =============================================================================
-# Intercom API -- Device part (merged with package callbacks)
+# Intercom API: Device part (merged with package callbacks)
 # =============================================================================
 intercom_api:
   mode: full

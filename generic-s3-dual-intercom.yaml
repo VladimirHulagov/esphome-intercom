@@ -1,8 +1,8 @@
 # =============================================================================
-# GENERIC ESP32-S3 INTERCOM -- Intercom only (no VA, no MWW)
+# GENERIC ESP32-S3 INTERCOM: Intercom only (no VA, no MWW)
 # =============================================================================
 # Uses intercom_api with AEC for full-duplex echo-cancelled calls.
-# Speaker direct (no mixer, no resamplers) -- same proven path as s3-mini.
+# Speaker direct (no mixer, no resamplers). Same proven path as s3-mini.
 #
 # WIP: ringtone not yet implemented (requires mixer or speaker sharing fix)
 #
@@ -116,7 +116,7 @@ microphone:
     channel: left
 
 # =============================================================================
-# Speaker (direct -- no mixer)
+# Speaker (direct, no mixer)
 # =============================================================================
 speaker:
   - platform: i2s_audio
@@ -140,7 +140,7 @@ esp_aec:
   mode: voip_high_perf
 
 # =============================================================================
-# Intercom API -- Device part (merged with package callbacks)
+# Intercom API: Device part (merged with package callbacks)
 # =============================================================================
 intercom_api:
   mode: full

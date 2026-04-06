@@ -1,5 +1,5 @@
 # =============================================================================
-# Intercom-Only Package -- No VA, no MWW
+# Intercom-Only Package (no VA, no MWW)
 # =============================================================================
 #
 # Subset of va_intercom.yaml for intercom-only devices.
@@ -30,7 +30,7 @@ globals:
     initial_value: "-1"
 
 # =============================================================================
-# Intercom API -- Callbacks (hardware config provided by device)
+# Intercom API: Callbacks (hardware config provided by device)
 # =============================================================================
 intercom_api:
   id: intercom

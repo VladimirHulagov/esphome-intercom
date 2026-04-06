@@ -1,11 +1,11 @@
 # =============================================================================
-# Waveshare ESP32-P4 WiFi6 Touch LCD -- VA + Intercom + MWW (LVGL)
+# Waveshare ESP32-P4 WiFi6 Touch LCD: VA + Intercom + MWW (LVGL)
 # =============================================================================
 #
 # Hardware:
 #   - ESP32-P4 RISC-V dual-core (32MB Flash, 32MB PSRAM hex)
 #   - WiFi via ESP32-C6 co-processor (SDIO, esp32_hosted)
-#   - MIPI DSI display: 10.1" 800x1280 (JD9365) -- portrait mode
+#   - MIPI DSI display: 10.1" 800x1280 (JD9365), portrait mode
 #   - GT9271 capacitive touch (GT911 driver compatible, I2C 0x14)
 #   - ES8311 Audio DAC (speaker, I2C 0x18)
 #   - ES7210 Audio ADC (dual mic array, I2C 0x40)
@@ -245,7 +245,7 @@ i2c:
 # Audio: i2s_audio_duplex (48kHz bus, FIR decimation to 16kHz for mic/AEC/VA)
 # =============================================================================
 # ES8311 (DAC) and ES7210 (ADC) share BCLK/LRCLK/MCLK with separate data pins.
-# ES8311 DAC output wired to ES7210 MIC3 -- TDM hardware AEC reference (slot 2).
+# ES8311 DAC output wired to ES7210 MIC3, providing TDM hardware AEC reference (slot 2).
 
 audio_dac:
   - platform: es8311
@@ -255,7 +255,7 @@ audio_dac:
     bits_per_sample: 16bit
     sample_rate: 48000           # Match I2S bus rate
     use_mclk: true
-    mic_gain: 24DB       # ES8311 ADC gain (unused -- ES7210 handles mic)
+    mic_gain: 24DB       # ES8311 ADC gain (unused; ES7210 handles mic)
 
 audio_adc:
   - platform: es7210
@@ -269,8 +269,8 @@ audio_adc:
 esp_aec:
   id: aec_processor
   sample_rate: 16000       # AEC always at 16kHz (= output_sample_rate)
-  mode: sr_low_cost        # Linear AEC -- preserves spectral features for MWW
-  filter_length: 4         # 64ms tail -- sufficient for integrated codec path
+  mode: sr_low_cost        # Linear AEC, preserves spectral features for MWW
+  filter_length: 4         # 64ms tail, sufficient for integrated codec path
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -286,7 +286,7 @@ i2s_audio_duplex:
   tdm_total_slots: 4
   tdm_mic_slot: 0              # ES7210 TDM slot 0 = ADC1 (MIC1, voice)
   tdm_ref_slot: 1              # ES7210 TDM slot 1 = ADC3 (MIC3, ES8311 DAC feedback)
-  buffers_in_psram: true       # All audio buffers in PSRAM -- required for sr_low_cost
+  buffers_in_psram: true       # All audio buffers in PSRAM; required for sr_low_cost
 
 # mic_aec: post-AEC for VA STT, intercom TX, AND MWW
 # SR linear AEC preserves spectral features for neural wake word detection.
@@ -477,7 +477,7 @@ display:
   - platform: mipi_dsi
     id: main_display
     model: WAVESHARE-P4-NANO-10.1
-    reset_pin: 27                 # GPIO27 -- X-series BSP hardware reset (BSP_LCD_RST)
+    reset_pin: 27                 # GPIO27, X-series BSP hardware reset (BSP_LCD_RST)
     lane_bit_rate: 1500Mbps       # Per BSP: 1500 Mbps for 10.1" JD9365
     vsync_back_porch: 10          # Per Waveshare driver (ESPHome default is 12)
     dimensions:
@@ -1003,7 +1003,7 @@ lvgl:
                       text: ""
                       text_font: font_body
                       text_color: 0x888888
-                  # Forecast 5 days -- flex row
+                  # Forecast 5 days (flex row)
                   - obj:
                       id: forecast_container
                       align: TOP_MID
@@ -1918,7 +1918,7 @@ script:
       - script.execute: backlight_timer
       - script.execute: draw_display
 
-  # Main display rendering -- split-screen layout
+  # Main display rendering: split-screen layout
   - id: draw_display
     mode: restart
     then:
@@ -2257,7 +2257,7 @@ script:
           lv_label_set_text(id(timer_label), buf);
           lv_obj_clear_flag(id(timer_overlay), LV_OBJ_FLAG_HIDDEN);
 
-  # VA end handler -- mode: restart ensures barge-in cancels previous on_end
+  # VA end handler (mode: restart ensures barge-in cancels previous on_end)
   - id: set_idle_or_mute_phase
     then:
       - if:
@@ -2382,7 +2382,7 @@ switch:
   - id: !remove mute
   - id: !remove speaker_mute
 
-  # Mic Mute -- device override: uses mic_aec, adds display updates
+  # Mic Mute (device override): uses mic_aec, adds display updates
   - platform: template
     name: Mic Mute
     id: mute
@@ -2394,7 +2394,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute ON -- microphone silenced, MWW stopped"
+          format: "Mic mute ON: microphone silenced, MWW stopped"
       - voice_assistant.stop:
       - micro_wake_word.stop:
       - microphone.mute: mic_aec
@@ -2407,7 +2407,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Mic mute OFF -- microphone active, MWW started"
+          format: "Mic mute OFF: microphone active, MWW started"
       - microphone.unmute: mic_aec
       - globals.set:
           id: voice_assistant_phase
@@ -2421,7 +2421,7 @@ switch:
       - script.execute: draw_display
       - script.execute: update_status
 
-  # Speaker Mute -- device override: adds amp enable/disable
+  # Speaker Mute (device override): adds amp enable/disable
   - platform: template
     name: Speaker Mute
     id: speaker_mute
@@ -2433,7 +2433,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute ON -- DAC muted, amplifier off"
+          format: "Speaker mute ON: DAC muted, amplifier off"
       - speaker.mute_on: hw_speaker
       - delay: 50ms
       - output.turn_off: speaker_enable
@@ -2442,7 +2442,7 @@ switch:
       - logger.log:
           level: INFO
           tag: mute
-          format: "Speaker mute OFF -- amplifier on, DAC unmuted"
+          format: "Speaker mute OFF: amplifier on, DAC unmuted"
       - output.turn_on: speaker_enable
       - delay: 50ms
       - speaker.mute_off: hw_speaker

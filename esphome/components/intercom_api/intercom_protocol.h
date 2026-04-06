@@ -42,7 +42,7 @@ static constexpr uint8_t BITS_PER_SAMPLE = 16;
 static constexpr uint8_t CHANNELS = 1;
 static constexpr size_t AUDIO_CHUNK_SIZE = 1024;     // bytes per chunk (32ms @ 16kHz mono 16-bit)
 static constexpr size_t SAMPLES_PER_CHUNK = 512;     // 1024 bytes / 2 bytes per sample
-static constexpr uint32_t CHUNK_DURATION_MS = 32;    // 512 samples at 16kHz — matches AEC frame
+static constexpr uint32_t CHUNK_DURATION_MS = 32;    // 512 samples at 16kHz, matches AEC frame
 
 // Protocol header
 struct __attribute__((packed)) MessageHeader {

@@ -1,4 +1,4 @@
-"""Frontend registration for Intercom Native — auto-serves the Lovelace card."""
+"""Frontend registration for Intercom Native. Auto-serves the Lovelace card."""
 
 import logging
 from pathlib import Path
@@ -61,7 +61,7 @@ class JSModuleRegistration:
         for item in resources.async_items():
             item_url = item.get("url", "")
             if item_url.split("?")[0] == url:
-                # Already registered — update version if needed
+                # Already registered; update version if needed
                 if item_url != url_versioned:
                     _LOGGER.info("Updating Intercom card to v%s", INTEGRATION_VERSION)
                     await resources.async_update_item(
@@ -71,6 +71,6 @@ class JSModuleRegistration:
                     _LOGGER.debug("Intercom card v%s already registered", INTEGRATION_VERSION)
                 return
 
-        # Not registered yet — create
+        # Not registered yet, create
         _LOGGER.info("Registering Intercom card v%s", INTEGRATION_VERSION)
         await resources.async_create_item({"res_type": "module", "url": url_versioned})

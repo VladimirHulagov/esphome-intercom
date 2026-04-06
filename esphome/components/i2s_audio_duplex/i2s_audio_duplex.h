@@ -170,7 +170,7 @@ class I2SAudioDuplex : public Component {
   void stop_mic();
   bool is_mic_running() const { return this->mic_ref_count_.load(std::memory_order_relaxed) > 0; }
 
-  // Speaker interface — data arrives at bus rate (from mixer/resampler)
+  // Speaker interface: data arrives at bus rate (from mixer/resampler)
   size_t play(const uint8_t *data, size_t len, TickType_t ticks_to_wait = portMAX_DELAY);
   void start_speaker();
   void stop_speaker();
@@ -322,7 +322,7 @@ class I2SAudioDuplex : public Component {
   // Speaker output callbacks (for mixer pending_playback_frames tracking)
   std::vector<SpeakerOutputCallback> speaker_output_callbacks_;
 
-  // Speaker ring buffer — stores data at bus rate (sample_rate_)
+  // Speaker ring buffer: stores data at bus rate (sample_rate_)
   std::unique_ptr<RingBuffer> speaker_buffer_;
   size_t speaker_buffer_size_{0};  // Actual allocated size (scales with decimation_ratio_)
 
@@ -337,7 +337,7 @@ class I2SAudioDuplex : public Component {
   uint32_t aec_ref_buffer_ms_{80};       // Config: ring buffer size in ms
   std::unique_ptr<RingBuffer> aec_ref_ring_buffer_;  // Ring buffer for AEC ref (bus rate, post-volume)
 
-  // Volume control — atomic: written from main loop, read from audio task via snapshot.
+  // Volume control (atomic: written from main loop, read from audio task via snapshot)
   std::atomic<float> mic_gain_{1.0f};         // 0.0 - 2.0 (1.0 = unity gain, applied AFTER AEC)
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)

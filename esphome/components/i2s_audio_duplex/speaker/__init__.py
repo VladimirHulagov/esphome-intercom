@@ -33,7 +33,7 @@ def _set_audio_properties(config):
 
 
 def _set_stream_limits(config):
-    # Speaker accepts audio at bus rate (e.g. 48kHz) — ResamplerSpeaker handles upsampling
+    # Speaker accepts audio at bus rate (e.g. 48kHz). ResamplerSpeaker handles upsampling
     audio.set_stream_limits(
         min_bits_per_sample=16,
         max_bits_per_sample=16,
