@@ -52,6 +52,7 @@ CONFIG_SCHEMA = cv.Schema(
 
 async def to_code(config):
     parent = await cg.get_variable(config[CONF_ESP_AFE_ID])
+    cg.add(parent.set_telemetry_enabled(True))
 
     if CONF_INPUT_VOLUME in config:
         var = await sensor.new_sensor(config[CONF_INPUT_VOLUME])
