@@ -437,6 +437,10 @@ script:
                 announcement: true
             - wait_until:
                 condition:
+                  media_player.is_announcing:
+                timeout: 2s
+            - wait_until:
+                condition:
                   not:
                     media_player.is_announcing:
                 timeout: 5s
