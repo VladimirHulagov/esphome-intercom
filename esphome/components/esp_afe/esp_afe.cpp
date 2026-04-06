@@ -134,11 +134,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->debug_init = false;
   cfg->fixed_first_channel = true;
 
-  ESP_LOGI(TAG, "Config BEFORE check: aec=%d ns=%d vad=%d agc=%d se=%d wakenet=%d",
-           cfg->aec_init, cfg->ns_init, cfg->vad_init, cfg->agc_init, cfg->se_init, cfg->wakenet_init);
   afe_config_check(cfg);
-  ESP_LOGI(TAG, "Config AFTER check:  aec=%d ns=%d vad=%d agc=%d se=%d wakenet=%d",
-           cfg->aec_init, cfg->ns_init, cfg->vad_init, cfg->agc_init, cfg->se_init, cfg->wakenet_init);
 
   const esp_afe_sr_iface_t *handle = esp_afe_handle_from_config(cfg);
   if (handle == nullptr) {
@@ -178,8 +174,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   instance->fetch_chunksize = fetch_chunksize;
   instance->total_channels = total_channels;
 
-  handle->print_pipeline(data);
-  ESP_LOGI(TAG, "AFE prepared: feed_size=%d, fetch_size=%d, channels=%d, format=%s",
+  ESP_LOGI(TAG, "AFE ready: feed=%d fetch=%d ch=%d fmt=%s",
            feed_chunksize, fetch_chunksize, total_channels, fmt.c_str());
   return true;
 }
@@ -414,12 +409,10 @@ ProcessorTelemetry EspAfe::telemetry() const {
 }
 
 bool EspAfe::reconfigure(int type, int mode) {
-  ESP_LOGW(TAG, "reconfigure: caller must stop audio transport before calling this");
   int old_type = this->afe_type_;
   int old_mode = this->afe_mode_;
   this->afe_type_ = type;
   this->afe_mode_ = mode;
-  ESP_LOGI(TAG, "Reconfiguring AFE: type=%d mode=%d", type, mode);
   if (this->recreate_instance_(false)) {
     return true;
   }
@@ -481,26 +474,14 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
     this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH, std::memory_order_relaxed);
     this->input_volume_dbfs_.store(compute_rms_dbfs(in_mic, fs), std::memory_order_relaxed);
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
+    this->frame_count_++;
     processed = true;
-
-    if (++this->frame_count_ % 960 == 0) {
-      ESP_LOGI(TAG, "AFE [frame %lu] in=%.1fdB out=%.1fdB vad=%s rbuf=%.0f%%",
-               static_cast<unsigned long>(this->frame_count_.load(std::memory_order_relaxed)),
-               compute_rms_dbfs(in_mic, fs),
-               compute_rms_dbfs(out, os),
-               result->vad_state == VAD_SPEECH ? "SPEECH" : "SILENCE",
-               result->ringbuff_free_pct * 100.0f);
-    }
   } else {
     copy_passthrough_frame(in_mic, fs, out, os);
     this->voice_present_.store(false, std::memory_order_relaxed);
     this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
-    if (++this->frame_count_ % 960 == 0) {
-      ESP_LOGW(TAG, "AFE fetch failed (ret=%d, rbuf=%.0f%%)",
-               result ? result->ret_value : -1,
-               result ? result->ringbuff_free_pct * 100.0f : 0.0f);
-    }
+    this->frame_count_++;
   }
 
   xSemaphoreGive(this->config_mutex_);
