@@ -108,7 +108,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->aec_filter_length = this->aec_filter_length_;
   cfg->aec_mode = this->derive_aec_mode_();
 
-  cfg->se_init = (this->mic_num_ >= 2);
+  cfg->se_init = false;  // SE/beamforming requires real dual-mic path (not yet implemented)
 
   cfg->ns_init = this->ns_enabled_;
   cfg->ns_model_name = nullptr;
@@ -265,29 +265,28 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
-  int old_feed_chunksize = this->feed_chunksize_;
-  int old_fetch_chunksize = this->fetch_chunksize_;
-
-  AfeInstance old = this->detach_instance_();
-  this->destroy_instance_(&old);
-
+  // Build new instance FIRST, then swap. If build fails, old stays.
   AfeInstance next;
   if (!this->build_instance_(&next)) {
+    ESP_LOGE(TAG, "Failed to build new AFE instance, keeping current");
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
 
   if (require_same_frame_sizes &&
-      (next.feed_chunksize != old_feed_chunksize || next.fetch_chunksize != old_fetch_chunksize)) {
+      (next.feed_chunksize != this->feed_chunksize_ || next.fetch_chunksize != this->fetch_chunksize_)) {
     ESP_LOGW(TAG, "Reinit changed frame sizes (%d/%d -> %d/%d) while audio is live",
-             old_feed_chunksize, old_fetch_chunksize,
+             this->feed_chunksize_, this->fetch_chunksize_,
              next.feed_chunksize, next.fetch_chunksize);
     this->destroy_instance_(&next);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
 
+  // Swap: detach old, install new, destroy old
+  AfeInstance old = this->detach_instance_();
   this->install_instance_(&next);
+  this->destroy_instance_(&old);
   this->warmup_remaining_ = 3;
   this->frame_count_ = 0;
   this->voice_present_.store(false, std::memory_order_relaxed);
@@ -389,7 +388,7 @@ FeatureControl EspAfe::feature_control(AudioFeature feature) const {
     case AudioFeature::VAD:
       return FeatureControl::RESTART_REQUIRED;
     case AudioFeature::SE:
-      return (this->mic_num_ >= 2) ? FeatureControl::BOOT_ONLY : FeatureControl::NOT_SUPPORTED;
+      return FeatureControl::NOT_SUPPORTED;  // dual-mic not yet implemented
     default:
       return FeatureControl::NOT_SUPPORTED;
   }
@@ -415,6 +414,7 @@ ProcessorTelemetry EspAfe::telemetry() const {
 }
 
 bool EspAfe::reconfigure(int type, int mode) {
+  ESP_LOGW(TAG, "reconfigure: caller must stop audio transport before calling this");
   int old_type = this->afe_type_;
   int old_mode = this->afe_mode_;
   this->afe_type_ = type;
@@ -492,6 +492,8 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
     }
   } else {
     copy_passthrough_frame(in_mic, fs, out, os);
+    this->voice_present_.store(false, std::memory_order_relaxed);
+    this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
     if (++this->frame_count_ % 960 == 0) {
       ESP_LOGW(TAG, "AFE fetch failed (ret=%d, rbuf=%.0f%%)",

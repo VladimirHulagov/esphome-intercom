@@ -73,7 +73,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.declare_id(EspAfe),
             cv.Optional(CONF_TYPE, default="sr"): cv.enum(AFE_TYPES, lower=True),
             cv.Optional(CONF_MODE, default="low_cost"): cv.enum(AFE_MODES, lower=True),
-            cv.Optional(CONF_MIC_NUM, default=1): cv.int_range(min=1, max=2),
+            cv.Optional(CONF_MIC_NUM, default=1): cv.int_range(min=1, max=1),  # dual-mic not yet implemented
             cv.Optional(CONF_AEC_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_AEC_FILTER_LENGTH, default=4): cv.int_range(min=1, max=8),
             cv.Optional(CONF_NS_ENABLED, default=True): cv.boolean,

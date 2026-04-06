@@ -64,13 +64,13 @@ IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondit
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
 IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
 
-def _aec_schema(value):
-    """Validate aec_id - import esp_aec only if used."""
+AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
+
+def _processor_schema(value):
+    """Validate processor_id: accepts any AudioProcessor (EspAec or EspAfe)."""
     if value is None:
         return value
-    # Import here to avoid circular dependency
-    from esphome.components import esp_aec
-    return cv.use_id(esp_aec.EspAec)(value)
+    return cv.use_id(AudioProcessor)(value)
 
 
 CONFIG_SCHEMA = cv.Schema(
@@ -83,7 +83,7 @@ CONFIG_SCHEMA = cv.Schema(
         # DC offset removal for mics with significant DC bias (e.g., SPH0645)
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
-        cv.Optional(CONF_AEC_ID): _aec_schema,
+        cv.Optional(CONF_AEC_ID): _processor_schema,
         # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
         cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
         # Ringing timeout: auto-decline call if not answered within this time
