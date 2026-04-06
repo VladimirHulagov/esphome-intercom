@@ -1,14 +1,22 @@
 # ESP AFE - Full Audio Front-End Pipeline
 
-ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline: **AEC + Noise Suppression + VAD + AGC** in a single component, with runtime control switches and diagnostic sensors.
+ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline: **AEC + Beamforming (BSS) + Noise Suppression + VAD + AGC** in a single component, with runtime control switches and diagnostic sensors. Supports single-mic (MR) and dual-mic (MMR) configurations.
 
 ## Overview
 
-`esp_afe` uses the closed-source `esp-sr` library's AFE pipeline, which chains multiple DSP stages:
+`esp_afe` uses the closed-source `esp-sr` library's AFE pipeline, which chains multiple DSP stages depending on configuration:
 
+**Single-mic (MR) mode** (`se_enabled: false` or `mic_num: 1`):
 ```
-[mic + ref input] -> |AEC| -> |NS| -> |VAD| -> |AGC| -> [clean output]
+[mic + ref] -> |AEC| -> |NS| -> |VAD| -> |AGC| -> [clean output]
 ```
+
+**Dual-mic (MMR) mode** (`se_enabled: true` with `mic_num: 2`):
+```
+[mic1 + mic2 + ref] -> |AEC| -> |SE(BSS)| -> [clean output]
+```
+
+> **Note**: When beamforming (SE/BSS) is active, esp-sr replaces NS and AGC with spatial source separation. BSS suppresses directional noise better than NS but does not normalize volume (no AGC). NS and AGC switches have no effect while SE is active.
 
 Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full signal processing pipeline. Both components implement the `AudioProcessor` interface and are drop-in replacements for each other in `i2s_audio_duplex` and `intercom_api`.
 
@@ -17,13 +25,14 @@ Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full 
 | Feature | esp_aec | esp_afe |
 |---------|---------|---------|
 | Echo Cancellation | Yes | Yes |
-| Noise Suppression | No | Yes (WebRTC) |
+| Beamforming (BSS) | No | Yes (dual-mic) |
+| Noise Suppression | No | Yes (WebRTC, single-mic mode) |
 | Voice Activity Detection | No | Yes (WebRTC) |
-| Automatic Gain Control | No | Yes (WebRTC) |
-| Runtime switches in HA | AEC only | AEC, NS, VAD, AGC |
+| Automatic Gain Control | No | Yes (WebRTC, single-mic mode) |
+| Runtime switches in HA | AEC only | AEC, SE, NS, VAD, AGC |
 | Diagnostic sensors | No | Input volume, output RMS, voice presence |
 | CPU usage (SR LOW_COST) | ~22% Core 0 | ~23% Core 0 (8.4% feed + 15% fetch) |
-| Internal RAM overhead | ~80 KB | ~150 KB (~70 KB extra for AFE framework) |
+| Internal RAM overhead | ~80 KB | ~150 KB (MR), ~170 KB (MMR with BSS) |
 | Supported platforms | ESP32-S3, ESP32-P4 | ESP32-S3, ESP32-P4 |
 
 **Choose `esp_aec`** when you need minimal RAM usage and only echo cancellation.
@@ -71,7 +80,8 @@ esp_afe:
   id: afe_processor
   type: sr                    # sr (speech recognition) or vc (voice communication)
   mode: low_cost              # low_cost or high_perf
-  mic_num: 1                  # Number of microphones (currently only 1 supported)
+  mic_num: 2                  # Number of microphones (1 or 2)
+  se_enabled: true            # Beamforming (BSS), requires mic_num: 2
   aec_enabled: true           # Echo cancellation
   aec_filter_length: 4        # Echo tail in frames (4 = 64ms)
   ns_enabled: true            # Noise suppression (WebRTC)
@@ -97,7 +107,8 @@ esp_afe:
 | `id` | ID | Required | Component ID |
 | `type` | string | `sr` | AFE type: `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
 | `mode` | string | `low_cost` | AFE mode: `low_cost` or `high_perf` |
-| `mic_num` | int | 1 | Number of microphones (currently capped to 1, dual-mic not yet implemented end-to-end) |
+| `mic_num` | int | 1 | Number of microphones (1 or 2). Set to 2 for dual-mic beamforming with `se_enabled: true` |
+| `se_enabled` | bool | false | Enable beamforming (BSS). Requires `mic_num: 2`. Replaces NS and AGC with spatial source separation |
 | `aec_enabled` | bool | true | Enable acoustic echo cancellation |
 | `aec_filter_length` | int | 4 | AEC filter length in frames (1-8). 4 = 64ms tail, sufficient for most setups |
 | `ns_enabled` | bool | true | Enable noise suppression (WebRTC engine) |
@@ -143,6 +154,9 @@ switch:
     aec:
       name: "Echo Cancellation"
       restore_mode: RESTORE_DEFAULT_ON
+    se:
+      name: "Beamforming"
+      restore_mode: RESTORE_DEFAULT_ON
     ns:
       name: "Noise Suppression"
       restore_mode: RESTORE_DEFAULT_ON
@@ -157,9 +171,10 @@ switch:
 | Switch | Icon | Description |
 |--------|------|-------------|
 | `aec` | `mdi:ear-hearing` | Echo cancellation toggle (live, no audio gap) |
-| `ns` | `mdi:volume-off` | Noise suppression toggle (requires AFE reinit, ~70ms gap) |
+| `se` | `mdi:microphone-variant` | Beamforming toggle (requires AFE reinit, ~70ms gap). Only available with `mic_num: 2` |
+| `ns` | `mdi:volume-off` | Noise suppression toggle (requires AFE reinit, ~70ms gap). No effect when SE is active |
 | `vad` | `mdi:account-voice` | Voice activity detection toggle (requires AFE reinit) |
-| `agc` | `mdi:tune-vertical` | Auto gain control toggle (requires AFE reinit) |
+| `agc` | `mdi:tune-vertical` | Auto gain control toggle (requires AFE reinit). No effect when SE is active |
 
 ### Binary Sensor Platform
 
@@ -225,8 +240,9 @@ AEC and NS/AGC/VAD toggle differently due to ESP-SR internals:
 | Feature | Toggle Method | Audio Gap | Notes |
 |---------|-------------|-----------|-------|
 | AEC | Live vtable call | None | Immediate on/off via `afe_enable_aec()` / `afe_disable_aec()` |
-| NS | AFE reinit | ~70ms | WebRTC NS doesn't support runtime vtable toggle. Full AFE destroy + recreate |
-| AGC | AFE reinit | ~70ms | Same as NS. WebRTC AGC has no vtable entry |
+| SE | AFE reinit | ~70ms | Toggles between MMR (beamforming) and MR (single-mic) pipeline |
+| NS | AFE reinit | ~70ms | WebRTC NS doesn't support runtime vtable toggle. Full AFE destroy + recreate. No effect when SE is active |
+| AGC | AFE reinit | ~70ms | Same as NS. No effect when SE is active |
 | VAD | AFE reinit | ~70ms | Same as NS |
 
 **Why reinit?** The WebRTC NS, AGC, and VAD engines are controlled internally via `webrtc_process(data, enable_ns, enable_agc)`. The enable/disable vtable entries only exist for neural model backends (NSNet, VADNet), not for WebRTC. Toggling these features requires destroying and rebuilding the entire AFE instance with the changed config flags.
@@ -279,6 +295,8 @@ esp_afe:
   id: afe_processor
   type: sr
   mode: low_cost
+  mic_num: 2                  # 1 for single-mic, 2 for dual-mic beamforming
+  se_enabled: true            # Beamforming (requires mic_num: 2)
   aec_filter_length: 4
   ns_enabled: true
   agc_enabled: true
@@ -296,6 +314,8 @@ switch:
     esp_afe_id: afe_processor
     aec:
       name: "Echo Cancellation"
+    se:
+      name: "Beamforming"
     ns:
       name: "Noise Suppression"
     vad:
@@ -337,26 +357,50 @@ select:
 
 | Component | Internal RAM | PSRAM | Notes |
 |-----------|-------------|-------|-------|
-| AFE framework | ~70 KB | Variable | Cannot be moved to PSRAM (no esp-sr API) |
-| AEC filter | ~20 KB | ~60 KB | Depends on filter_length |
-| NS (WebRTC) | ~5 KB | ~10 KB | |
-| AGC (WebRTC) | ~2 KB | ~3 KB | |
-| Feed buffer | - | ~2 KB | 512 * 2 channels * 2 bytes |
+| AFE framework | ~55-70 KB | Variable | Closed-source esp-sr allocations, cannot be moved to PSRAM |
+| SE/BSS (beamforming) | ~15-25 KB | Variable | Only allocated when `se_enabled: true` with `mic_num: 2` |
+| AEC filter | ~20-30 KB | ~60 KB | Depends on filter_length and mode |
+| NS (WebRTC) | ~10-15 KB | ~10 KB | Allocated even when SE replaces it at runtime |
+| AGC (WebRTC) | ~2-3 KB | ~3 KB | |
+| Feed buffer | - | ~2-6 KB | 512-1024 * 2-3 channels * 2 bytes (PSRAM first) |
 | Ring buffers | - | Variable | ringbuf_size * frame_size |
 
-With `memory_alloc_mode: more_psram`, total internal RAM usage is approximately **~100 KB** (vs ~80 KB for standalone `esp_aec`). The extra ~20 KB is the AFE framework overhead.
+With `memory_alloc_mode: more_psram`, total internal RAM usage is approximately:
+- **~100 KB** for MR mode (single-mic: AEC + NS + AGC)
+- **~120 KB** for MMR mode (dual-mic: AEC + BSS beamforming)
+- **~80 KB** for standalone `esp_aec`
 
-> **Tip**: Monitor free internal RAM with `sensor.free_internal`. If it drops below ~30 KB, WiFi/TLS stability may suffer. Consider reducing `ringbuf_size` or using `esp_aec` instead.
+### IRAM Optimization (Critical for ESP32-S3)
+
+On ESP32-S3, IRAM and DRAM share the same 512 KB of SRAM. Every KB of code placed in IRAM reduces available DRAM heap by 1 KB. With `CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y`, code runs from the PSRAM instruction cache, making IRAM placement unnecessary for most functions.
+
+**Add these sdkconfig options to free ~30 KB of internal DRAM:**
+
+```yaml
+esp32:
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"  # prerequisite
+      CONFIG_SPIRAM_RODATA: "y"              # prerequisite
+      CONFIG_ESP_WIFI_IRAM_OPT: "n"          # ~10 KB freed
+      CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"       # ~17 KB freed
+      CONFIG_ESP_PHY_IRAM_OPT: "n"           # ~3.5 KB freed
+```
+
+Without these options, the AFE + TLS media streaming will exhaust internal RAM and cause `esp-aes: Failed to allocate memory` errors or heap corruption crashes.
+
+> **Tip**: Monitor free internal RAM with a template sensor using `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`. If it drops below ~25 KB, WiFi/TLS stability will suffer.
 
 ## Known Limitations
 
-1. **Dual-mic beamforming**: `mic_num` is capped to 1. The AFE supports multi-mic (format "MMR") but `i2s_audio_duplex` doesn't yet pass both TDM channels to the processor. Declared as `NOT_SUPPORTED` in `feature_control(SE)`.
+1. **SE replaces NS and AGC**: When beamforming (BSS) is active, esp-sr uses the pipeline `AEC -> SE(BSS) -> output`, skipping NS and AGC entirely. BSS provides spatial noise suppression but does not normalize volume. Disabling SE at runtime switches to the full `AEC -> NS -> AGC -> output` pipeline.
 
-2. **NS/AGC/VAD runtime toggle**: Requires full AFE reinit (~70ms audio gap). This is a limitation of the WebRTC engine used by ESP-SR. The vtable enable/disable functions only work with neural model backends (NSNet, VADNet), which require a model partition.
+2. **NS/AGC/VAD/SE runtime toggle**: Requires full AFE reinit (~70ms audio gap). Only AEC can be toggled without interruption.
 
 3. **data_volume**: The AFE's built-in `data_volume` field is always 0.0 dB because it requires WakeNet to be active. Input/output RMS is computed locally instead.
 
-4. **ESP-SR is closed source**: No API to move AFE internal allocations to PSRAM. The ~70 KB internal RAM overhead is unavoidable.
+4. **ESP-SR is closed source**: No API to move AFE internal allocations to PSRAM. The ~55-86 KB internal RAM overhead is unavoidable. Use the IRAM optimization options above to compensate.
 
 5. **Single instance**: ESP-SR's FFT resources are a global singleton. Only one AFE (or AEC) instance can exist at a time.
 
@@ -366,12 +410,15 @@ With `memory_alloc_mode: more_psram`, total internal RAM usage is approximately 
 
 Check logs for `afe_config_init returned NULL`. This means esp-sr couldn't initialize with the requested type/mode. Verify your `type` and `mode` combination is valid.
 
-### High internal RAM usage
+### High internal RAM usage / esp-aes: Failed to allocate memory
 
-With AFE active, free internal RAM may drop to ~35 KB. This is expected. If WiFi becomes unstable:
-- Set `memory_alloc_mode: more_psram`
-- Reduce `ringbuf_size` (minimum 4, but 8 is recommended)
-- Consider using `esp_aec` instead if you don't need NS/AGC/VAD
+With AFE active, free internal RAM may drop to ~15 KB without IRAM optimization. This causes TLS failures (`esp-aes: Failed to allocate memory`) and WiFi heap corruption crashes. Solutions in order of impact:
+
+1. **Apply IRAM optimization** (see [IRAM Optimization](#iram-optimization-critical-for-esp32-s3)) - frees ~30 KB
+2. Set `memory_alloc_mode: more_psram`
+3. Set `se_enabled: false` if beamforming is not needed (frees ~17 KB)
+4. Reduce `ringbuf_size` (minimum 2, default 8)
+5. Consider using `esp_aec` instead if you don't need NS/AGC/VAD/SE
 
 ### Switch toggle has no effect
 

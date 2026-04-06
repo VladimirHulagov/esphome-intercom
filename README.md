@@ -71,7 +71,11 @@ graph TD
   - **Full**: ESP ↔ Home Assistant ↔ ESP (intercom between devices)
 - **Echo Cancellation (AEC)** - Built-in acoustic echo cancellation using ESP-SR
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
-- **Full Audio Front-End (AFE)** - Optional full DSP pipeline: AEC + Noise Suppression + VAD + AGC via `esp_afe`, with runtime switches and diagnostic sensors in Home Assistant
+- **Full Audio Front-End (AFE)** - Complete ESP-SR AFE pipeline via `esp_afe`:
+  - **Single-mic (MR)**: AEC + Noise Suppression + VAD + AGC
+  - **Dual-mic (MMR)**: AEC + Beamforming (BSS) for spatial voice isolation
+  - Runtime switches and diagnostic sensors in Home Assistant
+  - Automatic pipeline switching: SE(BSS) replaces NS/AGC when beamforming is active
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Ready-to-flash YAML configs** - Optimized configurations for real, tested hardware that combine Voice Assistant, Micro Wake Word, and Intercom running simultaneously, creating the most complete hub possible for a full Voice Assistant experience
 - **Auto Answer** - Configurable automatic call acceptance (ESP-side switch + browser card checkbox)
@@ -541,7 +545,10 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 Two audio processing components are available, both implementing the `AudioProcessor` interface:
 
 - **`esp_aec`**: Standalone echo cancellation. Lightweight (~80 KB internal RAM). Use when you only need AEC.
-- **`esp_afe`**: Full AFE pipeline (AEC + NS + VAD + AGC). Heavier (~150 KB internal RAM) but provides noise suppression, voice activity detection, auto gain control, runtime toggle switches, and diagnostic sensors in Home Assistant.
+- **`esp_afe`**: Full AFE pipeline with two modes:
+  - **Single-mic (MR)**: AEC + NS + VAD + AGC (~100 KB internal RAM)
+  - **Dual-mic (MMR)**: AEC + Beamforming/BSS (~120 KB internal RAM). Spatial voice isolation using 2 microphones
+  - Runtime toggle switches, diagnostic sensors, and mode switching in Home Assistant
 
 Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `intercom_api` uses `aec_id` to reference either one.
 
@@ -567,29 +574,39 @@ Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `inter
 
 ### esp_afe Component
 
-Full audio front-end pipeline with runtime control and diagnostics.
+Full audio front-end pipeline with runtime control, diagnostics, and dual-mic beamforming.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `id` | ID | Required | Component ID |
 | `type` | string | `sr` | `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
 | `mode` | string | `low_cost` | `low_cost` or `high_perf` |
+| `mic_num` | int | 1 | Number of microphones (1 or 2). Set to 2 for beamforming |
+| `se_enabled` | bool | false | Beamforming (BSS). Requires `mic_num: 2`. When active, replaces NS and AGC with spatial source separation |
 | `aec_enabled` | bool | true | Echo cancellation |
 | `aec_filter_length` | int | 4 | AEC filter length in frames (1-8) |
-| `ns_enabled` | bool | true | Noise suppression (WebRTC engine) |
+| `ns_enabled` | bool | true | Noise suppression (WebRTC). No effect when SE is active |
 | `vad_enabled` | bool | false | Voice activity detection |
-| `agc_enabled` | bool | true | Automatic gain control (WebRTC engine) |
+| `agc_enabled` | bool | true | Automatic gain control (WebRTC). No effect when SE is active |
 | `memory_alloc_mode` | string | `more_psram` | Memory allocation strategy |
 
 ```yaml
+# Single-mic mode (AEC + NS + AGC):
 esp_afe:
   id: afe_processor
   type: sr
   mode: low_cost
-  ns_enabled: true
-  agc_enabled: true
-  vad_enabled: true
+
+# Dual-mic mode (AEC + Beamforming):
+esp_afe:
+  id: afe_processor
+  type: sr
+  mode: low_cost
+  mic_num: 2
+  se_enabled: true
 ```
+
+> **Important**: On ESP32-S3 with PSRAM, add IRAM optimization to sdkconfig to free ~30 KB of internal RAM required by the AFE. See the [esp_afe README](esphome/components/esp_afe/README.md#iram-optimization-critical-for-esp32-s3) for details.
 
 **Platform entities** (switches, sensors, binary sensors):
 
@@ -599,6 +616,8 @@ switch:
     esp_afe_id: afe_processor
     aec:
       name: "Echo Cancellation"
+    se:
+      name: "Beamforming"
     ns:
       name: "Noise Suppression"
     agc:
