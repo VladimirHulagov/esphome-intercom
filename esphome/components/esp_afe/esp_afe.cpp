@@ -265,28 +265,30 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
-  // Build new instance FIRST, then swap. If build fails, old stays.
+  // esp-sr FFT resources are global: only one AFE instance can exist.
+  // Must destroy old before creating new.
+  int old_feed = this->feed_chunksize_;
+  int old_fetch = this->fetch_chunksize_;
+  AfeInstance old = this->detach_instance_();
+  this->destroy_instance_(&old);
+
   AfeInstance next;
   if (!this->build_instance_(&next)) {
-    ESP_LOGE(TAG, "Failed to build new AFE instance, keeping current");
+    ESP_LOGE(TAG, "Failed to build new AFE instance");
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
 
   if (require_same_frame_sizes &&
-      (next.feed_chunksize != this->feed_chunksize_ || next.fetch_chunksize != this->fetch_chunksize_)) {
-    ESP_LOGW(TAG, "Reinit changed frame sizes (%d/%d -> %d/%d) while audio is live",
-             this->feed_chunksize_, this->fetch_chunksize_,
-             next.feed_chunksize, next.fetch_chunksize);
+      (next.feed_chunksize != old_feed || next.fetch_chunksize != old_fetch)) {
+    ESP_LOGW(TAG, "Reinit changed frame sizes (%d/%d -> %d/%d), rejecting",
+             old_feed, old_fetch, next.feed_chunksize, next.fetch_chunksize);
     this->destroy_instance_(&next);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
 
-  // Swap: detach old, install new, destroy old
-  AfeInstance old = this->detach_instance_();
   this->install_instance_(&next);
-  this->destroy_instance_(&old);
   this->warmup_remaining_ = 3;
   this->frame_count_ = 0;
   this->voice_present_.store(false, std::memory_order_relaxed);
@@ -332,13 +334,17 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   if (flag == enabled) {
     return true;
   }
-  bool old = flag;
+  bool old_value = flag;
   flag = enabled;
   if (this->recreate_instance_(true)) {
     return true;
   }
-  flag = old;
-  ESP_LOGW(TAG, "Failed to apply %s=%s", name, enabled ? "true" : "false");
+  // Rebuild failed with new value. Rollback: restore old flag and rebuild.
+  ESP_LOGW(TAG, "Failed to apply %s=%s, rolling back", name, enabled ? "true" : "false");
+  flag = old_value;
+  if (!this->recreate_instance_(true)) {
+    ESP_LOGE(TAG, "Rollback also failed for %s, AFE is down", name);
+  }
   return false;
 }
 
