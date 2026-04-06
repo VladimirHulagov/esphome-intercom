@@ -64,9 +64,13 @@ void IntercomApi::setup() {
     }
   }
 
-  // Allocate frame buffers (internal RAM; intercom_api must work on devices without PSRAM)
-  this->tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
-  this->rx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
+  // Allocate frame buffers (PSRAM preferred, internal fallback for devices without PSRAM)
+  auto alloc_prefer_spiram = [](size_t size) -> void * {
+    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_malloc(size, MALLOC_CAP_INTERNAL);
+  };
+  this->tx_buffer_ = static_cast<uint8_t *>(alloc_prefer_spiram(MAX_MESSAGE_SIZE));
+  this->rx_buffer_ = static_cast<uint8_t *>(alloc_prefer_spiram(MAX_MESSAGE_SIZE));
 
   if (!this->tx_buffer_ || !this->rx_buffer_) {
     ESP_LOGE(TAG, "Failed to allocate frame buffers");
@@ -86,7 +90,7 @@ void IntercomApi::setup() {
 
   // Pre-allocate audio processing buffers (avoid stack VLAs on 8KB FreeRTOS tasks)
   static constexpr size_t MIC_BUF_SAMPLES = 512;  // MAX_SAMPLES in on_microphone_data_
-  this->mic_converted_ = static_cast<int16_t *>(heap_caps_malloc(MIC_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
+  this->mic_converted_ = static_cast<int16_t *>(alloc_prefer_spiram(MIC_BUF_SAMPLES * sizeof(int16_t)));
   if (!this->mic_converted_) {
     ESP_LOGE(TAG, "Failed to allocate mic processing buffer");
     this->mark_failed();
@@ -133,16 +137,18 @@ void IntercomApi::setup() {
   // Create server task (Core 1) - handles TCP connections and receiving
   // When !use_intercom_aec, also handles TX (mic→network) and direct speaker playback
   // Priority 5: i2s_duplex moved to Core 0, so Core 1 is audio-free; prio 5 sufficient
-  // 8KB stack: callbacks trigger YAML automations that may do LVGL operations (must stay Core 1)
-  BaseType_t ok = xTaskCreatePinnedToCore(
-      IntercomApi::server_task,
-      "intercom_srv",
-      8192,
-      this,
-      5,  // Core 1 now audio-free; lower prio gives MWW (prio 3) and LVGL better headroom
-      &this->server_task_handle_,
-      1  // Core 1 - must stay here: YAML callbacks may call LVGL (not thread-safe across cores)
-  );
+  // 8KB stack: try PSRAM (saves internal RAM), fall back to internal if unavailable
+  BaseType_t ok = pdFAIL;
+#if CONFIG_SPIRAM
+  ok = xTaskCreatePinnedToCoreWithCaps(
+      IntercomApi::server_task, "intercom_srv", 8192, this, 5,
+      &this->server_task_handle_, 1, MALLOC_CAP_SPIRAM);
+#endif
+  if (ok != pdPASS) {
+    ok = xTaskCreatePinnedToCore(
+        IntercomApi::server_task, "intercom_srv", 8192, this, 5,
+        &this->server_task_handle_, 1);
+  }
 
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Failed to create server task");
