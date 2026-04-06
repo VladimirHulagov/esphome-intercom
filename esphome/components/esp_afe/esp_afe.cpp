@@ -36,23 +36,17 @@ static inline void copy_passthrough_frame(const int16_t *in, int input_samples,
 }
 
 static inline float compute_rms_dbfs(const int16_t *data, int samples) {
-  if (data == nullptr || samples <= 0) {
+  if (data == nullptr || samples <= 0)
     return -120.0f;
-  }
-
-  double sum_sq = 0.0;
+  float sum_sq = 0.0f;
   for (int i = 0; i < samples; i++) {
-    double s = static_cast<double>(data[i]);
+    float s = static_cast<float>(data[i]);
     sum_sq += s * s;
   }
-
-  double rms = std::sqrt(sum_sq / samples);
-  if (rms <= 0.0) {
+  float rms = sqrtf(sum_sq / static_cast<float>(samples));
+  if (rms <= 0.0f)
     return -120.0f;
-  }
-
-  double normalized = rms / 32768.0;
-  return static_cast<float>(20.0 * std::log10(normalized));
+  return 20.0f * log10f(rms / 32768.0f);
 }
 
 aec_mode_t EspAfe::derive_aec_mode_() const {
