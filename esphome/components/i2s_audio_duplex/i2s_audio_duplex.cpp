@@ -614,20 +614,24 @@ void I2SAudioDuplex::audio_task_() {
            ctx.use_stereo_aec_ref ? "YES" : "no",
            ctx.use_tdm_ref ? "YES" : "no", (unsigned)ctx.ratio);
 
-  // Determine output frame size: use AEC's required chunk size if available, otherwise default.
-  ctx.out_frame_size = DEFAULT_FRAME_SIZE;
+  // Determine frame sizes: processors may consume and produce different frame lengths.
+  ctx.input_frame_size = DEFAULT_FRAME_SIZE;
+  ctx.output_frame_size = DEFAULT_FRAME_SIZE;
 #ifdef USE_ESP_AEC
   if (this->aec_ != nullptr && this->aec_->is_initialized()) {
-    ctx.out_frame_size = this->aec_->get_frame_size();
+    ctx.input_frame_size = this->aec_->get_frame_size();
+    ctx.output_frame_size = this->aec_->get_output_frame_size();
     uint32_t out_rate = this->get_output_sample_rate();
-    ESP_LOGD(TAG, "AEC frame size: %u samples (%ums @ %uHz)",
-             (unsigned)ctx.out_frame_size, (unsigned)(ctx.out_frame_size * 1000 / out_rate), (unsigned)out_rate);
+    ESP_LOGD(TAG, "AEC frame sizes: input=%u, output=%u samples (%ums @ %uHz)",
+             (unsigned) ctx.input_frame_size, (unsigned) ctx.output_frame_size,
+             (unsigned) (ctx.input_frame_size * 1000 / out_rate), (unsigned) out_rate);
   }
 #endif
 
   // ── Frame sizing ──
-  ctx.bus_frame_size = ctx.out_frame_size * ctx.ratio;
-  ctx.out_frame_bytes = ctx.out_frame_size * sizeof(int16_t);
+  ctx.bus_frame_size = ctx.input_frame_size * ctx.ratio;
+  ctx.input_frame_bytes = ctx.input_frame_size * sizeof(int16_t);
+  ctx.output_frame_bytes = ctx.output_frame_size * sizeof(int16_t);
   ctx.bus_frame_bytes = ctx.bus_frame_size * sizeof(int16_t);
   if (ctx.use_tdm_ref) {
     ctx.rx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
@@ -652,7 +656,7 @@ void I2SAudioDuplex::audio_task_() {
 
   ctx.mic_separate = (ctx.ratio > 1) || ctx.use_stereo_aec_ref || ctx.use_tdm_ref;
   ctx.mic_buffer = ctx.mic_separate
-      ? static_cast<int16_t *>(heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps))
+      ? static_cast<int16_t *>(heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps))
       : ctx.rx_buffer;
 
   ctx.spk_buffer = static_cast<int16_t *>(
@@ -660,7 +664,7 @@ void I2SAudioDuplex::audio_task_() {
 
   if (ctx.use_stereo_aec_ref || ctx.use_tdm_ref) {
     ctx.spk_ref_buffer = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
+        heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
   }
 
   if (ctx.use_stereo_aec_ref && ctx.ratio > 1) {
@@ -690,9 +694,9 @@ void I2SAudioDuplex::audio_task_() {
   if (this->aec_ != nullptr) {
     if (!ctx.spk_ref_buffer && !ctx.use_tdm_ref)
       ctx.spk_ref_buffer = static_cast<int16_t *>(
-          heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
+          heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
     ctx.aec_output = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.out_frame_bytes, buf_caps));
+        heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
 
     // Ring buffer for TYPE2-style AEC reference (no-codec setups only)
     // Uses buf_caps so it goes to PSRAM when buffers_in_psram is enabled.
@@ -745,6 +749,8 @@ void I2SAudioDuplex::audio_task_() {
     }
     // Reset per-frame state
     ctx.output_buffer = nullptr;
+    ctx.current_output_frame_size = ctx.input_frame_size;
+    ctx.current_output_frame_bytes = ctx.input_frame_bytes;
 
     // Snapshot atomic state for this frame (avoids repeated .load() in sample loops)
     ctx.mic_attenuation = this->mic_attenuation_.load(std::memory_order_relaxed);
@@ -834,7 +840,7 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
       this->mic_decimator_.process(ctx.tdm_deint_mic, ctx.mic_buffer, ctx.bus_frame_size);
       this->ref_decimator_.process(ctx.tdm_deint_ref, ctx.spk_ref_buffer, ctx.bus_frame_size);
     } else {
-      for (size_t i = 0; i < ctx.out_frame_size; i++) {
+      for (size_t i = 0; i < ctx.input_frame_size; i++) {
         ctx.mic_buffer[i] = ctx.rx_buffer[i * ts + ms];
         ctx.spk_ref_buffer[i] = ctx.rx_buffer[i * ts + rs];
       }
@@ -858,7 +864,7 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
     if (ctx.use_stereo_aec_ref) {
       const int ri = ctx.ref_channel_right ? 1 : 0;
       const int mi = ctx.ref_channel_right ? 0 : 1;
-      for (size_t i = 0; i < ctx.out_frame_size; i++) {
+      for (size_t i = 0; i < ctx.input_frame_size; i++) {
         ctx.spk_ref_buffer[i] = ctx.rx_buffer[i * 2 + ri];
         ctx.mic_buffer[i] = ctx.rx_buffer[i * 2 + mi];
       }
@@ -868,7 +874,7 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
 
   // DC offset correction (musicdsp.org DC-block in Q31, matches upstream)
   if (ctx.correct_dc_offset) {
-    for (size_t i = 0; i < ctx.out_frame_size; i++) {
+    for (size_t i = 0; i < ctx.input_frame_size; i++) {
       int32_t input = (int32_t) ctx.mic_buffer[i] << 16;
       int32_t output = input - ctx.dc_prev_input + ctx.dc_prev_output - (ctx.dc_prev_output >> 10);
       ctx.dc_prev_input = input;
@@ -879,7 +885,7 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
 
   // Pre-AEC mic attenuation (snapshot value, no atomic load in loop)
   if (ctx.mic_attenuation != 1.0f) {
-    for (size_t i = 0; i < ctx.out_frame_size; i++) {
+    for (size_t i = 0; i < ctx.input_frame_size; i++) {
       ctx.mic_buffer[i] = scale_sample(ctx.mic_buffer[i], ctx.mic_attenuation);
     }
   }
@@ -895,7 +901,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
   // Raw mic callbacks: pre-AEC audio for MWW
   if (ctx.mic_running && !this->raw_mic_callbacks_.empty()) {
     for (auto &callback : this->raw_mic_callbacks_) {
-      callback((const uint8_t *) ctx.mic_buffer, ctx.out_frame_bytes);
+      callback((const uint8_t *) ctx.mic_buffer, ctx.input_frame_bytes);
     }
   }
 
@@ -905,8 +911,10 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       this->aec_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
     // TDM: hardware-synced reference, no speaker gating needed.
     // TDM analog ref already reflects DAC volume. No extra scaling on ref.
-    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.out_frame_size);
+    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.input_frame_size);
     ctx.output_buffer = ctx.aec_output;
+    ctx.current_output_frame_size = ctx.output_frame_size;
+    ctx.current_output_frame_bytes = ctx.output_frame_bytes;
   } else
 #endif
   if (!ctx.use_tdm_ref && this->aec_ != nullptr && ctx.aec_enabled && this->aec_->is_initialized() &&
@@ -929,7 +937,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
             this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
           } else {
             // No decimation or no temp buffer: read directly into spk_ref_buffer
-            size_t read_bytes = (ctx.ratio > 1) ? ctx.out_frame_bytes : ref_bytes;
+            size_t read_bytes = (ctx.ratio > 1) ? ctx.input_frame_bytes : ref_bytes;
             this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, read_bytes, 0);
           }
           ref_filled = true;
@@ -941,20 +949,22 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       }
 
       if (!ref_filled) {
-        memset(ctx.spk_ref_buffer, 0, ctx.out_frame_bytes);
+        memset(ctx.spk_ref_buffer, 0, ctx.input_frame_bytes);
       }
     }
     // Stereo mode: spk_ref_buffer already filled from deinterleave. No extra scaling.
     // TDM mode: spk_ref_buffer filled from TDM deinterleave. No extra scaling.
 
-    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.out_frame_size);
+    this->aec_->process(ctx.mic_buffer, ctx.spk_ref_buffer, ctx.aec_output, ctx.input_frame_size);
     ctx.output_buffer = ctx.aec_output;
+    ctx.current_output_frame_size = ctx.output_frame_size;
+    ctx.current_output_frame_bytes = ctx.output_frame_bytes;
   }
 #endif
 
   // Apply mic gain (snapshot value)
   if (ctx.mic_gain != 1.0f) {
-    for (size_t i = 0; i < ctx.out_frame_size; i++) {
+    for (size_t i = 0; i < ctx.current_output_frame_size; i++) {
       ctx.output_buffer[i] = scale_sample(ctx.output_buffer[i], ctx.mic_gain);
     }
   }
@@ -962,7 +972,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
   // Post-AEC callbacks (VA/STT)
   if (ctx.mic_running) {
     for (auto &callback : this->mic_callbacks_) {
-      callback((const uint8_t *) ctx.output_buffer, ctx.out_frame_bytes);
+      callback((const uint8_t *) ctx.output_buffer, ctx.current_output_frame_bytes);
     }
   }
 }

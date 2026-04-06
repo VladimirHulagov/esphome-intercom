@@ -7,6 +7,7 @@ from esphome.components.esp32 import add_idf_component
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
+AUTO_LOAD = ["switch", "binary_sensor", "sensor"]
 
 _SUPPORTED_VARIANTS = ("ESP32S3", "ESP32P4")
 
@@ -38,6 +39,14 @@ CONF_VAD_ENABLED = "vad_enabled"
 CONF_AGC_ENABLED = "agc_enabled"
 CONF_AGC_COMPRESSION_GAIN = "agc_compression_gain"
 CONF_AGC_TARGET_LEVEL = "agc_target_level"
+CONF_VAD_MODE = "vad_mode"
+CONF_VAD_MIN_SPEECH_MS = "vad_min_speech_ms"
+CONF_VAD_MIN_NOISE_MS = "vad_min_noise_ms"
+CONF_VAD_DELAY_MS = "vad_delay_ms"
+CONF_VAD_MUTE_PLAYBACK = "vad_mute_playback"
+CONF_VAD_ENABLE_CHANNEL_TRIGGER = "vad_enable_channel_trigger"
+CONF_MEMORY_ALLOC_MODE = "memory_alloc_mode"
+CONF_AFE_LINEAR_GAIN = "afe_linear_gain"
 CONF_TASK_CORE = "task_core"
 CONF_TASK_PRIORITY = "task_priority"
 CONF_RINGBUF_SIZE = "ringbuf_size"
@@ -52,6 +61,12 @@ AFE_MODES = {
     "high_perf": 1,  # AFE_MODE_HIGH_PERF
 }
 
+MEMORY_ALLOC_MODES = {
+    "more_internal": 1,
+    "internal_psram_balance": 2,
+    "more_psram": 3,
+}
+
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -63,9 +78,19 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_AEC_FILTER_LENGTH, default=4): cv.int_range(min=1, max=8),
             cv.Optional(CONF_NS_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_VAD_ENABLED, default=False): cv.boolean,
+            cv.Optional(CONF_VAD_MODE, default=3): cv.int_range(min=0, max=4),
+            cv.Optional(CONF_VAD_MIN_SPEECH_MS, default=128): cv.int_range(min=32, max=60000),
+            cv.Optional(CONF_VAD_MIN_NOISE_MS, default=1000): cv.int_range(min=64, max=60000),
+            cv.Optional(CONF_VAD_DELAY_MS, default=128): cv.int_range(min=0, max=60000),
+            cv.Optional(CONF_VAD_MUTE_PLAYBACK, default=False): cv.boolean,
+            cv.Optional(CONF_VAD_ENABLE_CHANNEL_TRIGGER, default=False): cv.boolean,
             cv.Optional(CONF_AGC_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_AGC_COMPRESSION_GAIN, default=9): cv.int_range(min=0, max=30),
             cv.Optional(CONF_AGC_TARGET_LEVEL, default=3): cv.int_range(min=0, max=31),
+            cv.Optional(CONF_MEMORY_ALLOC_MODE, default="more_psram"): cv.enum(
+                MEMORY_ALLOC_MODES, lower=True
+            ),
+            cv.Optional(CONF_AFE_LINEAR_GAIN, default=1.0): cv.float_range(min=0.1, max=10.0),
             cv.Optional(CONF_TASK_CORE, default=1): cv.int_range(min=0, max=1),
             cv.Optional(CONF_TASK_PRIORITY, default=5): cv.int_range(min=1, max=24),
             cv.Optional(CONF_RINGBUF_SIZE, default=8): cv.int_range(min=2, max=32),
@@ -86,9 +111,17 @@ async def to_code(config):
     cg.add(var.set_aec_filter_length(config[CONF_AEC_FILTER_LENGTH]))
     cg.add(var.set_ns_enabled(config[CONF_NS_ENABLED]))
     cg.add(var.set_vad_enabled(config[CONF_VAD_ENABLED]))
+    cg.add(var.set_vad_mode(config[CONF_VAD_MODE]))
+    cg.add(var.set_vad_min_speech_ms(config[CONF_VAD_MIN_SPEECH_MS]))
+    cg.add(var.set_vad_min_noise_ms(config[CONF_VAD_MIN_NOISE_MS]))
+    cg.add(var.set_vad_delay_ms(config[CONF_VAD_DELAY_MS]))
+    cg.add(var.set_vad_mute_playback(config[CONF_VAD_MUTE_PLAYBACK]))
+    cg.add(var.set_vad_enable_channel_trigger(config[CONF_VAD_ENABLE_CHANNEL_TRIGGER]))
     cg.add(var.set_agc_enabled(config[CONF_AGC_ENABLED]))
     cg.add(var.set_agc_compression_gain(config[CONF_AGC_COMPRESSION_GAIN]))
     cg.add(var.set_agc_target_level(config[CONF_AGC_TARGET_LEVEL]))
+    cg.add(var.set_memory_alloc_mode(config[CONF_MEMORY_ALLOC_MODE]))
+    cg.add(var.set_afe_linear_gain(config[CONF_AFE_LINEAR_GAIN]))
     cg.add(var.set_task_core(config[CONF_TASK_CORE]))
     cg.add(var.set_task_priority(config[CONF_TASK_PRIORITY]))
     cg.add(var.set_ringbuf_size(config[CONF_RINGBUF_SIZE]))

@@ -12,10 +12,18 @@ CONF_NS = "ns"
 CONF_VAD = "vad"
 CONF_AGC = "agc"
 
-AfeAecSwitch = esp_afe_ns.class_("AfeAecSwitch", switch.Switch, cg.Parented.template(EspAfe))
-AfeNsSwitch = esp_afe_ns.class_("AfeNsSwitch", switch.Switch, cg.Parented.template(EspAfe))
-AfeVadSwitch = esp_afe_ns.class_("AfeVadSwitch", switch.Switch, cg.Parented.template(EspAfe))
-AfeAgcSwitch = esp_afe_ns.class_("AfeAgcSwitch", switch.Switch, cg.Parented.template(EspAfe))
+AfeAecSwitch = esp_afe_ns.class_(
+    "AfeAecSwitch", switch.Switch, cg.Component, cg.Parented.template(EspAfe)
+)
+AfeNsSwitch = esp_afe_ns.class_(
+    "AfeNsSwitch", switch.Switch, cg.Component, cg.Parented.template(EspAfe)
+)
+AfeVadSwitch = esp_afe_ns.class_(
+    "AfeVadSwitch", switch.Switch, cg.Component, cg.Parented.template(EspAfe)
+)
+AfeAgcSwitch = esp_afe_ns.class_(
+    "AfeAgcSwitch", switch.Switch, cg.Component, cg.Parented.template(EspAfe)
+)
 
 
 def _switch_schema(switch_class, icon):
@@ -48,4 +56,5 @@ async def to_code(config):
         if conf_key in config:
             conf = config[conf_key]
             var = await switch.new_switch(conf)
+            await cg.register_component(var, {})
             cg.add(var.set_parent(parent))

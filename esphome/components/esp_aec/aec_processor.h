@@ -13,8 +13,11 @@ class AecProcessor {
 
   virtual bool is_initialized() const = 0;
 
-  /// Frame size in samples (not bytes). Typically 512 samples = 32ms at 16kHz.
+  /// Input frame size in samples (not bytes). Typically 512 samples = 32ms at 16kHz.
   virtual int get_frame_size() const = 0;
+
+  /// Output frame size in samples. For plain AEC this matches get_frame_size().
+  virtual int get_output_frame_size() const { return this->get_frame_size(); }
 
   /// Number of microphone channels this processor expects. Default: 1 (single-mic AEC).
   virtual int get_mic_num() const { return 1; }

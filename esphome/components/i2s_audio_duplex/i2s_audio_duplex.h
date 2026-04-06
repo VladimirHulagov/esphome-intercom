@@ -231,9 +231,11 @@ class I2SAudioDuplex : public Component {
     uint8_t tdm_ref_slot{0};
 
     // ── Frame sizing ──
-    size_t out_frame_size{0};
+    size_t input_frame_size{0};
+    size_t output_frame_size{0};
     size_t bus_frame_size{0};
-    size_t out_frame_bytes{0};
+    size_t input_frame_bytes{0};
+    size_t output_frame_bytes{0};
     size_t bus_frame_bytes{0};
     size_t rx_frame_bytes{0};
     size_t tdm_tx_frame_bytes{0};
@@ -255,6 +257,8 @@ class I2SAudioDuplex : public Component {
     int32_t dc_prev_input{0};
     int32_t dc_prev_output{0};
     int16_t *output_buffer{nullptr};  // points to mic_buffer or aec_output
+    size_t current_output_frame_bytes{0};
+    size_t current_output_frame_size{0};
     bool mic_separate{false};         // true if mic_buffer != rx_buffer
 
     // ── Per-iteration snapshots from atomics ──
