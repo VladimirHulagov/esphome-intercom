@@ -485,14 +485,15 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
       memset(reinterpret_cast<uint8_t *>(out) + copy_bytes, 0, output_bytes - copy_bytes);
     }
     this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH, std::memory_order_relaxed);
-    this->input_volume_dbfs_.store(result->data_volume, std::memory_order_relaxed);
+    this->input_volume_dbfs_.store(compute_rms_dbfs(in_mic, fs), std::memory_order_relaxed);
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
     processed = true;
 
     if (++this->frame_count_ % 960 == 0) {
-      ESP_LOGI(TAG, "AFE [frame %lu] vol=%.1fdB vad=%s rbuf=%.0f%%",
-               static_cast<unsigned long>(this->frame_count_),
-               result->data_volume,
+      ESP_LOGI(TAG, "AFE [frame %lu] in=%.1fdB out=%.1fdB vad=%s rbuf=%.0f%%",
+               static_cast<unsigned long>(this->frame_count_.load(std::memory_order_relaxed)),
+               compute_rms_dbfs(in_mic, fs),
+               compute_rms_dbfs(out, os),
                result->vad_state == VAD_SPEECH ? "SPEECH" : "SILENCE",
                result->ringbuff_free_pct * 100.0f);
     }
