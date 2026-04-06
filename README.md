@@ -71,6 +71,7 @@ graph TD
   - **Full**: ESP ↔ Home Assistant ↔ ESP (intercom between devices)
 - **Echo Cancellation (AEC)** - Built-in acoustic echo cancellation using ESP-SR
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
+- **Full Audio Front-End (AFE)** - Optional full DSP pipeline: AEC + Noise Suppression + VAD + AGC via `esp_afe`, with runtime switches and diagnostic sensors in Home Assistant
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Ready-to-flash YAML configs** - Optimized configurations for real, tested hardware that combine Voice Assistant, Micro Wake Word, and Intercom running simultaneously, creating the most complete hub possible for a full Voice Assistant experience
 - **Auto Answer** - Configurable automatic call acceptance (ESP-side switch + browser card checkbox)
@@ -182,8 +183,12 @@ Add the external component to your ESPHome device configuration:
 ```yaml
 external_components:
   - source: github://n-IA-hane/esphome-intercom
-    components: [intercom_api, esp_aec]
+    components: [audio_processor, intercom_api, esp_aec]
+    # Or with esp_afe for full pipeline (AEC + NS + VAD + AGC):
+    # components: [audio_processor, intercom_api, esp_afe]
 ```
+
+> **Note**: `audio_processor` must be listed because it provides the shared `AudioProcessor` interface used by both `esp_aec` and `esp_afe`.
 
 #### Minimal Configuration (Simple Mode)
 
@@ -487,7 +492,7 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `mode` | string | `simple` | `simple` (browser only) or `full` (ESP↔ESP) |
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
-| `aec_id` | ID | - | Reference to esp_aec component |
+| `aec_id` | ID | - | Reference to audio processor (`esp_aec` or `esp_afe`). Accepts any `AudioProcessor` implementation |
 | `dc_offset_removal` | bool | false | Remove DC offset (for mics like SPH0645) |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
 
@@ -531,6 +536,15 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `intercom_api.is_answering` | Call is being answered |
 | `intercom_api.is_incoming` | Has incoming call |
 
+### Audio Processing Components
+
+Two audio processing components are available, both implementing the `AudioProcessor` interface:
+
+- **`esp_aec`**: Standalone echo cancellation. Lightweight (~80 KB internal RAM). Use when you only need AEC.
+- **`esp_afe`**: Full AFE pipeline (AEC + NS + VAD + AGC). Heavier (~150 KB internal RAM) but provides noise suppression, voice activity detection, auto gain control, runtime toggle switches, and diagnostic sensors in Home Assistant.
+
+Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `intercom_api` uses `aec_id` to reference either one.
+
 ### esp_aec Component
 
 | Option | Type | Default | Description |
@@ -550,6 +564,64 @@ When an ESP device has "Home Assistant" selected as destination and initiates a 
 | `voip_high_perf` | `dios_ssp_aec` | ~64% | Yes | 2/10 | No |
 
 > **Important**: SR modes use a **linear-only** adaptive filter that preserves spectral features for neural wake word detection. VOIP modes add a **residual echo suppressor** (RES) that distorts features, reducing MWW detection from 10/10 to 2/10. Use `sr_low_cost` for VA + MWW setups. SR mode requires `buffers_in_psram: true` on ESP32-S3 (512-sample frames need more memory). See [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md#aec-cpu-impact) for details.
+
+### esp_afe Component
+
+Full audio front-end pipeline with runtime control and diagnostics.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `id` | ID | Required | Component ID |
+| `type` | string | `sr` | `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
+| `mode` | string | `low_cost` | `low_cost` or `high_perf` |
+| `aec_enabled` | bool | true | Echo cancellation |
+| `aec_filter_length` | int | 4 | AEC filter length in frames (1-8) |
+| `ns_enabled` | bool | true | Noise suppression (WebRTC engine) |
+| `vad_enabled` | bool | false | Voice activity detection |
+| `agc_enabled` | bool | true | Automatic gain control (WebRTC engine) |
+| `memory_alloc_mode` | string | `more_psram` | Memory allocation strategy |
+
+```yaml
+esp_afe:
+  id: afe_processor
+  type: sr
+  mode: low_cost
+  ns_enabled: true
+  agc_enabled: true
+  vad_enabled: true
+```
+
+**Platform entities** (switches, sensors, binary sensors):
+
+```yaml
+switch:
+  - platform: esp_afe
+    esp_afe_id: afe_processor
+    aec:
+      name: "Echo Cancellation"
+    ns:
+      name: "Noise Suppression"
+    agc:
+      name: "Auto Gain Control"
+    vad:
+      name: "Voice Detection"
+
+sensor:
+  - platform: esp_afe
+    esp_afe_id: afe_processor
+    input_volume:
+      name: "Input Volume"
+    output_rms:
+      name: "Output RMS"
+
+binary_sensor:
+  - platform: esp_afe
+    esp_afe_id: afe_processor
+    vad:
+      name: "Voice Presence"
+```
+
+See the full [esp_afe README](esphome/components/esp_afe/README.md) for all options, toggle behavior details, and troubleshooting.
 
 ---
 
@@ -829,6 +901,7 @@ sequenceDiagram
 | **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
 | **Xiaozhi Ball V3 (intercom)** | `xiaozhi-ball-v3-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | Intercom only |
 | **Waveshare S3-Audio** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
+| **Waveshare S3-Audio (AFE)** | `waveshare-s3-audio-afe-test.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | AFE SR (AEC+NS+AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
 | **Waveshare P4-Touch** | `waveshare-p4-touch-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
 | **ESP32-S3 Mini** | `esp32-s3-mini-va-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | VA + MWW + Intercom |
 | **ESP32-S3 Mini (intercom)** | `esp32-s3-mini-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | Intercom only |
@@ -877,7 +950,7 @@ Without full-duplex I2S, you can't have Voice Assistant, Micro Wake Word, interc
 ```yaml
 external_components:
   - source: github://n-IA-hane/esphome-intercom
-    components: [i2s_audio_duplex, esp_aec]
+    components: [audio_processor, i2s_audio_duplex, esp_aec]
 
 esp_aec:
   id: aec_processor
@@ -894,7 +967,7 @@ i2s_audio_duplex:
   output_sample_rate: 16000    # FIR decimation to 16kHz
   slot_bit_width: 32           # required for MEMS mics without codec
   correct_dc_offset: true
-  aec_id: aec_processor
+  processor_id: aec_processor
 
 microphone:
   - platform: i2s_audio_duplex
@@ -963,15 +1036,25 @@ AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU co
 
 **Recommended: `sr_low_cost`** for VA + MWW setups (i2s_audio_duplex devices). Linear-only AEC preserves spectral features for neural wake word detection (10/10 vs 2/10 with VOIP modes). Also uses ~60% less CPU. Requires `buffers_in_psram: true` on ESP32-S3. For dual-bus devices without i2s_audio_duplex, use `voip_high_perf` (AEC runs inside intercom_api).
 
+For devices that benefit from noise suppression and auto gain control (noisy environments, variable mic distance), use `esp_afe` instead of `esp_aec`. The AFE wraps the same AEC engine plus WebRTC NS and AGC, with runtime switches in Home Assistant.
+
 ```yaml
+# Option A: esp_aec (AEC only, lighter)
 esp_aec:
   sample_rate: 16000
   filter_length: 4       # 64ms tail, sufficient for integrated codecs
   mode: sr_low_cost      # Linear AEC, best for MWW + VA, lowest CPU
 
+# Option B: esp_afe (AEC + NS + VAD + AGC, full pipeline)
+# esp_afe:
+#   type: sr
+#   mode: low_cost
+#   ns_enabled: true
+#   agc_enabled: true
+
 i2s_audio_duplex:
   # ... pins ...
-  aec_id: aec_component
+  processor_id: aec_component   # works with either esp_aec or esp_afe
   buffers_in_psram: true  # Required for sr_low_cost (512-sample frames)
 ```
 
@@ -1056,7 +1139,7 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 
 ### Echo or feedback
 
-1. Enable AEC: create `esp_aec` component and link with `aec_id`
+1. Enable AEC: create an audio processor (`esp_aec` or `esp_afe`) and link with `aec_id` (intercom_api) or `processor_id` (i2s_audio_duplex)
 2. Ensure AEC switch is ON in Home Assistant
 3. Reduce speaker volume
 4. Increase physical distance between mic and speaker
@@ -1107,6 +1190,7 @@ Working configs tested on real hardware are included in the repository:
 | [`xiaozhi-ball-v3-va-intercom.yaml`](xiaozhi-ball-v3-va-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
 | [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
 | [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
+| [`waveshare-s3-audio-afe-test.yaml`](waveshare-s3-audio-afe-test.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | Same as above + esp_afe (NS, AGC, VAD switches + diagnostic sensors) |
 | [`waveshare-p4-touch-va-intercom.yaml`](waveshare-p4-touch-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
 | [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
 | [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |

@@ -11,7 +11,7 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 - **TCP Server** on port 6054 for audio streaming
 - **FreeRTOS Tasks** for non-blocking audio processing
 - **Finite State Machine** for call states (Idle → Ringing → Streaming)
-- **AEC Integration** via `esp_aec` component
+- **Audio Processor Integration** via `esp_aec` (AEC only) or `esp_afe` (AEC + NS + VAD + AGC) components
 - **Contact Management** for ESP↔ESP calls (Full mode)
 - **Persistent Settings** saved to flash
 - **ESPHome Native Platforms** for switches, numbers, sensors
@@ -55,7 +55,9 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
-    components: [intercom_api, esp_aec]
+    components: [audio_processor, intercom_api, esp_aec]
+    # Or with esp_afe (full pipeline: AEC + NS + VAD + AGC):
+    # components: [audio_processor, intercom_api, esp_afe]
 
 intercom_api:
   id: intercom
@@ -104,7 +106,7 @@ intercom_api:
 | `mode` | string | `simple` | Operating mode: `simple` or `full` |
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
-| `aec_id` | ID | - | Reference to esp_aec component |
+| `aec_id` | ID | - | Reference to audio processor (`esp_aec` or `esp_afe`). Despite the name, accepts any `AudioProcessor` implementation |
 | `aec_reference_delay_ms` | int | 80 | AEC ring buffer pre-fill delay (10-200ms). Tune for your hardware if echo cancellation is poor. |
 
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
@@ -475,10 +477,10 @@ api:
 | Task | Core | Priority | Stack | Notes |
 |------|------|----------|-------|-------|
 | server_task | 1 | 5 | 8192 | Always created. Handles TCP RX, call FSM, YAML callbacks. |
-| tx_task | 0 | 5 | 12288 | **Only created when `aec_id` is set on `intercom_api`**. Mic→network + AEC. |
-| speaker_task | 0 | 4 | 8192 | **Only created when `aec_id` is set on `intercom_api`**. Network→speaker, AEC ref. |
+| tx_task | 0 | 5 | 12288 | **Only created when `aec_id` is set on `intercom_api`**. Mic→network + audio processing. |
+| speaker_task | 0 | 4 | 8192 | **Only created when `aec_id` is set on `intercom_api`**. Network→speaker, processor ref. |
 
-> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case, where AEC is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
+> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case, where audio processing is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
 
 ## Troubleshooting
 
@@ -495,8 +497,8 @@ api:
 
 ### AEC not working
 
-- Verify `aec_id` is linked
-- Check `esp_aec` component is configured
+- Verify `aec_id` is linked to an `esp_aec` or `esp_afe` component
+- Check the audio processor component is configured
 - Ensure AEC switch is ON
 
 ### State stuck in "Ringing"

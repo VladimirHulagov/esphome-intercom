@@ -18,7 +18,7 @@ With i2s_audio_duplex:
 
 - **True Full-Duplex**: Simultaneous mic input and speaker output on one I2S bus
 - **Standard Platforms**: Exposes `microphone` and `speaker` platform classes (compatible with Voice Assistant, MWW, intercom_api)
-- **AEC Integration**: Built-in echo cancellation via `esp_aec` component, three reference modes:
+- **Audio Processor Integration**: Built-in audio processing via `esp_aec` (AEC only) or `esp_afe` (AEC + NS + VAD + AGC) components. Both implement the `AudioProcessor` interface and are configured via `processor_id`. Three AEC reference modes:
   - **Direct TX reference** (default): Uses the previous TX frame as AEC reference. No ring buffer, no delay tuning. Works with any setup (discrete MEMS mic + amp, or codec). The AEC adaptive filter compensates for the ~1 chunk latency automatically.
   - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference. Enable with `use_stereo_aec_reference: true`.
   - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data. Enable with `use_tdm_reference: true`.
@@ -27,7 +27,7 @@ With i2s_audio_duplex:
 - **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic gain pre-AEC (for weak MEMS mics), speaker volume (persistent)
 - **Codec-less Support**: `slot_bit_width: 32` for MEMS mics (INMP441, MSM261, SPH0645) + I2S amp on same bus. `correct_dc_offset: true` for mics without built-in HPF
 - **Number Platform**: Native `mic_gain` and `speaker_volume` entities with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, `i2s_audio_duplex` owns the number entities and `intercom_api` defers to avoid conflicts.
-- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` prevents dual AEC (both `i2s_audio_duplex` and `intercom_api` with `aec_id`) and dual DC offset removal, catching configuration errors at compile time
+- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` prevents dual audio processors (both `i2s_audio_duplex` and `intercom_api` with a processor configured) and dual DC offset removal, catching configuration errors at compile time
 - **AEC Gating**: Auto-disables AEC when speaker is silent in mono/stereo modes (prevents filter drift). TDM mode is always-on (hardware ref captures silence naturally).
 - **Reference Counting**: Multiple mic consumers share the I2S bus safely (MWW + VA + intercom)
 - **CPU-Aware Scheduling**: `taskYIELD()` between frames for MWW inference headroom during AEC
@@ -107,7 +107,9 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
-    components: [i2s_audio_duplex, esp_aec]
+    components: [audio_processor, i2s_audio_duplex, esp_aec]
+    # Or with esp_afe (full AFE pipeline: AEC + NS + VAD + AGC):
+    # components: [audio_processor, i2s_audio_duplex, esp_afe]
 ```
 
 ## Configuration
@@ -147,7 +149,7 @@ speaker:
 | `i2s_dout_pin` | pin | -1 | Data output to codec (speaker) |
 | `sample_rate` | int | 16000 | I2S bus sample rate (8000-48000) |
 | `output_sample_rate` | int | - | Mic/AEC output rate. If set, enables FIR decimation (must divide `sample_rate` evenly, max ratio 6) |
-| `aec_id` | ID | - | Reference to `esp_aec` component for echo cancellation |
+| `processor_id` | ID | - | Reference to audio processor component (`esp_aec` or `esp_afe`) for echo cancellation and audio processing |
 | `mic_attenuation` | float | 1.0 | Pre-AEC mic gain/attenuation (0.01-32.0). <1.0 attenuates hot mics, >1.0 amplifies weak mics. Use `mic_gain_pre_aec` number platform for runtime control. |
 | `slot_bit_width` | int | auto | I2S slot width in bits (16 or 32). Set to 32 for MEMS mics without codec (INMP441, MSM261, SPH0645). |
 | `correct_dc_offset` | bool | false | Enable DC offset removal. Required for MEMS mics without built-in HPF (MSM261, SPH0645). |
@@ -182,7 +184,7 @@ esp_aec:
 i2s_audio_duplex:
   id: i2s_duplex
   # ... pins ...
-  aec_id: aec_component
+  processor_id: aec_component   # or esp_afe component
   buffers_in_psram: true  # Required for sr_low_cost (512-sample frames need more memory)
 
 microphone:
@@ -224,7 +226,7 @@ For **ES8311 codec**, enable `use_stereo_aec_reference` for **perfect echo cance
 i2s_audio_duplex:
   id: i2s_duplex
   # ... pins ...
-  aec_id: aec_component
+  processor_id: aec_component
   use_stereo_aec_reference: true  # ES8311 digital feedback
 ```
 
@@ -242,7 +244,7 @@ For boards with **ES7210** (multi-channel ADC) + **ES8311** (DAC), such as the W
 i2s_audio_duplex:
   id: i2s_duplex
   # ... pins ...
-  aec_id: aec_component
+  processor_id: aec_component
   use_tdm_reference: true
   tdm_total_slots: 4       # ES7210 4-slot TDM
   tdm_mic_slot: 0           # Slot 0 = MIC1 (voice)
@@ -319,7 +321,7 @@ i2s_audio_duplex:
   # ... pins ...
   sample_rate: 48000           # I2S bus rate (ES8311/ES7210 native, best DAC quality)
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR filter
-  aec_id: aec_component
+  processor_id: aec_component
   use_stereo_aec_reference: true    # Reference from I2S RX stereo deinterleave (no delay needed)
 
 esp_aec:
@@ -544,7 +546,7 @@ binary_sensor:
 - **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed`, including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
 - **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally).
-- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure AEC (`aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of AEC and DC offset processing; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
+- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure an audio processor (`processor_id` / `aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of audio processing and DC offset; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
 
 ### PSRAM and sdkconfig Requirements
 
@@ -585,7 +587,7 @@ Removing any of these causes audio glitch at stream startup (cache cold-start: e
 3. Verify PSRAM is available if using AEC
 
 ### Echo During Calls
-1. Enable AEC: set `aec_id` on `i2s_audio_duplex`
+1. Enable AEC: set `processor_id` on `i2s_audio_duplex`
 2. For ES8311: enable `use_stereo_aec_reference: true` + configure register 0x44
 3. Adjust `filter_length` (4 for integrated codec, 8 for separate speaker)
 
