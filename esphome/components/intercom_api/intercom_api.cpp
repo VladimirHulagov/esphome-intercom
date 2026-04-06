@@ -778,8 +778,15 @@ void IntercomApi::set_call_state_(CallState new_state) {
   CallState old_state = this->call_state_;
   this->call_state_ = new_state;
 
-  ESP_LOGI(TAG, "%s: %s -> %s", this->device_name_.c_str(),
-           call_state_to_str(old_state), call_state_to_str(new_state));
+  if (new_state == CallState::STREAMING && this->caller_sensor_ != nullptr &&
+      !this->caller_sensor_->state.empty()) {
+    ESP_LOGI(TAG, "%s: %s -> %s with %s", this->device_name_.c_str(),
+             call_state_to_str(old_state), call_state_to_str(new_state),
+             this->caller_sensor_->state.c_str());
+  } else {
+    ESP_LOGI(TAG, "%s: %s -> %s", this->device_name_.c_str(),
+             call_state_to_str(old_state), call_state_to_str(new_state));
+  }
 
   // Fire appropriate trigger
   switch (new_state) {
