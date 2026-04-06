@@ -120,7 +120,11 @@ void I2SAudioDuplex::setup() {
   if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
     this->direct_aec_ref_ = static_cast<int16_t *>(
-        heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
+        heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_SPIRAM));
+    if (this->direct_aec_ref_ == nullptr) {
+      this->direct_aec_ref_ = static_cast<int16_t *>(
+          heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
+    }
     if (this->direct_aec_ref_) {
       ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples)", (unsigned)bus_frame_size);
     } else {
@@ -507,6 +511,7 @@ void I2SAudioDuplex::start() {
   }
 #endif
 
+  // Audio task stack MUST stay in internal RAM (real-time, latency-sensitive)
   BaseType_t task_created = xTaskCreatePinnedToCore(
       audio_task,
       "i2s_duplex",
