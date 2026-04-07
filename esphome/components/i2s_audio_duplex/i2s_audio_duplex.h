@@ -54,10 +54,14 @@ static constexpr float FIR_COEFFS[FIR_NUM_TAPS] = {
     1.2531119530e-04f, 2.1633893589e-04f, 4.1270231666e-05f, 0.0f,
 };
 
-// Lightweight FIR decimator: consumes (in_count) samples at high rate,
-// produces (in_count / ratio) samples at low rate.
-// Uses float accumulation for robustness (ESP32-S3 has hardware FPU).
-// When ratio == 1, process() is a simple memcpy (zero overhead for legacy configs).
+// FIR decimator: consumes samples at high rate, produces at low rate.
+// Mirrored delay line (64 float) for always-contiguous convolution window.
+// Symmetric coefficients (c[k]==c[30-k]) halve multiplications.
+// 4 independent accumulators break FPU pipeline dependency.
+// Strided variants read directly from I2S rx_buffer, eliminating deinterleave buffers.
+static_assert(FIR_NUM_TAPS == 32, "convolve_ is hardcoded for 32 taps");
+static_assert((FIR_NUM_TAPS & (FIR_NUM_TAPS - 1)) == 0, "FIR_NUM_TAPS must be power of 2");
+
 class FirDecimator {
  public:
   void init(uint32_t ratio) {
@@ -70,46 +74,101 @@ class FirDecimator {
     this->delay_pos_ = 0;
   }
 
-  // Decimate in_count input samples to (in_count / ratio) output samples.
-  // in_count MUST be a multiple of ratio.
+  // Contiguous int16 input (backward compatible)
   void process(const int16_t *in, int16_t *out, size_t in_count) {
     if (this->ratio_ <= 1) {
       memcpy(out, in, in_count * sizeof(int16_t));
       return;
     }
-
     size_t out_count = in_count / this->ratio_;
     for (size_t o = 0; o < out_count; o++) {
-      // Push ratio_ new samples into the delay line
       for (uint32_t r = 0; r < this->ratio_; r++) {
-        this->delay_line_[this->delay_pos_] = static_cast<float>(*in++);
-        this->delay_pos_ = (this->delay_pos_ + 1) & (FIR_NUM_TAPS - 1);
+        this->push_sample_(static_cast<float>(*in++));
       }
+      out[o] = this->convolve_();
+    }
+  }
 
-      // Convolve: FIR filter output
-      float acc = 0.0f;
-      uint32_t idx = this->delay_pos_;
-      for (size_t t = 0; t < FIR_NUM_TAPS; t++) {
-        acc += this->delay_line_[idx] * FIR_COEFFS[t];
-        idx = (idx + 1) & (FIR_NUM_TAPS - 1);
+  // Strided int16 input (eliminates deinterleave buffers for TDM/stereo)
+  void process_strided(const int16_t *in, int16_t *out, size_t out_count,
+                       size_t stride, size_t offset) {
+    if (this->ratio_ <= 1) {
+      for (size_t i = 0; i < out_count; i++) {
+        out[i] = in[i * stride + offset];
       }
+      return;
+    }
+    size_t idx = 0;
+    for (size_t o = 0; o < out_count; o++) {
+      for (uint32_t r = 0; r < this->ratio_; r++) {
+        this->push_sample_(static_cast<float>(in[(idx + r) * stride + offset]));
+      }
+      idx += this->ratio_;
+      out[o] = this->convolve_();
+    }
+  }
 
-      // Clamp to int16 range
-      if (acc > 32767.0f) acc = 32767.0f;
-      if (acc < -32768.0f) acc = -32768.0f;
-      out[o] = static_cast<int16_t>(acc);
+  // Strided int32 input with inline >>16 downshift (eliminates 32-to-16 conversion loop)
+  void process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
+                          size_t stride, size_t offset) {
+    if (this->ratio_ <= 1) {
+      for (size_t i = 0; i < out_count; i++) {
+        out[i] = static_cast<int16_t>(in[i * stride + offset] >> 16);
+      }
+      return;
+    }
+    size_t idx = 0;
+    for (size_t o = 0; o < out_count; o++) {
+      for (uint32_t r = 0; r < this->ratio_; r++) {
+        this->push_sample_(static_cast<float>(in[(idx + r) * stride + offset] >> 16));
+      }
+      idx += this->ratio_;
+      out[o] = this->convolve_();
     }
   }
 
  private:
+  inline void push_sample_(float s) {
+    uint32_t p = this->delay_pos_;
+    this->delay_line_[p] = s;
+    this->delay_line_[p + FIR_NUM_TAPS] = s;  // mirror for contiguous window
+    this->delay_pos_ = (p + 1) & (FIR_NUM_TAPS - 1);
+  }
+
+  inline int16_t convolve_() {
+    // w[0..31] is always a valid contiguous window thanks to the mirrored delay line
+    const float *w = &this->delay_line_[this->delay_pos_];
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+
+    // 3 groups of 4 symmetric pairs (k=0..11)
+    for (size_t k = 0; k < 12; k += 4) {
+      a0 += (w[k]     + w[30 - k])     * FIR_COEFFS[k];
+      a1 += (w[k + 1] + w[29 - k])     * FIR_COEFFS[k + 1];
+      a2 += (w[k + 2] + w[28 - k])     * FIR_COEFFS[k + 2];
+      a3 += (w[k + 3] + w[27 - k])     * FIR_COEFFS[k + 3];
+    }
+
+    // Remaining 3 pairs (k=12,13,14) + center tap (k=15)
+    a0 += (w[12] + w[18]) * FIR_COEFFS[12];
+    a1 += (w[13] + w[17]) * FIR_COEFFS[13];
+    a2 += (w[14] + w[16]) * FIR_COEFFS[14];
+    a3 += w[15] * FIR_COEFFS[15];
+
+    float acc = a0 + a1 + a2 + a3;
+    if (acc > 32767.0f) acc = 32767.0f;
+    if (acc < -32768.0f) acc = -32768.0f;
+    return static_cast<int16_t>(acc);
+  }
+
   uint32_t ratio_{1};
-  float delay_line_[FIR_NUM_TAPS]{};
+  float delay_line_[FIR_NUM_TAPS * 2]{};  // mirrored: 64 floats, always-contiguous window
   uint32_t delay_pos_{0};
 };
 
 class I2SAudioDuplex : public Component {
  public:
   void setup() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
@@ -240,6 +299,7 @@ class I2SAudioDuplex : public Component {
     int8_t tdm_second_mic_slot{-1};
     uint8_t tdm_ref_slot{0};
     uint8_t processor_mic_channels{1};
+    uint32_t processor_spec_revision{0};
 
     // ── Frame sizing ──
     size_t input_frame_size{0};
@@ -259,11 +319,7 @@ class I2SAudioDuplex : public Component {
     int16_t *processor_mic_buffer{nullptr};
     int16_t *spk_buffer{nullptr};
     int16_t *spk_ref_buffer{nullptr};
-    int16_t *deint_ref{nullptr};
-    int16_t *deint_mic{nullptr};
-    int16_t *tdm_deint_mic{nullptr};
-    int16_t *tdm_deint_mic_secondary{nullptr};
-    int16_t *tdm_deint_ref{nullptr};
+    // Deinterleave buffers removed: FIR strided reads rx_buffer directly
     int16_t *tdm_tx_buffer{nullptr};
     int16_t *aec_output{nullptr};
 
@@ -286,6 +342,7 @@ class I2SAudioDuplex : public Component {
     bool processor_enabled{false};
     bool speaker_running{false};
     bool speaker_paused{false};
+    bool speaker_underrun{false};
     bool mic_running{false};
     uint32_t now_ms{0};
   };
@@ -390,6 +447,9 @@ class I2SAudioDuplex : public Component {
 
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};
+
+  // Processor frame_spec changed: audio task exits, component loop restarts it
+  std::atomic<bool> needs_restart_{false};
 
   // Deferred stop cleanup: channel deletion deferred until task exits
   std::atomic<bool> stop_cleanup_pending_{false};

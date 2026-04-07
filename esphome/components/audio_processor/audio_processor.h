@@ -54,14 +54,15 @@ class AudioProcessor {
   virtual FrameSpec frame_spec() const = 0;
 
   /// Process one frame.
-  /// @param in_mic  mic input. For mic_channels == 1 this is a mono buffer with
-  ///                frame_spec().input_samples samples. For mic_channels > 1 the
-  ///                samples are interleaved by channel:
-  ///                [mic1_0, mic2_0, mic1_1, mic2_1, ...]
-  /// @param in_ref  reference input (speaker loopback), same size. May be nullptr.
-  /// @param out     output buffer, frame_spec().output_samples
+  /// @param in_mic  mic input buffer. Layout depends on mic_channels_in:
+  ///                1 = mono (input_samples contiguous samples)
+  ///                2 = interleaved stereo [mic1_0, mic2_0, mic1_1, mic2_1, ...]
+  /// @param in_ref  reference input (speaker loopback), input_samples. May be nullptr.
+  /// @param out     output buffer, output_samples
+  /// @param mic_channels_in  how many mic channels are interleaved in in_mic
   /// @return true if processed by DSP, false if passthrough (unprocessed copy)
-  virtual bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) = 0;
+  virtual bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
+                       uint8_t mic_channels_in = 1) = 0;
 
   /// Query how a feature can be controlled.
   virtual FeatureControl feature_control(AudioFeature feature) const = 0;
@@ -76,6 +77,11 @@ class AudioProcessor {
   /// Reconfigure the processor (e.g., switch SR/VC mode). Requires audio stop.
   /// @return true if reconfiguration succeeded
   virtual bool reconfigure(int type, int mode) = 0;
+
+  /// Monotonic revision counter for frame_spec changes.
+  /// Consumers cache this at init and poll in the audio loop.
+  /// When it changes, the consumer must restart to re-read frame_spec().
+  virtual uint32_t frame_spec_revision() const { return 0; }
 };
 
 }  // namespace esphome

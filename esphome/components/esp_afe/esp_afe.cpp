@@ -48,18 +48,21 @@ static inline void copy_passthrough_frame(const int16_t *in, int input_samples,
   }
 }
 
+// 20*log10(sqrt(mean)/32768) = 10*log10(mean) - 20*log10(32768)
+static constexpr float RMS_DBFS_OFFSET = 90.30899870f;  // 20 * log10(32768)
+
 static inline float compute_rms_dbfs(const int16_t *data, int samples) {
   if (data == nullptr || samples <= 0)
     return -120.0f;
-  float sum_sq = 0.0f;
+  uint64_t sumsq = 0;
   for (int i = 0; i < samples; i++) {
-    float s = static_cast<float>(data[i]);
-    sum_sq += s * s;
+    int32_t s = data[i];
+    sumsq += static_cast<uint64_t>(s * s);
   }
-  float rms = sqrtf(sum_sq / static_cast<float>(samples));
-  if (rms <= 0.0f)
+  float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
+  if (mean <= 0.0f)
     return -120.0f;
-  return 20.0f * log10f(rms / 32768.0f);
+  return 10.0f * log10f(mean) - RMS_DBFS_OFFSET;
 }
 
 aec_mode_t EspAfe::derive_aec_mode_() const {
@@ -313,6 +316,14 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   }
 
   this->install_instance_(&next);
+  // Bump revision only when frame_spec actually changes.
+  // Compare current spec against last published values.
+  int new_mic_ch = this->afe_mic_channels_();
+  if (new_mic_ch != this->last_spec_mic_ch_ ||
+      next.process_chunksize != old_process || next.fetch_chunksize != old_fetch) {
+    this->last_spec_mic_ch_ = new_mic_ch;
+    this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
+  }
   this->warmup_remaining_ = 3;
   this->frame_count_ = 0;
   this->voice_present_.store(false, std::memory_order_relaxed);
@@ -412,9 +423,9 @@ void EspAfe::dump_config() {
 FrameSpec EspAfe::frame_spec() const {
   FrameSpec spec;
   spec.sample_rate = 16000;
-  // Keep the transport contract stable: if hardware provides 2 mics, duplex continues
-  // to feed both channels and the AFE wrapper decides whether to use both or just mic #1.
-  spec.mic_channels = this->mic_num_;
+  // Dynamic mic contract: expose the actual channel count the AFE needs.
+  // When SE (beamforming) is off, only 1 mic is needed even on 2-mic boards.
+  spec.mic_channels = this->afe_mic_channels_();
   spec.ref_channels = 1;
   spec.input_samples = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   spec.output_samples = this->fetch_chunksize_;
@@ -452,6 +463,8 @@ ProcessorTelemetry EspAfe::telemetry() const {
   t.voice_present = this->voice_present_.load(std::memory_order_relaxed);
   t.input_volume_dbfs = this->input_volume_dbfs_.load(std::memory_order_relaxed);
   t.output_rms_dbfs = this->output_rms_dbfs_.load(std::memory_order_relaxed);
+  t.ringbuf_free_pct = this->ringbuf_free_pct_.load(std::memory_order_relaxed);
+  t.glitch_count = this->glitch_count_.load(std::memory_order_relaxed);
   t.frame_count = this->frame_count_;
   return t;
 }
@@ -469,8 +482,9 @@ bool EspAfe::reconfigure(int type, int mode) {
   return false;
 }
 
-bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) {
-  const int transport_mic_channels = this->mic_num_;
+bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
+                     uint8_t mic_channels_in) {
+  const int transport_mic_channels = mic_channels_in;
   const int afe_mic_channels = this->afe_mic_channels_();
   int qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   int os = this->fetch_chunksize_;
@@ -499,18 +513,39 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
     offset = 0;
   }
 
-  if (afe_mic_channels == 1) {
-    for (int i = 0; i < qs; i++) {
-      int dst = (offset + i) * 2;
-      this->feed_buf_[dst] = in_mic[i * transport_mic_channels];
-      this->feed_buf_[dst + 1] = (in_ref != nullptr) ? in_ref[i] : 0;
-    }
-  } else {
-    for (int i = 0; i < qs; i++) {
-      int dst = (offset + i) * 3;
-      this->feed_buf_[dst] = in_mic[i * 2];
-      this->feed_buf_[dst + 1] = in_mic[i * 2 + 1];
-      this->feed_buf_[dst + 2] = (in_ref != nullptr) ? in_ref[i] : 0;
+  // Skip interleave during warmup (feed zeros, don't waste cycles packing real data)
+  bool in_warmup = (this->warmup_remaining_ > 0) && (offset + qs >= fs);
+
+  if (!in_warmup) {
+    // Pointer-increment packing with hoisted ref check
+    const int tc = this->total_channels_;
+    int16_t *dst = this->feed_buf_ + offset * tc;
+    if (afe_mic_channels == 1) {
+      if (in_ref != nullptr) {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i * transport_mic_channels];
+          *dst++ = in_ref[i];
+        }
+      } else {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i * transport_mic_channels];
+          *dst++ = 0;
+        }
+      }
+    } else {
+      if (in_ref != nullptr) {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i * 2];
+          *dst++ = in_mic[i * 2 + 1];
+          *dst++ = in_ref[i];
+        }
+      } else {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i * 2];
+          *dst++ = in_mic[i * 2 + 1];
+          *dst++ = 0;
+        }
+      }
     }
   }
   offset += qs;
@@ -535,6 +570,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
   }
   bool processed = false;
   if (result != nullptr && result->ret_value == ESP_OK && result->data != nullptr) {
+    this->ringbuf_free_pct_.store(result->ringbuff_free_pct, std::memory_order_relaxed);
     size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
     size_t copy_bytes = std::min(static_cast<size_t>(result->data_size), output_bytes);
     memcpy(out, result->data, copy_bytes);
@@ -553,6 +589,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out)
   } else {
     copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     this->voice_present_.store(false, std::memory_order_relaxed);
+    this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
     this->frame_count_++;
   }
 

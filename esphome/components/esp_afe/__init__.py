@@ -100,7 +100,7 @@ CONFIG_SCHEMA = cv.All(
             ),
             cv.Optional(CONF_AFE_LINEAR_GAIN, default=1.0): cv.float_range(min=0.1, max=10.0),
             cv.Optional(CONF_TASK_CORE, default=1): cv.int_range(min=0, max=1),
-            cv.Optional(CONF_TASK_PRIORITY, default=5): cv.int_range(min=1, max=24),
+            cv.Optional(CONF_TASK_PRIORITY, default=8): cv.int_range(min=1, max=24),
             cv.Optional(CONF_RINGBUF_SIZE, default=8): cv.int_range(min=2, max=32),
         }
     ).extend(cv.COMPONENT_SCHEMA),

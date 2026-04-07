@@ -51,7 +51,9 @@ FrameSpec EspAec::frame_spec() const {
   return spec;
 }
 
-bool EspAec::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) {
+bool EspAec::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
+                     uint8_t mic_channels_in) {
+  // EspAec is single-mic only, mic_channels_in parameter accepted for interface compatibility
   if (this->handle_ == nullptr) {
     memcpy(out, in_mic, this->cached_frame_size_ * sizeof(int16_t));
     this->glitch_count_.fetch_add(1, std::memory_order_relaxed);

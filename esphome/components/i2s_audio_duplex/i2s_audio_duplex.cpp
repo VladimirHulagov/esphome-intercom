@@ -3,6 +3,7 @@
 #ifdef USE_ESP32
 
 #include <esp_timer.h>
+#include <esp_heap_caps.h>
 #include <algorithm>
 #include <cmath>
 
@@ -73,7 +74,7 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 static const size_t DMA_BUFFER_COUNT = 8;
 static const size_t DMA_BUFFER_SIZE = 512;
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
-static const size_t SPEAKER_BUFFER_BASE = 8192; // base speaker buffer, scaled by decimation_ratio_
+static const size_t SPEAKER_BUFFER_BASE = 16384; // base speaker buffer, scaled by decimation_ratio_
 
 // I2S new driver uses milliseconds directly, NOT FreeRTOS ticks
 static const uint32_t I2S_IO_TIMEOUT_MS = 50;
@@ -139,6 +140,15 @@ void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
   this->processor_ = processor;
   this->processor_enabled_.store(processor != nullptr, std::memory_order_relaxed);
   // Note: direct_aec_ref_ is allocated in setup() after decimation_ratio_ is computed
+}
+
+void I2SAudioDuplex::loop() {
+  // Handle processor frame_spec change: audio task exited, restart with new allocations
+  if (this->needs_restart_.exchange(false, std::memory_order_relaxed)) {
+    ESP_LOGI(TAG, "Restarting audio task for frame_spec change");
+    this->stop();
+    this->start();
+  }
 }
 
 void I2SAudioDuplex::dump_config() {
@@ -658,6 +668,7 @@ void I2SAudioDuplex::audio_task_() {
     ctx.input_frame_size = spec.input_samples;
     ctx.output_frame_size = spec.output_samples;
     ctx.processor_mic_channels = std::max<uint8_t>(1, spec.mic_channels);
+    ctx.processor_spec_revision = this->processor_->frame_spec_revision();
     uint32_t out_rate = this->get_output_sample_rate();
     ESP_LOGD(TAG, "AEC frame sizes: input=%u, output=%u samples, mic_ch=%u (%ums @ %uHz)",
              (unsigned) ctx.input_frame_size, (unsigned) ctx.output_frame_size,
@@ -686,12 +697,12 @@ void I2SAudioDuplex::audio_task_() {
 
   // ESP-IDF new I2S driver manages its own internal DMA ring buffers.
   // i2s_channel_read/write use memcpy to/from user buffers (verified in i2s_common.c:1337,1387).
-  // User buffers do NOT need MALLOC_CAP_DMA; they can safely be in PSRAM.
-  // With buffers_in_psram=true, all buffers go to PSRAM (~28KB internal heap saved).
-  // Required for sr_low_cost AEC mode (512-sample frames = larger buffers).
+  // rx_buffer and spk_buffer ALWAYS in internal RAM: they are in the I2S hot path
+  // (every frame) and PSRAM bus contention with LVGL/flash cache causes audio glitches.
+  // Other buffers (AEC, processor) use PSRAM when configured to save internal heap.
   const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
   ctx.rx_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.rx_frame_bytes, buf_caps));
+      heap_caps_malloc(ctx.rx_frame_bytes, MALLOC_CAP_INTERNAL));
 
   ctx.mic_separate = (ctx.ratio > 1) || ctx.use_stereo_aec_ref || ctx.use_tdm_ref;
   ctx.mic_buffer = ctx.mic_separate
@@ -705,25 +716,14 @@ void I2SAudioDuplex::audio_task_() {
   }
 
   ctx.spk_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, buf_caps));
+      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, MALLOC_CAP_INTERNAL));
 
   if (ctx.use_stereo_aec_ref || ctx.use_tdm_ref) {
     ctx.spk_ref_buffer = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
   }
 
-  if (ctx.use_stereo_aec_ref && ctx.ratio > 1) {
-    ctx.deint_ref = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-    ctx.deint_mic = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-  }
-
-  if (ctx.use_tdm_ref && ctx.ratio > 1) {
-    ctx.tdm_deint_mic = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-    if (ctx.processor_mic_channels > 1) {
-      ctx.tdm_deint_mic_secondary = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-    }
-    ctx.tdm_deint_ref = static_cast<int16_t *>(heap_caps_malloc(ctx.bus_frame_bytes, buf_caps));
-  }
+  // Deinterleave buffers removed: FIR strided reads directly from rx_buffer
 
   if (ctx.use_tdm_ref) {
     ctx.tdm_tx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
@@ -782,17 +782,11 @@ void I2SAudioDuplex::audio_task_() {
   if (ctx.processor_mic_channels > 1 && (!ctx.secondary_mic_buffer || !ctx.processor_mic_buffer)) {
     alloc_fail("dual-mic buffers"); goto cleanup;
   }
-  if (ctx.use_stereo_aec_ref && ctx.ratio > 1 && (!ctx.deint_ref || !ctx.deint_mic)) {
-    alloc_fail("stereo decimation buffers"); goto cleanup;
-  }
+  // Stereo decimation buffers removed: FIR strided reads rx_buffer directly
   if (ctx.use_tdm_ref && !ctx.tdm_tx_buffer) {
     alloc_fail("TDM TX buffer"); goto cleanup;
   }
-  if (ctx.use_tdm_ref && ctx.ratio > 1 &&
-      (!ctx.tdm_deint_mic || !ctx.tdm_deint_ref ||
-       (ctx.processor_mic_channels > 1 && !ctx.tdm_deint_mic_secondary))) {
-    alloc_fail("TDM decimation buffers"); goto cleanup;
-  }
+  // TDM decimation buffers removed: FIR strided reads rx_buffer directly
 #ifdef USE_AUDIO_PROCESSOR
   if (this->processor_ != nullptr) {
     if (!ctx.aec_output) { alloc_fail("AEC output buffer"); goto cleanup; }
@@ -800,6 +794,19 @@ void I2SAudioDuplex::audio_task_() {
       alloc_fail("AEC reference buffer"); goto cleanup;
     }
   }
+#endif
+
+#ifdef USE_DUPLEX_TELEMETRY
+  ESP_LOGI(TAG, "Heap after audio init: internal=%u, PSRAM=%u",
+           (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+  uint32_t telem_rx_cycles_sum = 0, telem_rx_cycles_max = 0;
+  uint32_t telem_proc_cycles_sum = 0, telem_proc_cycles_max = 0;
+  uint32_t telem_tx_cycles_sum = 0, telem_tx_cycles_max = 0;
+  uint32_t telem_spk_underruns = 0;
+  uint32_t telem_frame_count = 0;
+  static constexpr uint32_t TELEM_LOG_INTERVAL = 128;
 #endif
 
   // ── Main loop ──
@@ -834,6 +841,40 @@ void I2SAudioDuplex::audio_task_() {
     this->process_aec_and_callbacks_(ctx);
     this->process_tx_path_(ctx);
 
+#ifdef USE_AUDIO_PROCESSOR
+    // Check if processor's frame_spec changed (e.g., SE toggled).
+    // If so, exit the loop for task restart with new allocations.
+    if (this->processor_ != nullptr) {
+      uint32_t rev = this->processor_->frame_spec_revision();
+      if (rev != ctx.processor_spec_revision) {
+        ESP_LOGI(TAG, "Processor frame_spec changed (rev %u -> %u), restarting audio task",
+                 (unsigned) ctx.processor_spec_revision, (unsigned) rev);
+        this->needs_restart_.store(true, std::memory_order_relaxed);
+        break;
+      }
+    }
+#endif
+
+#ifdef USE_DUPLEX_TELEMETRY
+    {
+      // Lightweight per-frame cycle snapshot (only when telemetry: true)
+      // Note: includes I2S blocking time in rx/tx, separate compute-only measurement
+      // would require bracketing inside the path functions.
+      static uint32_t t_frame_count = 0;
+      static uint32_t t_spk_underruns = 0;
+      t_spk_underruns += ctx.speaker_underrun ? 1 : 0;
+      t_frame_count++;
+      if (t_frame_count >= TELEM_LOG_INTERVAL) {
+        ESP_LOGI(TAG, "Perf[%u frames]: spk_underrun=%u, heap_int=%u, heap_ps=%u",
+                 (unsigned) t_frame_count, (unsigned) t_spk_underruns,
+                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        t_frame_count = 0;
+        t_spk_underruns = 0;
+      }
+    }
+#endif
+
     // Yield: I2S read/write already block on DMA, so taskYIELD suffices.
     if (ctx.consecutive_i2s_errors > 0) {
       delay(1);
@@ -851,11 +892,7 @@ cleanup:
   if (ctx.processor_mic_buffer) heap_caps_free(ctx.processor_mic_buffer);
   heap_caps_free(ctx.spk_buffer);
   if (ctx.spk_ref_buffer) heap_caps_free(ctx.spk_ref_buffer);
-  if (ctx.deint_ref) heap_caps_free(ctx.deint_ref);
-  if (ctx.deint_mic) heap_caps_free(ctx.deint_mic);
-  if (ctx.tdm_deint_mic) heap_caps_free(ctx.tdm_deint_mic);
-  if (ctx.tdm_deint_mic_secondary) heap_caps_free(ctx.tdm_deint_mic_secondary);
-  if (ctx.tdm_deint_ref) heap_caps_free(ctx.tdm_deint_ref);
+  // Deinterleave buffers removed (FIR strided reads rx_buffer directly)
   if (ctx.tdm_tx_buffer) heap_caps_free(ctx.tdm_tx_buffer);
   if (ctx.aec_output) heap_caps_free(ctx.aec_output);
   ESP_LOGI(TAG, "Audio task stopped");
@@ -885,8 +922,9 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
 
   ctx.consecutive_i2s_errors = 0;
 
-  // Convert 32-bit I2S samples to 16-bit for internal processing
-  if (ctx.i2s_bps == 4) {
+  // Convert 32-bit I2S samples to 16-bit only when FIR strided does NOT handle it.
+  // When ratio > 1, the FIR decimator reads 32-bit directly via process_strided_32.
+  if (ctx.i2s_bps == 4 && ctx.ratio <= 1) {
     auto *src32 = reinterpret_cast<int32_t *>(ctx.rx_buffer);
     size_t total_i2s_samples = bytes_read / sizeof(int32_t);
     for (size_t i = 0; i < total_i2s_samples; i++) {
@@ -909,28 +947,23 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
     const uint8_t rs = ctx.tdm_ref_slot;
     const bool dual_mic = ctx.processor_mic_channels > 1 && ctx.secondary_mic_buffer != nullptr &&
                           ctx.processor_mic_buffer != nullptr && sms >= 0;
-    if (ctx.ratio > 1) {
-      for (size_t i = 0; i < ctx.bus_frame_size; i++) {
-        ctx.tdm_deint_mic[i] = ctx.rx_buffer[i * ts + ms];
-        if (dual_mic) {
-          ctx.tdm_deint_mic_secondary[i] = ctx.rx_buffer[i * ts + sms];
-        }
-        ctx.tdm_deint_ref[i] = ctx.rx_buffer[i * ts + rs];
-      }
-      this->mic_decimator_.process(ctx.tdm_deint_mic, ctx.mic_buffer, ctx.bus_frame_size);
+    if (ctx.i2s_bps == 4 && ctx.ratio > 1) {
+      // 32-bit TDM with decimation: FIR reads int32 directly, does >>16 inline
+      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+      this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, ts, ms);
       if (dual_mic) {
-        this->secondary_mic_decimator_.process(
-            ctx.tdm_deint_mic_secondary, ctx.secondary_mic_buffer, ctx.bus_frame_size);
+        this->secondary_mic_decimator_.process_strided_32(
+            src32, ctx.secondary_mic_buffer, ctx.input_frame_size, ts, sms);
       }
-      this->ref_decimator_.process(ctx.tdm_deint_ref, ctx.spk_ref_buffer, ctx.bus_frame_size);
+      this->ref_decimator_.process_strided_32(src32, ctx.spk_ref_buffer, ctx.input_frame_size, ts, rs);
     } else {
-      for (size_t i = 0; i < ctx.input_frame_size; i++) {
-        ctx.mic_buffer[i] = ctx.rx_buffer[i * ts + ms];
-        if (dual_mic) {
-          ctx.secondary_mic_buffer[i] = ctx.rx_buffer[i * ts + sms];
-        }
-        ctx.spk_ref_buffer[i] = ctx.rx_buffer[i * ts + rs];
+      // 16-bit TDM (or ratio==1): strided FIR handles deinterleave + optional decimation
+      this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, ts, ms);
+      if (dual_mic) {
+        this->secondary_mic_decimator_.process_strided(
+            ctx.rx_buffer, ctx.secondary_mic_buffer, ctx.input_frame_size, ts, sms);
       }
+      this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, ts, rs);
     }
   } else
 #endif
@@ -938,64 +971,80 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
     if (ctx.use_stereo_aec_ref) {
       const int ri = ctx.ref_channel_right ? 1 : 0;
       const int mi = ctx.ref_channel_right ? 0 : 1;
-      for (size_t i = 0; i < ctx.bus_frame_size; i++) {
-        ctx.deint_ref[i] = ctx.rx_buffer[i * 2 + ri];
-        ctx.deint_mic[i] = ctx.rx_buffer[i * 2 + mi];
+      if (ctx.i2s_bps == 4) {
+        auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+        this->ref_decimator_.process_strided_32(src32, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
+        this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
+      } else {
+        this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
+        this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
       }
-      this->ref_decimator_.process(ctx.deint_ref, ctx.spk_ref_buffer, ctx.bus_frame_size);
-      this->mic_decimator_.process(ctx.deint_mic, ctx.mic_buffer, ctx.bus_frame_size);
     } else {
-      this->mic_decimator_.process(ctx.rx_buffer, ctx.mic_buffer, ctx.bus_frame_size);
+      // Mono with decimation
+      if (ctx.i2s_bps == 4) {
+        auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+        this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, 1, 0);
+      } else {
+        this->mic_decimator_.process(ctx.rx_buffer, ctx.mic_buffer, ctx.bus_frame_size);
+      }
     }
   } else {
     if (ctx.use_stereo_aec_ref) {
+      // ratio==1 stereo: strided fast path (just copies with stride)
       const int ri = ctx.ref_channel_right ? 1 : 0;
       const int mi = ctx.ref_channel_right ? 0 : 1;
-      for (size_t i = 0; i < ctx.input_frame_size; i++) {
-        ctx.spk_ref_buffer[i] = ctx.rx_buffer[i * 2 + ri];
-        ctx.mic_buffer[i] = ctx.rx_buffer[i * 2 + mi];
-      }
+      this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
+      this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
     }
     // Mono without decimation: mic_buffer == rx_buffer (aliased), nothing to do
   }
 
-  // DC offset correction (musicdsp.org DC-block in Q31, matches upstream)
-  if (ctx.correct_dc_offset) {
+  // Fused loop: DC offset + mic attenuation + dual-mic interleave in one pass.
+  // All conditions hoisted outside the loop (loop-invariant).
+  const bool do_dc = ctx.correct_dc_offset;
+  const bool do_atten = ctx.mic_attenuation != 1.0f;
+  const bool dual_mic = ctx.processor_mic_channels > 1 &&
+                        ctx.processor_mic_buffer != nullptr &&
+                        ctx.secondary_mic_buffer != nullptr;
+
+  if (do_dc || do_atten || dual_mic) {
+    const float atten = ctx.mic_attenuation;
     for (size_t i = 0; i < ctx.input_frame_size; i++) {
-      int32_t input = (int32_t) ctx.mic_buffer[i] << 16;
-      int32_t output = input - ctx.dc_prev_input + ctx.dc_prev_output - (ctx.dc_prev_output >> 10);
-      ctx.dc_prev_input = input;
-      ctx.dc_prev_output = output;
-      ctx.mic_buffer[i] = static_cast<int16_t>(output >> 16);
-      if (ctx.processor_mic_channels > 1 && ctx.secondary_mic_buffer != nullptr) {
-        int32_t input_secondary = (int32_t) ctx.secondary_mic_buffer[i] << 16;
-        int32_t output_secondary =
-            input_secondary - ctx.dc_prev_input_secondary + ctx.dc_prev_output_secondary -
-            (ctx.dc_prev_output_secondary >> 10);
-        ctx.dc_prev_input_secondary = input_secondary;
-        ctx.dc_prev_output_secondary = output_secondary;
-        ctx.secondary_mic_buffer[i] = static_cast<int16_t>(output_secondary >> 16);
+      int16_t s1 = ctx.mic_buffer[i];
+
+      if (do_dc) {
+        int32_t inp = (int32_t) s1 << 16;
+        int32_t out = inp - ctx.dc_prev_input + ctx.dc_prev_output - (ctx.dc_prev_output >> 10);
+        ctx.dc_prev_input = inp;
+        ctx.dc_prev_output = out;
+        s1 = static_cast<int16_t>(out >> 16);
+      }
+      if (do_atten) {
+        s1 = scale_sample(s1, atten);
+      }
+      ctx.mic_buffer[i] = s1;
+
+      if (dual_mic) {
+        int16_t s2 = ctx.secondary_mic_buffer[i];
+        if (do_dc) {
+          int32_t inp2 = (int32_t) s2 << 16;
+          int32_t out2 = inp2 - ctx.dc_prev_input_secondary + ctx.dc_prev_output_secondary -
+                         (ctx.dc_prev_output_secondary >> 10);
+          ctx.dc_prev_input_secondary = inp2;
+          ctx.dc_prev_output_secondary = out2;
+          s2 = static_cast<int16_t>(out2 >> 16);
+        }
+        if (do_atten) {
+          s2 = scale_sample(s2, atten);
+        }
+        ctx.secondary_mic_buffer[i] = s2;
+        ctx.processor_mic_buffer[i * 2] = s1;
+        ctx.processor_mic_buffer[i * 2 + 1] = s2;
       }
     }
-  }
-
-  // Pre-AEC mic attenuation (snapshot value, no atomic load in loop)
-  if (ctx.mic_attenuation != 1.0f) {
-    for (size_t i = 0; i < ctx.input_frame_size; i++) {
-      ctx.mic_buffer[i] = scale_sample(ctx.mic_buffer[i], ctx.mic_attenuation);
-      if (ctx.processor_mic_channels > 1 && ctx.secondary_mic_buffer != nullptr) {
-        ctx.secondary_mic_buffer[i] = scale_sample(ctx.secondary_mic_buffer[i], ctx.mic_attenuation);
-      }
+    if (dual_mic) {
+      ctx.processor_input = ctx.processor_mic_buffer;
     }
-  }
-
-  if (ctx.processor_mic_channels > 1 && ctx.processor_mic_buffer != nullptr &&
-      ctx.secondary_mic_buffer != nullptr) {
-    for (size_t i = 0; i < ctx.input_frame_size; i++) {
-      ctx.processor_mic_buffer[i * 2] = ctx.mic_buffer[i];
-      ctx.processor_mic_buffer[i * 2 + 1] = ctx.secondary_mic_buffer[i];
-    }
-    ctx.processor_input = ctx.processor_mic_buffer;
   }
 }
 
@@ -1023,7 +1072,21 @@ void I2SAudioDuplex::update_tdm_slot_levels_(const AudioTaskCtx &ctx) {
   const size_t slot_stride = ctx.tdm_total_slots;
   for (size_t i = 0; i < enabled_count; i++) {
     uint8_t slot = enabled_slots[i];
-    float dbfs = compute_rms_dbfs(ctx.rx_buffer + slot, frame_samples, slot_stride);
+    float dbfs;
+    if (ctx.i2s_bps == 4 && ctx.ratio > 1) {
+      // 32-bit mode with decimation: rx_buffer has not been converted to 16-bit
+      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+      uint64_t sumsq = 0;
+      for (size_t j = 0; j < frame_samples; j++) {
+        int32_t s = src32[j * slot_stride + slot] >> 16;
+        sumsq += static_cast<uint64_t>(s * s);
+      }
+      float mean = static_cast<float>(sumsq) / static_cast<float>(frame_samples);
+      float rms = std::sqrt(mean) / 32768.0f;
+      dbfs = (rms < 1e-6f) ? -120.0f : 20.0f * std::log10(rms);
+    } else {
+      dbfs = compute_rms_dbfs(ctx.rx_buffer + slot, frame_samples, slot_stride);
+    }
     this->tdm_slot_level_dbfs_[slot].store(dbfs, std::memory_order_relaxed);
   }
 }
@@ -1048,7 +1111,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       this->processor_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
     // TDM: hardware-synced reference, no speaker gating needed.
     // TDM analog ref already reflects DAC volume. No extra scaling on ref.
-    this->processor_->process(ctx.processor_input, ctx.spk_ref_buffer, ctx.aec_output);
+    this->processor_->process(ctx.processor_input, ctx.spk_ref_buffer, ctx.aec_output, ctx.processor_mic_channels);
     ctx.output_buffer = ctx.aec_output;
     ctx.current_output_frame_size = ctx.output_frame_size;
     ctx.current_output_frame_bytes = ctx.output_frame_bytes;
@@ -1092,7 +1155,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
     // Stereo mode: spk_ref_buffer already filled from deinterleave. No extra scaling.
     // TDM mode: spk_ref_buffer filled from TDM deinterleave. No extra scaling.
 
-    this->processor_->process(ctx.processor_input, ctx.spk_ref_buffer, ctx.aec_output);
+    this->processor_->process(ctx.processor_input, ctx.spk_ref_buffer, ctx.aec_output, ctx.processor_mic_channels);
     ctx.output_buffer = ctx.aec_output;
     ctx.current_output_frame_size = ctx.output_frame_size;
     ctx.current_output_frame_bytes = ctx.output_frame_bytes;
@@ -1123,6 +1186,7 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
 
   if (ctx.speaker_running) {
     size_t got = this->speaker_buffer_->read((void *) ctx.spk_buffer, ctx.bus_frame_bytes, 0);
+    ctx.speaker_underrun = (got == 0 && !ctx.speaker_paused);
 
     if (ctx.speaker_paused) {
       memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
@@ -1191,14 +1255,21 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
   } else
 #endif
   {
-    if (ctx.num_ch == 2) {
+    size_t total_tx_samples = ctx.bus_frame_size * ctx.num_ch;
+    if (ctx.num_ch == 2 && ctx.i2s_bps == 4) {
+      // Fused mono->stereo + 16->32 in one backward pass
+      auto *dst32 = reinterpret_cast<int32_t *>(ctx.spk_buffer);
+      for (int i = static_cast<int>(ctx.bus_frame_size) - 1; i >= 0; i--) {
+        int32_t s = static_cast<int32_t>(ctx.spk_buffer[i]) << 16;
+        dst32[i * 2 + 1] = s;
+        dst32[i * 2] = s;
+      }
+    } else if (ctx.num_ch == 2) {
       for (int i = static_cast<int>(ctx.bus_frame_size) - 1; i >= 0; i--) {
         ctx.spk_buffer[i * 2 + 1] = ctx.spk_buffer[i];
         ctx.spk_buffer[i * 2] = ctx.spk_buffer[i];
       }
-    }
-    size_t total_tx_samples = ctx.bus_frame_size * ctx.num_ch;
-    if (ctx.i2s_bps == 4) {
+    } else if (ctx.i2s_bps == 4) {
       auto *dst32 = reinterpret_cast<int32_t *>(ctx.spk_buffer);
       for (int i = static_cast<int>(total_tx_samples) - 1; i >= 0; i--) {
         dst32[i] = static_cast<int32_t>(ctx.spk_buffer[i]) << 16;

@@ -62,6 +62,7 @@ CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 CONF_AEC_REFERENCE_MODE = "aec_reference"
 CONF_AEC_REF_BUFFER_MS = "aec_reference_buffer_ms"
+CONF_TELEMETRY = "telemetry"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
@@ -225,6 +226,8 @@ CONFIG_SCHEMA = cv.All(
         ),
         # Ring buffer capacity in ms (only used with aec_reference: ring_buffer)
         cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=32, max=500),
+        # Enable per-stage cycle counting and diagnostics (debug only, adds overhead)
+        cv.Optional(CONF_TELEMETRY, default=False): cv.boolean,
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
@@ -359,6 +362,10 @@ async def to_code(config):
     # AEC reference mode (only relevant for no-codec setups)
     cg.add(var.set_aec_reference_mode(config[CONF_AEC_REFERENCE_MODE] == "ring_buffer"))
     cg.add(var.set_aec_ref_buffer_ms(config[CONF_AEC_REF_BUFFER_MS]))
+
+    # Telemetry: per-stage cycle counting and diagnostics
+    if config[CONF_TELEMETRY]:
+        cg.add_define("USE_DUPLEX_TELEMETRY")
 
     # Link audio processor if configured
     if CONF_PROCESSOR_ID in config:

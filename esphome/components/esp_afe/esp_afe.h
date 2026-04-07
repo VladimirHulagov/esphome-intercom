@@ -29,7 +29,11 @@ class EspAfe : public Component, public AudioProcessor {
   // AudioProcessor interface
   bool is_initialized() const override { return this->afe_data_ != nullptr; }
   FrameSpec frame_spec() const override;
-  bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out) override;
+  bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
+               uint8_t mic_channels_in = 1) override;
+  uint32_t frame_spec_revision() const override {
+    return this->frame_spec_revision_.load(std::memory_order_relaxed);
+  }
   FeatureControl feature_control(AudioFeature feature) const override;
   bool set_feature(AudioFeature feature, bool enabled) override;
   ProcessorTelemetry telemetry() const override;
@@ -159,6 +163,10 @@ class EspAfe : public Component, public AudioProcessor {
   bool output_rms_sensor_enabled_{false};
   int warmup_remaining_{3};
   std::atomic<uint32_t> frame_count_{0};
+  std::atomic<uint32_t> glitch_count_{0};
+  std::atomic<float> ringbuf_free_pct_{1.0f};
+  std::atomic<uint32_t> frame_spec_revision_{0};
+  int last_spec_mic_ch_{0};  // last published mic_channels for revision tracking
 };
 
 class AfeSwitchBase : public switch_::Switch, public Component, public Parented<EspAfe> {
