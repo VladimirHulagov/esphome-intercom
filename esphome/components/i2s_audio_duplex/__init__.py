@@ -274,9 +274,20 @@ def _final_validate(config):
             f"APLL clock source is only available on ESP32, ESP32-S2, and ESP32-P4."
         )
 
-    # Cross-component validation: check for AEC conflict with intercom_api
     from esphome.core import CORE
     full_config = CORE.config or {}
+
+    # esp_aec and esp_afe are mutually exclusive: both provide AudioProcessor
+    has_aec = "esp_aec" in full_config
+    has_afe = "esp_afe" in full_config
+    if has_aec and has_afe:
+        raise cv.Invalid(
+            "esp_aec and esp_afe are mutually exclusive. "
+            "Use esp_afe (full AFE pipeline with AEC+NS+AGC+beamforming) "
+            "or esp_aec (standalone echo cancellation), not both."
+        )
+
+    # Cross-component validation: check for AEC conflict with intercom_api
 
     intercom_configs = full_config.get("intercom_api", [])
     if intercom_configs:

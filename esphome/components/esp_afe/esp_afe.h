@@ -27,7 +27,9 @@ class EspAfe : public Component, public AudioProcessor {
   float get_setup_priority() const override { return setup_priority::PROCESSOR; }
 
   // AudioProcessor interface
-  bool is_initialized() const override { return this->afe_data_ != nullptr; }
+  bool is_initialized() const override {
+    return this->afe_data_ != nullptr && this->afe_handle_ != nullptr && this->feed_buf_ != nullptr;
+  }
   FrameSpec frame_spec() const override;
   bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
                uint8_t mic_channels_in = 1) override;
@@ -89,6 +91,7 @@ class EspAfe : public Component, public AudioProcessor {
   // Reinit with a new mode string (e.g. "sr_low_cost", "voip_high_perf").
   // Caller must stop audio processing before calling this.
   bool reinit_by_name(const std::string &name);
+  bool reinit_by_name(const char *name);
 
   ~EspAfe() override;
 

@@ -485,7 +485,8 @@ void IntercomApi::reset_aec_buffers_() {
   if (!this->aec_enabled_ || this->spk_ref_buffer_ == nullptr) return;
 
   this->aec_mic_fill_ = 0;
-  if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+  if (this->spk_ref_mutex_ != nullptr &&
+      xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
     this->spk_ref_buffer_->reset();
     // Pre-fill reference buffer with silence to create delay
     // This compensates for I2S DMA latency + acoustic delay
@@ -1005,7 +1006,8 @@ void IntercomApi::tx_task_() {
           // Read speaker reference from buffer (same frame size)
           size_t ref_bytes_needed = frame_size * sizeof(int16_t);
 
-          if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
+          if (this->spk_ref_mutex_ != nullptr &&
+              xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
             size_t ref_avail = this->spk_ref_buffer_->available();
             if (ref_avail >= ref_bytes_needed) {
               this->spk_ref_buffer_->read(this->aec_ref_, ref_bytes_needed, 0);
@@ -1149,7 +1151,7 @@ void IntercomApi::speaker_task_() {
 #ifdef USE_AUDIO_PROCESSOR
       // Feed speaker reference buffer for AEC
       // IMPORTANT: Apply same volume scaling as speaker output so reference matches actual echo
-      if (this->aec_enabled_ && this->spk_ref_buffer_ != nullptr) {
+      if (this->aec_enabled_ && this->spk_ref_buffer_ != nullptr && this->spk_ref_mutex_ != nullptr) {
         if (xSemaphoreTake(this->spk_ref_mutex_, pdMS_TO_TICKS(2)) == pdTRUE) {
           // Use pre-allocated buffer for scaled reference (don't modify audio_chunk!)
           if (this->volume_ != 1.0f) {

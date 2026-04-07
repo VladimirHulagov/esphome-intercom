@@ -5,6 +5,7 @@
 #include "esphome/core/log.h"
 
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 
 #include <algorithm>
 #include <cmath>
@@ -18,10 +19,9 @@ static const char *const TAG = "esp_afe";
 static const TickType_t CONFIG_MUTEX_TIMEOUT = pdMS_TO_TICKS(250);
 static const TickType_t PROCESS_MUTEX_TIMEOUT = pdMS_TO_TICKS(20);
 
-// Validate function pointer is a plausible executable address across S3/P4 builds.
+// Validate function pointer using ESP-IDF's memory map knowledge.
 static inline bool is_valid_func(const void *ptr) {
-  auto addr = reinterpret_cast<uintptr_t>(ptr);
-  return ptr != nullptr && addr >= 0x30000000 && addr < 0x60000000;
+  return ptr != nullptr && esp_ptr_executable(ptr);
 }
 
 static inline void copy_passthrough_frame(const int16_t *in, int input_samples,
@@ -98,10 +98,13 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   }
 
   const int afe_mic_channels = this->afe_mic_channels_();
-  std::string fmt(afe_mic_channels, 'M');
-  fmt += 'R';
+  // Stack-allocated format string: "MR" (1 mic) or "MMR" (2 mic). No heap alloc.
+  char fmt[4];
+  for (int i = 0; i < afe_mic_channels && i < 2; i++) fmt[i] = 'M';
+  fmt[afe_mic_channels] = 'R';
+  fmt[afe_mic_channels + 1] = '\0';
 
-  afe_config_t *cfg = afe_config_init(fmt.c_str(), nullptr,
+  afe_config_t *cfg = afe_config_init(fmt, nullptr,
                                       static_cast<afe_type_t>(this->afe_type_),
                                       static_cast<afe_mode_t>(this->afe_mode_));
 
@@ -180,7 +183,12 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   if (process_chunksize <= 0) {
     process_chunksize = (fetch_chunksize > 0) ? fetch_chunksize : feed_chunksize;
   }
-  int total_channels = cfg->pcm_config.total_ch_num;
+  // Use official API for feed channel count instead of config struct (more robust
+  // if esp-sr changes internal channel mapping in future versions).
+  int total_channels = handle->get_feed_channel_num(data);
+  if (total_channels <= 0) {
+    total_channels = cfg->pcm_config.total_ch_num;  // fallback
+  }
   size_t feed_bytes = static_cast<size_t>(feed_chunksize) * total_channels * sizeof(int16_t);
 
   int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_SPIRAM));
@@ -301,7 +309,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 
   AfeInstance next;
   if (!this->build_instance_(&next)) {
-    ESP_LOGE(TAG, "Failed to build new AFE instance");
+    ESP_LOGE(TAG, "Failed to build new AFE instance. AFE is DOWN until successful rebuild.");
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
@@ -315,17 +323,22 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
-  this->install_instance_(&next);
-  // Bump revision only when frame_spec actually changes.
-  // Compare current spec against last published values.
+  // Check if frame_spec changed BEFORE install (install zeroes the AfeInstance fields)
   int new_mic_ch = this->afe_mic_channels_();
-  if (new_mic_ch != this->last_spec_mic_ch_ ||
-      next.process_chunksize != old_process || next.fetch_chunksize != old_fetch) {
+  bool spec_changed = (new_mic_ch != this->last_spec_mic_ch_ ||
+                       next.process_chunksize != old_process ||
+                       next.fetch_chunksize != old_fetch);
+
+  this->install_instance_(&next);
+
+  if (spec_changed) {
     this->last_spec_mic_ch_ = new_mic_ch;
     this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
   }
   this->warmup_remaining_ = 3;
   this->frame_count_ = 0;
+  this->glitch_count_.store(0, std::memory_order_relaxed);
+  this->ringbuf_free_pct_.store(1.0f, std::memory_order_relaxed);
   this->voice_present_.store(false, std::memory_order_relaxed);
   this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
   this->output_rms_dbfs_.store(-120.0f, std::memory_order_relaxed);
@@ -369,18 +382,24 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   if (flag == enabled) {
     return true;
   }
-  bool old_value = flag;
-  flag = enabled;
   if (!this->is_initialized() || this->config_mutex_ == nullptr || this->feed_chunksize_ == 0 ||
       this->fetch_chunksize_ == 0) {
+    // Not yet running: commit immediately, build_instance_ will use it at setup/start
+    flag = enabled;
     ESP_LOGD(TAG, "Deferring %s=%s until AFE is initialized",
              name, enabled ? "true" : "false");
     return true;
   }
+  // Staged config: set flag, rebuild, rollback on failure.
+  // Flag must be set before rebuild because build_instance_ reads it.
+  // The mutex in recreate_instance_ ensures process() either sees the old
+  // instance (passthrough) or the new one, never a mix.
+  bool old_value = flag;
+  flag = enabled;
   if (this->recreate_instance_(true)) {
     return true;
   }
-  // Rebuild failed with new value. Rollback: restore old flag and rebuild.
+  // Rebuild failed: restore flag and try to rebuild with old config
   ESP_LOGW(TAG, "Failed to apply %s=%s, rolling back", name, enabled ? "true" : "false");
   flag = old_value;
   if (!this->recreate_instance_(true)) {
@@ -517,7 +536,9 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   bool in_warmup = (this->warmup_remaining_ > 0) && (offset + qs >= fs);
 
   if (!in_warmup) {
-    // Pointer-increment packing with hoisted ref check
+    // Pointer-increment packing with hoisted ref check.
+    // Guard: if caller sends fewer mic channels than AFE expects (SE transition),
+    // zero-fill the missing channel to prevent OOB read.
     const int tc = this->total_channels_;
     int16_t *dst = this->feed_buf_ + offset * tc;
     if (afe_mic_channels == 1) {
@@ -532,7 +553,8 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
           *dst++ = 0;
         }
       }
-    } else {
+    } else if (transport_mic_channels >= 2) {
+      // Caller provides 2+ interleaved mic channels
       if (in_ref != nullptr) {
         for (int i = 0; i < qs; i++) {
           *dst++ = in_mic[i * 2];
@@ -543,6 +565,21 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
         for (int i = 0; i < qs; i++) {
           *dst++ = in_mic[i * 2];
           *dst++ = in_mic[i * 2 + 1];
+          *dst++ = 0;
+        }
+      }
+    } else {
+      // AFE wants 2 mic but caller sends 1 (SE transition window): zero-fill second channel
+      if (in_ref != nullptr) {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i];
+          *dst++ = 0;
+          *dst++ = in_ref[i];
+        }
+      } else {
+        for (int i = 0; i < qs; i++) {
+          *dst++ = in_mic[i];
+          *dst++ = 0;
           *dst++ = 0;
         }
       }
@@ -568,43 +605,54 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     TickType_t wait = fed ? pdMS_TO_TICKS(2) : 0;
     result = this->afe_handle_->fetch_with_delay(this->afe_data_, wait);
   }
+  // Capture fetch results while holding mutex, then release before RMS computation
   bool processed = false;
+  bool vad_speech = false;
+  float input_vol = -120.0f;
+  float ringbuf_pct = 1.0f;
   if (result != nullptr && result->ret_value == ESP_OK && result->data != nullptr) {
-    this->ringbuf_free_pct_.store(result->ringbuff_free_pct, std::memory_order_relaxed);
+    ringbuf_pct = result->ringbuff_free_pct;
     size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
     size_t copy_bytes = std::min(static_cast<size_t>(result->data_size), output_bytes);
     memcpy(out, result->data, copy_bytes);
     if (copy_bytes < output_bytes) {
       memset(reinterpret_cast<uint8_t *>(out) + copy_bytes, 0, output_bytes - copy_bytes);
     }
-    this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH, std::memory_order_relaxed);
-    if (this->input_volume_sensor_enabled_) {
-      this->input_volume_dbfs_.store(result->data_volume, std::memory_order_relaxed);
-    }
-    if (this->output_rms_sensor_enabled_) {
-      this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
-    }
-    this->frame_count_++;
+    vad_speech = this->vad_enabled_ && result->vad_state == VAD_SPEECH;
+    input_vol = result->data_volume;
     processed = true;
   } else {
     copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
-    this->voice_present_.store(false, std::memory_order_relaxed);
     this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
-    this->frame_count_++;
   }
 
   xSemaphoreGive(this->config_mutex_);
+
+  // Atomic stores and RMS computation outside the mutex (out buffer owned by caller)
+  this->voice_present_.store(vad_speech, std::memory_order_relaxed);
+  this->ringbuf_free_pct_.store(ringbuf_pct, std::memory_order_relaxed);
+  if (processed && this->input_volume_sensor_enabled_) {
+    this->input_volume_dbfs_.store(input_vol, std::memory_order_relaxed);
+  }
+  if (processed && this->output_rms_sensor_enabled_) {
+    this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
+  }
+  this->frame_count_++;
   return processed;
 }
 
 bool EspAfe::reinit_by_name(const std::string &name) {
+  return this->reinit_by_name(name.c_str());
+}
+
+bool EspAfe::reinit_by_name(const char *name) {
   int type, mode;
-  if (name == "sr_low_cost") { type = AFE_TYPE_SR; mode = AFE_MODE_LOW_COST; }
-  else if (name == "sr_high_perf") { type = AFE_TYPE_SR; mode = AFE_MODE_HIGH_PERF; }
-  else if (name == "voip_low_cost") { type = AFE_TYPE_VC; mode = AFE_MODE_LOW_COST; }
-  else if (name == "voip_high_perf") { type = AFE_TYPE_VC; mode = AFE_MODE_HIGH_PERF; }
+  if (strcmp(name, "sr_low_cost") == 0) { type = AFE_TYPE_SR; mode = AFE_MODE_LOW_COST; }
+  else if (strcmp(name, "sr_high_perf") == 0) { type = AFE_TYPE_SR; mode = AFE_MODE_HIGH_PERF; }
+  else if (strcmp(name, "voip_low_cost") == 0) { type = AFE_TYPE_VC; mode = AFE_MODE_LOW_COST; }
+  else if (strcmp(name, "voip_high_perf") == 0) { type = AFE_TYPE_VC; mode = AFE_MODE_HIGH_PERF; }
   else {
-    ESP_LOGW(TAG, "Unknown AFE mode: %s", name.c_str());
+    ESP_LOGW(TAG, "Unknown AFE mode: %s", name);
     return false;
   }
   return this->reconfigure(type, mode);
@@ -634,9 +682,14 @@ bool EspAfe::enable_agc() { return this->set_reinit_flag_(this->agc_enabled_, tr
 bool EspAfe::disable_agc() { return this->set_reinit_flag_(this->agc_enabled_, false, "agc_enabled"); }
 
 EspAfe::~EspAfe() {
+  // Quiesce: acquire mutex to ensure process() is not mid-frame
+  if (this->config_mutex_ != nullptr) {
+    xSemaphoreTake(this->config_mutex_, pdMS_TO_TICKS(500));
+  }
   AfeInstance instance = this->detach_instance_();
   this->destroy_instance_(&instance);
   if (this->config_mutex_ != nullptr) {
+    xSemaphoreGive(this->config_mutex_);
     vSemaphoreDelete(this->config_mutex_);
     this->config_mutex_ = nullptr;
   }

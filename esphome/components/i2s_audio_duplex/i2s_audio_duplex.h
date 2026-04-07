@@ -340,9 +340,11 @@ class I2SAudioDuplex : public Component {
     float mic_attenuation{1.0f};
     float speaker_volume{1.0f};
     bool processor_enabled{false};
+    bool processor_ready{false};  // cached: enabled && initialized (avoids virtual call per frame)
     bool speaker_running{false};
     bool speaker_paused{false};
     bool speaker_underrun{false};
+    size_t speaker_got{0};  // bytes actually read from speaker ring buffer
     bool mic_running{false};
     uint32_t now_ms{0};
   };

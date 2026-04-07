@@ -120,12 +120,11 @@ void I2SAudioDuplex::setup() {
   // Direct from previous TX frame, no ring buffer needed (single-bus = same DMA cycle).
   if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
+    // Hot path buffer (written every TX frame, read for AEC ref decimation).
+    // Must be in internal RAM to avoid PSRAM bus contention. Was INTERNAL on main,
+    // moved to PSRAM in audio-core-v2 commit 452ebd3, reverted here.
     this->direct_aec_ref_ = static_cast<int16_t *>(
-        heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_SPIRAM));
-    if (this->direct_aec_ref_ == nullptr) {
-      this->direct_aec_ref_ = static_cast<int16_t *>(
-          heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
-    }
+        heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
     if (this->direct_aec_ref_) {
       ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples)", (unsigned)bus_frame_size);
     } else {
@@ -836,6 +835,10 @@ void I2SAudioDuplex::audio_task_() {
     this->process_rx_path_(ctx);
 
     ctx.processor_enabled = this->processor_enabled_.load(std::memory_order_relaxed);
+#ifdef USE_AUDIO_PROCESSOR
+    ctx.processor_ready = ctx.processor_enabled && this->processor_ != nullptr &&
+                          this->processor_->is_initialized();
+#endif
     ctx.now_ms = millis();
 
     this->process_aec_and_callbacks_(ctx);
@@ -1107,8 +1110,8 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
 
 #ifdef USE_AUDIO_PROCESSOR
 #if SOC_I2S_SUPPORTS_TDM
-  if (ctx.use_tdm_ref && this->processor_ != nullptr && ctx.processor_enabled &&
-      this->processor_->is_initialized() && ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
+  if (ctx.use_tdm_ref && ctx.processor_ready &&
+      ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr) {
     // TDM: hardware-synced reference, no speaker gating needed.
     // TDM analog ref already reflects DAC volume. No extra scaling on ref.
     this->processor_->process(ctx.processor_input, ctx.spk_ref_buffer, ctx.aec_output, ctx.processor_mic_channels);
@@ -1117,7 +1120,7 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
     ctx.current_output_frame_bytes = ctx.output_frame_bytes;
   } else
 #endif
-  if (!ctx.use_tdm_ref && this->processor_ != nullptr && ctx.processor_enabled && this->processor_->is_initialized() &&
+  if (!ctx.use_tdm_ref && ctx.processor_ready &&
       ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr && ctx.speaker_running &&
       (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)) {
 
@@ -1186,6 +1189,7 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
 
   if (ctx.speaker_running) {
     size_t got = this->speaker_buffer_->read((void *) ctx.spk_buffer, ctx.bus_frame_bytes, 0);
+    ctx.speaker_got = got;
     ctx.speaker_underrun = (got == 0 && !ctx.speaker_paused);
 
     if (ctx.speaker_paused) {
@@ -1207,9 +1211,9 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
   }
 
-  // Save post-volume TX data as AEC reference
+  // Save post-volume TX data as AEC reference (skip if processor is off)
 #ifdef USE_AUDIO_PROCESSOR
-  if (this->aec_ref_ring_buffer_) {
+  if (this->aec_ref_ring_buffer_ && ctx.processor_enabled) {
     // Ring buffer mode: write post-volume PCM for TYPE2-style reference
     if (ctx.speaker_running && !ctx.speaker_paused) {
       size_t frame_bytes = ctx.bus_frame_size * sizeof(int16_t);
@@ -1226,7 +1230,7 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
         this->aec_ref_ring_buffer_->write((void *) ctx.spk_buffer, frame_bytes);
       }
     }
-  } else if (this->direct_aec_ref_ != nullptr) {
+  } else if (this->direct_aec_ref_ != nullptr && ctx.processor_enabled) {
     // Previous frame mode: save for next iteration
     memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
     this->direct_aec_ref_valid_ = ctx.speaker_running && !ctx.speaker_paused;
@@ -1292,11 +1296,11 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     ctx.consecutive_i2s_errors = 0;
   }
 
-  // Report frames played (for mixer pending_playback tracking)
-  if (err == ESP_OK && bytes_written > 0 && !this->speaker_output_callbacks_.empty()) {
-    uint32_t frames_played = ctx.use_tdm_ref
-        ? bytes_written / (ctx.tdm_total_slots * ctx.i2s_bps)
-        : bytes_written / (ctx.num_ch * ctx.i2s_bps);
+  // Report frames actually consumed from the ring buffer (not silence/pad frames).
+  // Using got (ring buffer read) instead of bytes_written (I2S output) prevents
+  // counting silence frames as "played" during underruns.
+  if (err == ESP_OK && ctx.speaker_got > 0 && !this->speaker_output_callbacks_.empty()) {
+    uint32_t frames_played = ctx.speaker_got / sizeof(int16_t);
     int64_t timestamp = esp_timer_get_time();
     for (auto &cb : this->speaker_output_callbacks_) {
       cb(frames_played, timestamp);
