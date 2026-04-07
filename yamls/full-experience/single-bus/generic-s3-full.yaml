@@ -41,7 +41,7 @@ packages:
   core:
     url: https://github.com/n-IA-hane/esphome-intercom
     file: packages/va_intercom.yaml
-    ref: main
+    ref: audio-core-v2
 
 esphome:
   name: ${name}
@@ -86,17 +86,25 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+      ref: audio-core-v2
+    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
 
 # =============================================================================
-# AEC
+# AFE (Audio Front End)
 # =============================================================================
-esp_aec:
-  id: aec_processor
-  sample_rate: 16000
-  filter_length: 4
-  mode: sr_low_cost
+esp_afe:
+  id: afe_processor
+  type: sr
+  mode: low_cost
+  mic_num: 1
+  aec_enabled: true
+  aec_filter_length: 4
+  ns_enabled: true
+  vad_enabled: true
+  agc_enabled: true
+  se_enabled: false
+  task_core: 1
+  task_priority: 8
 
 # =============================================================================
 # I2S Audio Duplex
@@ -111,7 +119,7 @@ i2s_audio_duplex:
   output_sample_rate: 16000
   slot_bit_width: 32
   correct_dc_offset: true
-  aec_id: aec_processor
+  processor_id: afe_processor
   buffers_in_psram: true
 
 # =============================================================================

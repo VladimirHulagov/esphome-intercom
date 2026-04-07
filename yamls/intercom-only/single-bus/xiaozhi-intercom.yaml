@@ -122,7 +122,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
+      ref: audio-core-v2
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # ==============================================================================
@@ -166,7 +166,7 @@ i2s_audio_duplex:
   i2s_din_pin: GPIO10
   i2s_dout_pin: GPIO8
   sample_rate: 16000
-  aec_id: aec_component
+  processor_id: aec_component
   # ES8311 digital feedback: RX is stereo with L=DAC(ref), R=ADC(mic)
   # Gives sample-accurate reference for AEC (no ring buffer timing issues)
   # Requires ES8311 register 0x44 bits[6:4]=4 (set in on_boot)

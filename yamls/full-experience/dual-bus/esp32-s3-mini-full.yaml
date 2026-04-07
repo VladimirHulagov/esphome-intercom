@@ -40,7 +40,7 @@ packages:
   core:
     url: https://github.com/n-IA-hane/esphome-intercom
     file: packages/va_intercom.yaml
-    ref: main
+    ref: audio-core-v2
 
 # =============================================================================
 # ESPHome Base
@@ -98,7 +98,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
+      ref: audio-core-v2
     components: [intercom_api, esp_aec]
 
 # =============================================================================
@@ -232,7 +232,7 @@ intercom_api:
   microphone: mic_component
   speaker: intercom_speaker
   dc_offset_removal: true
-  aec_id: aec_processor
+  processor_id: aec_processor
   ringing_timeout: 30s
 
 # =============================================================================

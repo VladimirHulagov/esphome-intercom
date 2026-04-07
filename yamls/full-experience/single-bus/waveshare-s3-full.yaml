@@ -54,7 +54,7 @@ packages:
   core:
     url: https://github.com/n-IA-hane/esphome-intercom
     file: packages/va_intercom.yaml
-    ref: main
+    ref: audio-core-v2
 
 # =============================================================================
 # ESPHome Base
@@ -147,8 +147,8 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+      ref: audio-core-v2
+    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
 
 # =============================================================================
 # I2C Bus (shared: ES8311, ES7210, TCA9555)
@@ -187,11 +187,19 @@ audio_adc:
     sample_rate: 48000
     mic_gain: 24dB
 
-esp_aec:
-  id: aec_processor
-  sample_rate: 16000
-  mode: sr_low_cost
-  filter_length: 4
+esp_afe:
+  id: afe_processor
+  type: sr
+  mode: low_cost
+  mic_num: 2
+  aec_enabled: true
+  aec_filter_length: 4
+  ns_enabled: true
+  vad_enabled: true
+  agc_enabled: true
+  se_enabled: true              # Beamforming (dual mic)
+  task_core: 1
+  task_priority: 8
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -202,11 +210,11 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO16
   sample_rate: 48000
   output_sample_rate: 16000
-  aec_id: aec_processor
+  processor_id: afe_processor
   use_tdm_reference: true
   tdm_total_slots: 4
-  tdm_mic_slot: 0
-  tdm_ref_slot: 1
+  tdm_mic_slots: [0, 2]        # Slot 0 = mic1, slot 2 = mic2
+  tdm_ref_slot: 1              # Slot 1 = DAC feedback reference
   buffers_in_psram: true
 
 # =============================================================================
