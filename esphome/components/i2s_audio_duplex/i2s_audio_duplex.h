@@ -165,6 +165,175 @@ class FirDecimator {
   uint32_t delay_pos_{0};
 };
 
+// Multi-channel FIR decimator: decimates N channels from TDM/stereo rx_buffer in one pass.
+// Produces interleaved mic output (for AFE) + mono mic1 (for callbacks) + ref (for AEC).
+// Eliminates separate per-channel FIR instances, intermediate buffers, and re-interleave passes.
+// Max 3 channels (MMR: mic1 + mic2 + ref). Each channel has its own mirrored delay line.
+static constexpr uint8_t MC_FIR_MAX_CH = 3;
+
+class MultiChannelFirDecimator {
+ public:
+  void init(uint32_t ratio, uint8_t num_channels) {
+    this->ratio_ = ratio;
+    this->num_channels_ = num_channels > MC_FIR_MAX_CH ? MC_FIR_MAX_CH : num_channels;
+    this->reset();
+  }
+
+  void reset() {
+    memset(this->delay_lines_, 0, sizeof(this->delay_lines_));
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) this->delay_pos_[c] = 0;
+  }
+
+  // Decimate N channels from strided int16 TDM input, producing:
+  //   - mic_interleaved: [mic1, mic2, mic1, mic2, ...] (num_mic_ch interleaved, for AFE)
+  //   - mic_mono: mic1 contiguous (for callbacks/MWW/intercom)
+  //   - ref_out: ref contiguous (for AEC, may be nullptr if no ref channel)
+  // channel_offsets: slot indices in TDM frame [mic1_slot, mic2_slot, ref_slot]
+  // num_mic_ch: 1 or 2 (how many of the channels are mic, rest is ref)
+  void process_multi(const int16_t *in, size_t out_count, size_t in_stride,
+                     const uint8_t *channel_offsets,
+                     int16_t *mic_interleaved, int16_t *mic_mono,
+                     int16_t *ref_out, uint8_t num_mic_ch) {
+    if (this->ratio_ <= 1) {
+      this->process_multi_passthrough_(in, out_count, in_stride, channel_offsets,
+                                       mic_interleaved, mic_mono, ref_out, num_mic_ch);
+      return;
+    }
+    const uint8_t nch = this->num_channels_;
+    size_t idx = 0;
+    for (size_t o = 0; o < out_count; o++) {
+      // Push ratio_ samples per channel into delay lines
+      for (uint32_t r = 0; r < this->ratio_; r++) {
+        for (uint8_t c = 0; c < nch; c++) {
+          this->push_sample_(c, static_cast<float>(in[(idx + r) * in_stride + channel_offsets[c]]));
+        }
+      }
+      idx += this->ratio_;
+
+      // Convolve each channel
+      int16_t s0 = this->convolve_(0);
+      if (mic_mono) mic_mono[o] = s0;
+
+      if (num_mic_ch >= 2 && nch >= 2) {
+        int16_t s1 = this->convolve_(1);
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && nch >= 3) ref_out[o] = this->convolve_(2);
+      } else {
+        // Single mic: mic_interleaved not needed (processor_input = mic_mono)
+        if (ref_out && nch >= 2) ref_out[o] = this->convolve_(1);
+      }
+    }
+  }
+
+  // Same but for 32-bit I2S input with inline >>16 downshift
+  void process_multi_32(const int32_t *in, size_t out_count, size_t in_stride,
+                        const uint8_t *channel_offsets,
+                        int16_t *mic_interleaved, int16_t *mic_mono,
+                        int16_t *ref_out, uint8_t num_mic_ch) {
+    if (this->ratio_ <= 1) {
+      // Passthrough with 32->16 conversion
+      for (size_t o = 0; o < out_count; o++) {
+        int16_t s0 = static_cast<int16_t>(in[o * in_stride + channel_offsets[0]] >> 16);
+        if (mic_mono) mic_mono[o] = s0;
+        if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+          int16_t s1 = static_cast<int16_t>(in[o * in_stride + channel_offsets[1]] >> 16);
+          if (mic_interleaved) {
+            mic_interleaved[o * 2] = s0;
+            mic_interleaved[o * 2 + 1] = s1;
+          }
+          if (ref_out && this->num_channels_ >= 3)
+            ref_out[o] = static_cast<int16_t>(in[o * in_stride + channel_offsets[2]] >> 16);
+        } else {
+          if (ref_out && this->num_channels_ >= 2)
+            ref_out[o] = static_cast<int16_t>(in[o * in_stride + channel_offsets[1]] >> 16);
+        }
+      }
+      return;
+    }
+    const uint8_t nch = this->num_channels_;
+    size_t idx = 0;
+    for (size_t o = 0; o < out_count; o++) {
+      for (uint32_t r = 0; r < this->ratio_; r++) {
+        for (uint8_t c = 0; c < nch; c++) {
+          this->push_sample_(c, static_cast<float>(in[(idx + r) * in_stride + channel_offsets[c]] >> 16));
+        }
+      }
+      idx += this->ratio_;
+
+      int16_t s0 = this->convolve_(0);
+      if (mic_mono) mic_mono[o] = s0;
+
+      if (num_mic_ch >= 2 && nch >= 2) {
+        int16_t s1 = this->convolve_(1);
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && nch >= 3) ref_out[o] = this->convolve_(2);
+      } else {
+        if (ref_out && nch >= 2) ref_out[o] = this->convolve_(1);
+      }
+    }
+  }
+
+ private:
+  void process_multi_passthrough_(const int16_t *in, size_t out_count, size_t in_stride,
+                                   const uint8_t *channel_offsets,
+                                   int16_t *mic_interleaved, int16_t *mic_mono,
+                                   int16_t *ref_out, uint8_t num_mic_ch) {
+    for (size_t o = 0; o < out_count; o++) {
+      int16_t s0 = in[o * in_stride + channel_offsets[0]];
+      if (mic_mono) mic_mono[o] = s0;
+      if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+        int16_t s1 = in[o * in_stride + channel_offsets[1]];
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && this->num_channels_ >= 3)
+          ref_out[o] = in[o * in_stride + channel_offsets[2]];
+      } else {
+        if (ref_out && this->num_channels_ >= 2)
+          ref_out[o] = in[o * in_stride + channel_offsets[1]];
+      }
+    }
+  }
+
+  inline void push_sample_(uint8_t ch, float s) {
+    uint32_t p = this->delay_pos_[ch];
+    this->delay_lines_[ch][p] = s;
+    this->delay_lines_[ch][p + FIR_NUM_TAPS] = s;
+    this->delay_pos_[ch] = (p + 1) & (FIR_NUM_TAPS - 1);
+  }
+
+  inline int16_t convolve_(uint8_t ch) {
+    const float *w = &this->delay_lines_[ch][this->delay_pos_[ch]];
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+    for (size_t k = 0; k < 12; k += 4) {
+      a0 += (w[k]     + w[30 - k])     * FIR_COEFFS[k];
+      a1 += (w[k + 1] + w[29 - k])     * FIR_COEFFS[k + 1];
+      a2 += (w[k + 2] + w[28 - k])     * FIR_COEFFS[k + 2];
+      a3 += (w[k + 3] + w[27 - k])     * FIR_COEFFS[k + 3];
+    }
+    a0 += (w[12] + w[18]) * FIR_COEFFS[12];
+    a1 += (w[13] + w[17]) * FIR_COEFFS[13];
+    a2 += (w[14] + w[16]) * FIR_COEFFS[14];
+    a3 += w[15] * FIR_COEFFS[15];
+    float acc = a0 + a1 + a2 + a3;
+    if (acc > 32767.0f) acc = 32767.0f;
+    if (acc < -32768.0f) acc = -32768.0f;
+    return static_cast<int16_t>(acc);
+  }
+
+  uint32_t ratio_{1};
+  uint8_t num_channels_{0};
+  float delay_lines_[MC_FIR_MAX_CH][FIR_NUM_TAPS * 2]{};  // 3 mirrored delay lines = 768 bytes
+  uint32_t delay_pos_[MC_FIR_MAX_CH]{};
+};
+
 class I2SAudioDuplex : public Component {
  public:
   void setup() override;
@@ -315,7 +484,7 @@ class I2SAudioDuplex : public Component {
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
     int16_t *rx_buffer{nullptr};
     int16_t *mic_buffer{nullptr};
-    int16_t *secondary_mic_buffer{nullptr};
+    // secondary_mic_buffer eliminated: mic2 in processor_mic_buffer[i*2+1]
     int16_t *processor_mic_buffer{nullptr};
     int16_t *spk_buffer{nullptr};
     int16_t *spk_ref_buffer{nullptr};
@@ -378,9 +547,8 @@ class I2SAudioDuplex : public Component {
   uint32_t decimation_ratio_{1};       // sample_rate_ / output_sample_rate_ (computed in setup)
 
   // FIR decimators for mic path
-  FirDecimator mic_decimator_;
-  FirDecimator secondary_mic_decimator_;
-  FirDecimator ref_decimator_;          // Stereo mode: RX L channel ref
+  MultiChannelFirDecimator rx_decimator_;  // Multi-channel: TDM/stereo RX path
+  FirDecimator mic_decimator_;             // Fallback: mono RX without TDM/stereo
   FirDecimator play_ref_decimator_;     // Mono mode: bus-rate ref from play() decimated in audio_task
 
   // I2S handles - BOTH created from single channel for duplex

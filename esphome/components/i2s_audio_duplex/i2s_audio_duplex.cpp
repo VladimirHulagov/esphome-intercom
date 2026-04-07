@@ -98,9 +98,8 @@ void I2SAudioDuplex::setup() {
       return;
     }
     this->mic_decimator_.init(this->decimation_ratio_);
-    this->secondary_mic_decimator_.init(this->decimation_ratio_);
-    this->ref_decimator_.init(this->decimation_ratio_);
     this->play_ref_decimator_.init(this->decimation_ratio_);
+    // rx_decimator_ init deferred to audio_task_ where channel count is known
     ESP_LOGI(TAG, "Multi-rate: bus=%uHz, output=%uHz, ratio=%u",
              (unsigned)this->sample_rate_, (unsigned)this->output_sample_rate_,
              (unsigned)this->decimation_ratio_);
@@ -507,8 +506,7 @@ void I2SAudioDuplex::start() {
 
   // Reset FIR decimators for clean state
   this->mic_decimator_.reset();
-  this->secondary_mic_decimator_.reset();
-  this->ref_decimator_.reset();
+  this->rx_decimator_.reset();
   this->play_ref_decimator_.reset();
 
 #ifdef USE_AUDIO_PROCESSOR
@@ -676,6 +674,14 @@ void I2SAudioDuplex::audio_task_() {
   }
 #endif
 
+  // Init multi-channel RX decimator now that we know channel count
+  if (ctx.use_tdm_ref || ctx.use_stereo_aec_ref) {
+    uint8_t rx_ch = ctx.use_tdm_ref
+        ? (ctx.processor_mic_channels > 1 ? 3 : 2)  // MMR or MR
+        : 2;  // stereo: mic + ref
+    this->rx_decimator_.init(ctx.ratio, rx_ch);
+  }
+
   // ── Frame sizing ──
   ctx.bus_frame_size = ctx.input_frame_size * ctx.ratio;
   ctx.input_frame_bytes = ctx.input_frame_size * sizeof(int16_t);
@@ -708,8 +714,8 @@ void I2SAudioDuplex::audio_task_() {
       ? static_cast<int16_t *>(heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps))
       : ctx.rx_buffer;
   if (ctx.processor_mic_channels > 1) {
-    ctx.secondary_mic_buffer = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
+    // processor_mic_buffer: interleaved dual-mic [m1,m2,m1,m2,...] filled by multi-channel FIR
+    // secondary_mic_buffer eliminated: mic2 lives in processor_mic_buffer[i*2+1]
     ctx.processor_mic_buffer = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.processor_input_frame_bytes, buf_caps));
   }
@@ -778,8 +784,8 @@ void I2SAudioDuplex::audio_task_() {
   if (!ctx.rx_buffer || !ctx.spk_buffer || (ctx.mic_separate && !ctx.mic_buffer)) {
     alloc_fail("audio buffers"); goto cleanup;
   }
-  if (ctx.processor_mic_channels > 1 && (!ctx.secondary_mic_buffer || !ctx.processor_mic_buffer)) {
-    alloc_fail("dual-mic buffers"); goto cleanup;
+  if (ctx.processor_mic_channels > 1 && !ctx.processor_mic_buffer) {
+    alloc_fail("dual-mic processor buffer"); goto cleanup;
   }
   // Stereo decimation buffers removed: FIR strided reads rx_buffer directly
   if (ctx.use_tdm_ref && !ctx.tdm_tx_buffer) {
@@ -891,7 +897,7 @@ void I2SAudioDuplex::audio_task_() {
 cleanup:
   heap_caps_free(ctx.rx_buffer);
   if (ctx.mic_separate && ctx.mic_buffer) heap_caps_free(ctx.mic_buffer);
-  if (ctx.secondary_mic_buffer) heap_caps_free(ctx.secondary_mic_buffer);
+  // secondary_mic_buffer eliminated: mic2 lives in processor_mic_buffer
   if (ctx.processor_mic_buffer) heap_caps_free(ctx.processor_mic_buffer);
   heap_caps_free(ctx.spk_buffer);
   if (ctx.spk_ref_buffer) heap_caps_free(ctx.spk_ref_buffer);
@@ -945,72 +951,66 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
 #if SOC_I2S_SUPPORTS_TDM
   if (ctx.use_tdm_ref) {
     const uint8_t ts = ctx.tdm_total_slots;
-    const uint8_t ms = ctx.tdm_mic_slot;
-    const int8_t sms = ctx.tdm_second_mic_slot;
-    const uint8_t rs = ctx.tdm_ref_slot;
-    const bool dual_mic = ctx.processor_mic_channels > 1 && ctx.secondary_mic_buffer != nullptr &&
-                          ctx.processor_mic_buffer != nullptr && sms >= 0;
-    if (ctx.i2s_bps == 4 && ctx.ratio > 1) {
-      // 32-bit TDM with decimation: FIR reads int32 directly, does >>16 inline
-      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
-      this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, ts, ms);
-      if (dual_mic) {
-        this->secondary_mic_decimator_.process_strided_32(
-            src32, ctx.secondary_mic_buffer, ctx.input_frame_size, ts, sms);
-      }
-      this->ref_decimator_.process_strided_32(src32, ctx.spk_ref_buffer, ctx.input_frame_size, ts, rs);
+    const bool dual_mic = ctx.processor_mic_channels > 1 && ctx.tdm_second_mic_slot >= 0;
+    uint8_t ch_offsets[MC_FIR_MAX_CH];
+    uint8_t num_mic_ch;
+    if (dual_mic) {
+      ch_offsets[0] = ctx.tdm_mic_slot;
+      ch_offsets[1] = static_cast<uint8_t>(ctx.tdm_second_mic_slot);
+      ch_offsets[2] = ctx.tdm_ref_slot;
+      num_mic_ch = 2;
     } else {
-      // 16-bit TDM (or ratio==1): strided FIR handles deinterleave + optional decimation
-      this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, ts, ms);
-      if (dual_mic) {
-        this->secondary_mic_decimator_.process_strided(
-            ctx.rx_buffer, ctx.secondary_mic_buffer, ctx.input_frame_size, ts, sms);
-      }
-      this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, ts, rs);
+      ch_offsets[0] = ctx.tdm_mic_slot;
+      ch_offsets[1] = ctx.tdm_ref_slot;
+      num_mic_ch = 1;
+    }
+    if (ctx.i2s_bps == 4) {
+      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+      this->rx_decimator_.process_multi_32(src32, ctx.input_frame_size, ts, ch_offsets,
+          dual_mic ? ctx.processor_mic_buffer : nullptr, ctx.mic_buffer,
+          ctx.spk_ref_buffer, num_mic_ch);
+    } else {
+      this->rx_decimator_.process_multi(ctx.rx_buffer, ctx.input_frame_size, ts, ch_offsets,
+          dual_mic ? ctx.processor_mic_buffer : nullptr, ctx.mic_buffer,
+          ctx.spk_ref_buffer, num_mic_ch);
+    }
+    if (dual_mic) {
+      ctx.processor_input = ctx.processor_mic_buffer;
     }
   } else
 #endif
-  if (ctx.ratio > 1) {
-    if (ctx.use_stereo_aec_ref) {
-      const int ri = ctx.ref_channel_right ? 1 : 0;
-      const int mi = ctx.ref_channel_right ? 0 : 1;
-      if (ctx.i2s_bps == 4) {
-        auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
-        this->ref_decimator_.process_strided_32(src32, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
-        this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
-      } else {
-        this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
-        this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
-      }
+  if (ctx.use_stereo_aec_ref) {
+    // Stereo: mic + ref via multi-channel FIR
+    const uint8_t mi = ctx.ref_channel_right ? 0 : 1;
+    const uint8_t ri = ctx.ref_channel_right ? 1 : 0;
+    uint8_t ch_offsets[2] = {mi, ri};
+    if (ctx.i2s_bps == 4) {
+      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+      this->rx_decimator_.process_multi_32(src32, ctx.input_frame_size, 2, ch_offsets,
+          nullptr, ctx.mic_buffer, ctx.spk_ref_buffer, 1);
     } else {
-      // Mono with decimation
-      if (ctx.i2s_bps == 4) {
-        auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
-        this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, 1, 0);
-      } else {
-        this->mic_decimator_.process(ctx.rx_buffer, ctx.mic_buffer, ctx.bus_frame_size);
-      }
+      this->rx_decimator_.process_multi(ctx.rx_buffer, ctx.input_frame_size, 2, ch_offsets,
+          nullptr, ctx.mic_buffer, ctx.spk_ref_buffer, 1);
     }
-  } else {
-    if (ctx.use_stereo_aec_ref) {
-      // ratio==1 stereo: strided fast path (just copies with stride)
-      const int ri = ctx.ref_channel_right ? 1 : 0;
-      const int mi = ctx.ref_channel_right ? 0 : 1;
-      this->ref_decimator_.process_strided(ctx.rx_buffer, ctx.spk_ref_buffer, ctx.input_frame_size, 2, ri);
-      this->mic_decimator_.process_strided(ctx.rx_buffer, ctx.mic_buffer, ctx.input_frame_size, 2, mi);
+  } else if (ctx.ratio > 1) {
+    // Mono with decimation
+    if (ctx.i2s_bps == 4) {
+      auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
+      this->mic_decimator_.process_strided_32(src32, ctx.mic_buffer, ctx.input_frame_size, 1, 0);
+    } else {
+      this->mic_decimator_.process(ctx.rx_buffer, ctx.mic_buffer, ctx.bus_frame_size);
     }
-    // Mono without decimation: mic_buffer == rx_buffer (aliased), nothing to do
   }
+  // else: Mono without decimation: mic_buffer == rx_buffer (aliased), nothing to do
 
-  // Fused loop: DC offset + mic attenuation + dual-mic interleave in one pass.
-  // All conditions hoisted outside the loop (loop-invariant).
+  // Fused loop: DC offset + mic attenuation in one pass.
+  // For dual-mic: mic1 is in mic_buffer, mic2 is in processor_mic_buffer[i*2+1]
+  // (both filled by the multi-channel FIR). Apply DC+atten on both, update in-place.
   const bool do_dc = ctx.correct_dc_offset;
   const bool do_atten = ctx.mic_attenuation != 1.0f;
-  const bool dual_mic = ctx.processor_mic_channels > 1 &&
-                        ctx.processor_mic_buffer != nullptr &&
-                        ctx.secondary_mic_buffer != nullptr;
+  const bool dual_mic = ctx.processor_mic_channels > 1 && ctx.processor_mic_buffer != nullptr;
 
-  if (do_dc || do_atten || dual_mic) {
+  if (do_dc || do_atten) {
     const float atten = ctx.mic_attenuation;
     for (size_t i = 0; i < ctx.input_frame_size; i++) {
       int16_t s1 = ctx.mic_buffer[i];
@@ -1028,7 +1028,8 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
       ctx.mic_buffer[i] = s1;
 
       if (dual_mic) {
-        int16_t s2 = ctx.secondary_mic_buffer[i];
+        // mic2 already in processor_mic_buffer interleaved by multi-channel FIR
+        int16_t s2 = ctx.processor_mic_buffer[i * 2 + 1];
         if (do_dc) {
           int32_t inp2 = (int32_t) s2 << 16;
           int32_t out2 = inp2 - ctx.dc_prev_input_secondary + ctx.dc_prev_output_secondary -
@@ -1040,14 +1041,15 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
         if (do_atten) {
           s2 = scale_sample(s2, atten);
         }
-        ctx.secondary_mic_buffer[i] = s2;
+        // Update both mic1 and mic2 in the interleaved buffer
         ctx.processor_mic_buffer[i * 2] = s1;
         ctx.processor_mic_buffer[i * 2 + 1] = s2;
       }
     }
-    if (dual_mic) {
-      ctx.processor_input = ctx.processor_mic_buffer;
-    }
+  } else if (dual_mic) {
+    // No DC or attenuation, but mic1 in processor_mic_buffer needs updating
+    // (FIR wrote raw values, mic_buffer has same raw values)
+    // processor_mic_buffer already has correct values from FIR, nothing to do
   }
 }
 
