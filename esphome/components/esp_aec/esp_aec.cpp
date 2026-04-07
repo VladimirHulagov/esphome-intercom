@@ -108,6 +108,10 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
     return false;
   }
   this->cached_frame_size_ = aec_get_chunksize(this->handle_);
+  if (this->cached_frame_size_ != this->last_frame_size_) {
+    this->last_frame_size_ = this->cached_frame_size_;
+    this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
+  }
   ESP_LOGI(TAG, "AEC reinitialized: mode=%d, frame=%d (%dms)",
            (int) this->mode_, this->cached_frame_size_,
            this->cached_frame_size_ * 1000 / this->sample_rate_);

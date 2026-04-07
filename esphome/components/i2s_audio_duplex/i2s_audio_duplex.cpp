@@ -120,10 +120,13 @@ void I2SAudioDuplex::setup() {
   if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
     // Hot path buffer (written every TX frame, read for AEC ref decimation).
-    // Must be in internal RAM to avoid PSRAM bus contention. Was INTERNAL on main,
-    // moved to PSRAM in audio-core-v2 commit 452ebd3, reverted here.
+    // Prefer internal RAM to avoid PSRAM bus contention, fall back to PSRAM if needed.
     this->direct_aec_ref_ = static_cast<int16_t *>(
         heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
+    if (this->direct_aec_ref_ == nullptr) {
+      this->direct_aec_ref_ = static_cast<int16_t *>(
+          heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_SPIRAM));
+    }
     if (this->direct_aec_ref_) {
       ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples)", (unsigned)bus_frame_size);
     } else {
@@ -1186,8 +1189,8 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     return;
 
   if (ctx.speaker_running) {
-    size_t got = this->speaker_buffer_->read((void *) ctx.spk_buffer, ctx.bus_frame_bytes, 0);
-    ctx.speaker_got = got;
+    ctx.speaker_got = this->speaker_buffer_->read((void *) ctx.spk_buffer, ctx.bus_frame_bytes, 0);
+    size_t got = ctx.speaker_got;
     ctx.speaker_underrun = (got == 0 && !ctx.speaker_paused);
 
     if (ctx.speaker_paused) {
@@ -1207,6 +1210,7 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     }
   } else {
     memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
+    ctx.speaker_got = 0;
   }
 
   // Save post-volume TX data as AEC reference (skip if processor is off)

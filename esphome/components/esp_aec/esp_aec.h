@@ -32,6 +32,9 @@ class EspAec : public Component, public AudioProcessor {
   bool set_feature(AudioFeature feature, bool enabled) override;
   ProcessorTelemetry telemetry() const override;
   bool reconfigure(int type, int mode) override;
+  uint32_t frame_spec_revision() const override {
+    return this->frame_spec_revision_.load(std::memory_order_relaxed);
+  }
 
   aec_mode_t get_mode() const { return this->mode_; }
 
@@ -47,6 +50,8 @@ class EspAec : public Component, public AudioProcessor {
   aec_mode_t mode_{AEC_MODE_SR_LOW_COST};
   std::atomic<uint32_t> frame_count_{0};
   std::atomic<uint32_t> glitch_count_{0};
+  std::atomic<uint32_t> frame_spec_revision_{0};
+  int last_frame_size_{0};
 };
 
 // Action: esp_aec.set_mode
