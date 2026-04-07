@@ -115,8 +115,8 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
       ESP_LOGE(TAG, "Failed to allocate AFE config");
       return false;
     }
-    if (!afe_parse_input_format(fmt.c_str(), &cfg->pcm_config)) {
-      ESP_LOGE(TAG, "Failed to parse input format: %s", fmt.c_str());
+    if (!afe_parse_input_format(fmt, &cfg->pcm_config)) {
+      ESP_LOGE(TAG, "Failed to parse input format: %s", fmt);
       afe_config_free(cfg);
       return false;
     }
@@ -212,7 +212,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   instance->total_channels = total_channels;
 
   ESP_LOGI(TAG, "AFE ready: process=%d feed=%d fetch=%d ch=%d fmt=%s (transport_mics=%d)",
-           process_chunksize, feed_chunksize, fetch_chunksize, total_channels, fmt.c_str(), this->mic_num_);
+           process_chunksize, feed_chunksize, fetch_chunksize, total_channels, fmt, this->mic_num_);
   return true;
 }
 
@@ -336,7 +336,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
   }
   this->warmup_remaining_ = 3;
-  this->frame_count_ = 0;
+  this->frame_count_.store(0, std::memory_order_relaxed);
   this->glitch_count_.store(0, std::memory_order_relaxed);
   this->ringbuf_free_pct_.store(1.0f, std::memory_order_relaxed);
   this->voice_present_.store(false, std::memory_order_relaxed);
@@ -484,7 +484,7 @@ ProcessorTelemetry EspAfe::telemetry() const {
   t.output_rms_dbfs = this->output_rms_dbfs_.load(std::memory_order_relaxed);
   t.ringbuf_free_pct = this->ringbuf_free_pct_.load(std::memory_order_relaxed);
   t.glitch_count = this->glitch_count_.load(std::memory_order_relaxed);
-  t.frame_count = this->frame_count_;
+  t.frame_count = this->frame_count_.load(std::memory_order_relaxed);
   return t;
 }
 
@@ -637,7 +637,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   if (processed && this->output_rms_sensor_enabled_) {
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
   }
-  this->frame_count_++;
+  this->frame_count_.fetch_add(1, std::memory_order_relaxed);
   return processed;
 }
 

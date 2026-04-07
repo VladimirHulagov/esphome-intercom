@@ -806,12 +806,9 @@ void I2SAudioDuplex::audio_task_() {
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-  uint32_t telem_rx_cycles_sum = 0, telem_rx_cycles_max = 0;
-  uint32_t telem_proc_cycles_sum = 0, telem_proc_cycles_max = 0;
-  uint32_t telem_tx_cycles_sum = 0, telem_tx_cycles_max = 0;
-  uint32_t telem_spk_underruns = 0;
-  uint32_t telem_frame_count = 0;
   static constexpr uint32_t TELEM_LOG_INTERVAL = 128;
+  uint32_t t_frame_count = 0;
+  uint32_t t_spk_underruns = 0;
 #endif
 
   // ── Main loop ──
@@ -869,8 +866,7 @@ void I2SAudioDuplex::audio_task_() {
       // Lightweight per-frame cycle snapshot (only when telemetry: true)
       // Note: includes I2S blocking time in rx/tx, separate compute-only measurement
       // would require bracketing inside the path functions.
-      static uint32_t t_frame_count = 0;
-      static uint32_t t_spk_underruns = 0;
+      // t_frame_count and t_spk_underruns declared before the loop (reset on task restart)
       t_spk_underruns += ctx.speaker_underrun ? 1 : 0;
       t_frame_count++;
       if (t_frame_count >= TELEM_LOG_INTERVAL) {

@@ -169,7 +169,7 @@ class EspAfe : public Component, public AudioProcessor {
   std::atomic<uint32_t> glitch_count_{0};
   std::atomic<float> ringbuf_free_pct_{1.0f};
   std::atomic<uint32_t> frame_spec_revision_{0};
-  int last_spec_mic_ch_{0};  // last published mic_channels for revision tracking
+  int last_spec_mic_ch_{1};  // last published mic_channels for revision tracking (1 = default mono)
 };
 
 class AfeSwitchBase : public switch_::Switch, public Component, public Parented<EspAfe> {
