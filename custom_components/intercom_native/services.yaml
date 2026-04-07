@@ -2,29 +2,25 @@ answer:
   name: Answer Call
   description: Answer an incoming intercom call on the selected device.
   target:
-    device:
-      integration: esphome
+    device: {}
 
 decline:
   name: Decline Call
   description: Decline an incoming intercom call on the selected device.
   target:
-    device:
-      integration: esphome
+    device: {}
 
 hangup:
   name: Hangup
   description: End the active intercom call on the selected device.
   target:
-    device:
-      integration: esphome
+    device: {}
 
 call:
   name: Call
   description: Start an intercom call to the selected device (ESP-to-ESP bridge via HA).
   target:
-    device:
-      integration: esphome
+    device: {}
   fields:
     source:
       name: Source Device
@@ -38,8 +34,7 @@ forward:
   name: Forward Call
   description: Forward an active or ringing call to another device. Target is the caller device.
   target:
-    device:
-      integration: esphome
+    device: {}
   fields:
     forward_to:
       name: Forward To
