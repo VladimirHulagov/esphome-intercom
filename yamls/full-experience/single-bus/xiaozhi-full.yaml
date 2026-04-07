@@ -58,7 +58,7 @@ substitutions:
   # ---- Local mode (for development, clone repo first) ----
   # assets_base: ""
 
-  # AI avatar folder (${assets_base}images/assistant/<ai_avatar>/)
+  # AI avatar folder (${assets_base}assets/images/assistant/<ai_avatar>/)
   ai_avatar: troiaio
 
   # Wake word sensitivity (per-device tuning)
@@ -369,9 +369,9 @@ media_player:
       sample_rate: 48000
     files:
       - id: timer_finished_sound
-        file: ${assets_base}sounds/timer_finished.flac
+        file: ${assets_base}assets/sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: ${assets_base}sounds/ringtone.flac
+        file: ${assets_base}assets/sounds/ringtone.flac
     on_announcement:
       - script.execute: update_status
       # Only show LED for announcements when intercom is idle
@@ -458,7 +458,7 @@ micro_wake_word:
   microphone: mic_aec    # Post-AEC: SR linear AEC preserves spectral features
   stop_after_detection: false
   models:
-    - model: "${assets_base}wakewords/hey_trowyayoh.json"
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
     - model: alexa
@@ -1835,156 +1835,156 @@ text_sensor:
 # =============================================================================
 image:
   # Static VA state images
-  - file: ${assets_base}images/assistant/${ai_avatar}/error.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/error.png
     id: assistant_gui_error
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/listening.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/listening.png
     id: assistant_gui_listening
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/thinking.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/thinking.png
     id: assistant_gui_thinking
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/timer_finished.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/timer_finished.png
     id: assistant_gui_timer_finished
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/loading.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/loading.png
     id: assistant_gui_initializing
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_wifi.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/error_no_wifi.png
     id: error_no_wifi
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
-  - file: ${assets_base}images/assistant/${ai_avatar}/error_no_ha.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/error_no_ha.png
     id: error_no_ha
     resize: 240x240
     type: RGB565
     transparency: alpha_channel
 
   # Idle animation frames (20 frames @ 5fps)
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_00.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_00.png
     id: idle_00
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_01.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_01.png
     id: idle_01
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_02.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_02.png
     id: idle_02
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_03.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_03.png
     id: idle_03
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_04.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_04.png
     id: idle_04
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_05.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_05.png
     id: idle_05
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_06.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_06.png
     id: idle_06
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_07.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_07.png
     id: idle_07
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_08.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_08.png
     id: idle_08
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_09.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_09.png
     id: idle_09
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_10.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_10.png
     id: idle_10
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_11.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_11.png
     id: idle_11
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_12.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_12.png
     id: idle_12
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_13.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_13.png
     id: idle_13
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_14.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_14.png
     id: idle_14
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_15.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_15.png
     id: idle_15
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_16.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_16.png
     id: idle_16
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_17.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_17.png
     id: idle_17
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_18.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_18.png
     id: idle_18
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/idle_19.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/idle_19.png
     id: idle_19
     resize: 240x240
     type: RGB565
     transparency: opaque
 
   # Mood backgrounds for replying page (set based on LLM emoticon prefix)
-  - file: ${assets_base}images/assistant/${ai_avatar}/happy.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/happy.png
     id: mood_happy
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/neutral.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/neutral.png
     id: mood_neutral
     resize: 240x240
     type: RGB565
     transparency: opaque
-  - file: ${assets_base}images/assistant/${ai_avatar}/angry.png
+  - file: ${assets_base}assets/images/assistant/${ai_avatar}/angry.png
     id: mood_angry
     resize: 240x240
     type: RGB565

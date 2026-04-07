@@ -284,9 +284,9 @@ media_player:
       format: FLAC
     files:
       - id: timer_finished_sound
-        file: ${assets_base}sounds/timer_finished.flac
+        file: ${assets_base}assets/sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: ${assets_base}sounds/ringtone.flac
+        file: ${assets_base}assets/sounds/ringtone.flac
     on_announcement:
       - script.execute: update_status
     on_play:
@@ -306,7 +306,7 @@ media_player:
 micro_wake_word:
   microphone: mic_main
   models:
-    - model: "${assets_base}wakewords/hey_trowyayoh.json"
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
     - model: alexa

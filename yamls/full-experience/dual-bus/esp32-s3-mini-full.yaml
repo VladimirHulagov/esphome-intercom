@@ -184,7 +184,7 @@ media_player:
       num_channels: 1
     files:
       - id: intercom_ringing_sound
-        file: ${assets_base}sounds/ringtone.flac
+        file: ${assets_base}assets/sounds/ringtone.flac
     on_announcement:
       - script.execute: update_status
     on_play:

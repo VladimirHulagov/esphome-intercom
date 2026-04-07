@@ -1,16 +1,16 @@
 # ESPHome Intercom
 From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, intercom, and ready-to-flash configs for tested ESP32 hardware.
 
-![Dashboard Preview](readme-img/dashboard.png)
+![Dashboard Preview](docs/images/dashboard.png)
 
-![Dashboard Demo](readme-img/dashboard.gif)
+![Dashboard Demo](docs/images/dashboard.gif)
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/idle.jpg" width="180"/><br/><b>Idle</b></td>
-    <td align="center"><img src="readme-img/calling.jpg" width="180"/><br/><b>Calling</b></td>
-    <td align="center"><img src="readme-img/ringing.jpg" width="180"/><br/><b>Ringing</b></td>
-    <td align="center"><img src="readme-img/in_call.jpg" width="180"/><br/><b>In Call</b></td>
+    <td align="center"><img src="docs/images/idle.jpg" width="180"/><br/><b>Idle</b></td>
+    <td align="center"><img src="docs/images/calling.jpg" width="180"/><br/><b>Calling</b></td>
+    <td align="center"><img src="docs/images/ringing.jpg" width="180"/><br/><b>Ringing</b></td>
+    <td align="center"><img src="docs/images/in_call.jpg" width="180"/><br/><b>In Call</b></td>
   </tr>
 </table>
 
@@ -32,6 +32,7 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
 - [i2s_audio_duplex](#i2s_audio_duplex)
+- [Audio Front-End (AFE)](#audio-front-end-afe)
 - [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
@@ -185,14 +186,19 @@ The integration will:
 Add the external component to your ESPHome device configuration:
 
 ```yaml
+# Lightweight (single-mic, echo cancellation only):
 external_components:
   - source: github://n-IA-hane/esphome-intercom
     components: [audio_processor, intercom_api, esp_aec]
-    # Or with esp_afe for full pipeline (AEC + NS + VAD + AGC):
-    # components: [audio_processor, intercom_api, esp_afe]
+
+# Full AFE pipeline (AEC + NS + VAD + AGC, optional beamforming):
+external_components:
+  - source: github://n-IA-hane/esphome-intercom
+    ref: audio-core-v2
+    components: [audio_processor, intercom_api, esp_afe, i2s_audio_duplex]
 ```
 
-> **Note**: `audio_processor` must be listed because it provides the shared `AudioProcessor` interface used by both `esp_aec` and `esp_afe`.
+> **Note**: `audio_processor` must be listed because it provides the shared `AudioProcessor` interface used by both `esp_aec` and `esp_afe`. Use `esp_aec` for lightweight single-mic setups, `esp_afe` for the full pipeline (see [AFE section](#audio-front-end-afe) below).
 
 #### Minimal Configuration (Simple Mode)
 
@@ -246,7 +252,7 @@ intercom_api:
   mode: simple
   microphone: mic_component
   speaker: spk_component
-  aec_id: aec_processor
+  processor_id: aec_processor
 ```
 
 #### Full Configuration (Full Mode with ESP↔ESP)
@@ -257,7 +263,7 @@ intercom_api:
   mode: full                  # Enable ESP↔ESP calls
   microphone: mic_component
   speaker: spk_component
-  aec_id: aec_processor
+  processor_id: aec_processor
   ringing_timeout: 30s        # Auto-decline unanswered calls
 
   # FSM event callbacks
@@ -385,11 +391,11 @@ The Lovelace card is **automatically registered** when the integration loads, no
 
 The card is available in the Lovelace card picker - just search for "Intercom":
 
-![Card Selection](readme-img/card-selection.png)
+![Card Selection](docs/images/card-selection.png)
 
 Then configure it with the visual editor:
 
-![Card Configuration](readme-img/card-configuration.png)
+![Card Configuration](docs/images/card-configuration.png)
 
 Alternatively, you can add it manually via YAML:
 
@@ -408,7 +414,7 @@ The Lovelace card provides **full-duplex bidirectional audio** with the ESP devi
 
 > **Note**: Devices must be added to Home Assistant via the ESPHome integration before they appear in the card.
 
-![ESPHome Add Device](readme-img/esphome-add-device.png)
+![ESPHome Add Device](docs/images/esphome-add-device.png)
 
 ---
 
@@ -418,7 +424,7 @@ The Lovelace card provides **full-duplex bidirectional audio** with the ESP devi
 
 In Simple mode, the browser communicates directly with a single ESP device through Home Assistant. If the ESP has **Auto Answer** enabled, streaming starts automatically when you call.
 
-![Browser calling ESP](readme-img/call-from-home-assistant-to-esp.gif)
+![Browser calling ESP](docs/images/call-from-home-assistant-to-esp.gif)
 
 ```mermaid
 graph LR
@@ -452,7 +458,7 @@ graph LR
 
 Full mode includes everything from Simple mode (Browser ↔ ESP calls) **plus** enables a PBX-like system where ESP devices can also call each other through Home Assistant, which acts as an audio relay.
 
-![ESP to ESP call](readme-img/call-between-esp.png)
+![ESP to ESP call](docs/images/call-between-esp.png)
 
 ```mermaid
 graph TB
@@ -482,7 +488,7 @@ graph TB
 
 When an ESP device has "Home Assistant" selected as destination and initiates a call (via GPIO button press or template button), it fires an `esphome.intercom_call` event for notifications and the Lovelace card goes into ringing state with Answer/Decline buttons:
 
-![ESP calling Home Assistant, Card ringing](readme-img/call-from-esp-to-homeassistant.png)
+![ESP calling Home Assistant, Card ringing](docs/images/call-from-esp-to-homeassistant.png)
 
 ---
 
@@ -1004,13 +1010,73 @@ For codec-specific configurations (ES8311 stereo feedback, ES7210 TDM, register 
 
 ---
 
+## Audio Front-End (AFE)
+
+> **Experimental.** The AFE integration is functional but should be considered experimental. Evaluate carefully whether your use case requires it.
+
+The `esp_afe` component integrates Espressif's ESP-SR Audio Front-End framework, providing a complete audio processing pipeline beyond basic echo cancellation.
+
+### What AFE adds over esp_aec
+
+| Feature | esp_aec | esp_afe |
+|---------|---------|---------|
+| Echo Cancellation (AEC) | Yes | Yes |
+| Noise Suppression (NS) | No | Yes (WebRTC) |
+| Voice Activity Detection (VAD) | No | Yes |
+| Automatic Gain Control (AGC) | No | Yes |
+| Beamforming (BSS) | No | Yes (dual-mic only) |
+| Runtime feature toggles | Mode only | All features via HA switches |
+| Diagnostic sensors | None | Input volume, output RMS, VAD state |
+
+### Resource cost
+
+The ESP-SR AFE framework is a closed-source binary library originally designed for IDF-centric applications. It carries a significant fixed resource cost, even when configured with the lightest options and all non-essential buffers placed in PSRAM:
+
+| Configuration | Internal RAM | PSRAM | CPU (both cores) |
+|---------------|-------------|-------|------------------|
+| 1 mic + ref (MR SR LOW_COST) | ~72 KB | ~733 KB | ~23% |
+| 2 mic + ref, beamforming (MMNR SR LOW_COST) | ~77 KB | ~1.2 MB | ~67% |
+
+These costs are fixed once the AFE is initialized. Disabling features at runtime skips processing but does not free memory. Only the `*_init` flags at creation time control memory allocation.
+
+### When to use esp_afe vs esp_aec
+
+- **Use `esp_aec`** for single-mic devices where you only need echo cancellation. It is lightweight (~40 KB total), has minimal CPU impact, and is battle-tested on all supported hardware. This is the recommended choice for most intercom-only setups.
+
+- **Use `esp_afe`** when you need noise suppression, AGC, VAD, or dual-mic beamforming. On single-mic boards the AFE works and provides NS/AGC/VAD, but the resource cost is substantial. On dual-mic boards (e.g., Waveshare S3/P4 with ES7210), beamforming provides real spatial voice isolation that esp_aec cannot offer.
+
+### Dual-mic beamforming
+
+On boards with two physical microphones (ES7210 TDM), enabling SE (Speech Enhancement/beamforming) activates BSS (Blind Source Separation). This uses both microphones to spatially isolate the speaker's voice from ambient noise and other sound sources.
+
+```yaml
+esp_afe:
+  id: afe_processor
+  type: sr
+  mode: low_cost
+  mic_num: 2
+  se_enabled: true           # Beamforming ON
+  # ...
+
+i2s_audio_duplex:
+  processor_id: afe_processor
+  use_tdm_reference: true
+  tdm_total_slots: 4
+  tdm_mic_slots: [0, 2]     # Physical mic slots in TDM frame
+  tdm_ref_slot: 1           # DAC feedback reference slot
+```
+
+Beamforming can be toggled at runtime via a Home Assistant switch. When turned off, the system automatically restarts with single-mic processing, saving one FIR decimator, one DC offset filter, and the beamforming CPU cost.
+
+---
+
 ## Voice Assistant + Intercom Experience
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4: Weather + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4: Intercom + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball: VA + Intercom</b></td>
+    <td align="center"><img src="docs/images/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4: Weather + Voice Assistant</b></td>
+    <td align="center"><img src="docs/images/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4: Intercom + Voice Assistant</b></td>
+    <td align="center"><img src="docs/images/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball: VA + Intercom</b></td>
   </tr>
 </table>
 
@@ -1202,17 +1268,26 @@ See [examples/dashboard.yaml](examples/dashboard.yaml) for a complete Lovelace d
 
 ## Example YAML Files
 
-Working configs tested on real hardware are included in the repository:
+Working configs tested on real hardware, organized by use case:
 
-| File | Device | Features |
-|------|--------|----------|
-| [`xiaozhi-ball-v3-va-intercom.yaml`](xiaozhi-ball-v3-va-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
-| [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
-| [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
-| [`waveshare-s3-audio-afe-test.yaml`](waveshare-s3-audio-afe-test.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | Same as above + esp_afe (NS, AGC, VAD switches + diagnostic sensors) |
-| [`waveshare-p4-touch-va-intercom.yaml`](waveshare-p4-touch-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
-| [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
-| [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
+### Full Experience (VA + MWW + Intercom + AFE)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-full.yaml`](yamls/full-experience/single-bus/xiaozhi-full.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC, AFE (NS+VAD+AGC) |
+| [`waveshare-s3-full.yaml`](yamls/full-experience/single-bus/waveshare-s3-full.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + beamforming |
+| [`waveshare-p4-full.yaml`](yamls/full-experience/single-bus/waveshare-p4-full.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + beamforming, LVGL touch |
+| [`generic-s3-full.yaml`](yamls/full-experience/single-bus/generic-s3-full.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, AFE (NS+VAD+AGC), no display |
+| [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, AEC only, LED feedback |
+
+### Intercom Only (no VA, no MWW)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, AEC, intercom display |
+| [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, AEC |
+| [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, AEC, LED feedback |
+| [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, AEC |
 
 ---
 
