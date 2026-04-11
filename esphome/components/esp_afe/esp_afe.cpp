@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 #include <esp_heap_caps.h>
@@ -241,7 +242,7 @@ void EspAfe::destroy_instance_(AfeInstance *instance) {
   instance->total_channels = 0;
 }
 
-void EspAfe::install_instance_(AfeInstance *instance) {
+bool EspAfe::install_instance_(AfeInstance *instance) {
   this->afe_handle_ = instance->handle;
   this->afe_data_ = instance->data;
   this->afe_config_ = instance->config;
@@ -251,7 +252,6 @@ void EspAfe::install_instance_(AfeInstance *instance) {
   this->process_chunksize_ = instance->process_chunksize;
   this->total_channels_ = instance->total_channels;
   this->staged_input_samples_ = 0;
-  this->fetch_started_ = false;
 
   instance->handle = nullptr;
   instance->data = nullptr;
@@ -261,9 +261,21 @@ void EspAfe::install_instance_(AfeInstance *instance) {
   instance->fetch_chunksize = 0;
   instance->process_chunksize = 0;
   instance->total_channels = 0;
+
+  // The fetch bridge is mandatory: without it process() would read from an
+  // empty ring forever and the caller would only ever see passthrough.
+  if (!this->start_fetch_task_()) {
+    ESP_LOGE(TAG, "Installed AFE instance but fetch task failed to start");
+    return false;
+  }
+  return true;
 }
 
 EspAfe::AfeInstance EspAfe::detach_instance_() {
+  // Stop the fetch task first so no one is calling afe->fetch() on the
+  // handle we're about to hand back to destroy_instance_.
+  this->stop_fetch_task_();
+
   AfeInstance instance;
   instance.handle = this->afe_handle_;
   instance.data = this->afe_data_;
@@ -283,7 +295,6 @@ EspAfe::AfeInstance EspAfe::detach_instance_() {
   this->process_chunksize_ = 0;
   this->total_channels_ = 0;
   this->staged_input_samples_ = 0;
-  this->fetch_started_ = false;
 
   return instance;
 }
@@ -331,7 +342,12 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
                        next.process_chunksize != old_process ||
                        next.fetch_chunksize != old_fetch);
 
-  this->install_instance_(&next);
+  if (!this->install_instance_(&next)) {
+    AfeInstance failed = this->detach_instance_();
+    this->destroy_instance_(&failed);
+    xSemaphoreGive(this->config_mutex_);
+    return false;
+  }
 
   if (spec_changed) {
     this->last_spec_mic_ch_ = new_mic_ch;
@@ -351,35 +367,10 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 }
 
 bool EspAfe::set_aec_enabled_runtime_(bool enabled) {
-  if (this->aec_enabled_ == enabled) {
-    return true;
-  }
-  if (this->config_mutex_ == nullptr || !this->is_initialized()) {
-    ESP_LOGW(TAG, "AEC toggle requested before initialization");
-    return false;
-  }
-  if (xSemaphoreTake(this->config_mutex_, CONFIG_MUTEX_TIMEOUT) != pdTRUE) {
-    ESP_LOGW(TAG, "Timed out waiting to toggle AEC");
-    return false;
-  }
-
-  auto func = enabled ? this->afe_handle_->enable_aec : this->afe_handle_->disable_aec;
-  if (!is_valid_func(reinterpret_cast<const void *>(func))) {
-    xSemaphoreGive(this->config_mutex_);
-    ESP_LOGW(TAG, "%s_aec not available (ptr=%p)",
-             enabled ? "enable" : "disable", reinterpret_cast<const void *>(func));
-    return false;
-  }
-
-  int ret = func(this->afe_data_);
-  xSemaphoreGive(this->config_mutex_);
-  if (ret < 0) {
-    ESP_LOGW(TAG, "%s_aec failed (ret=%d)", enabled ? "enable" : "disable", ret);
-    return false;
-  }
-
-  this->aec_enabled_ = enabled;
-  return true;
+  // esp-sr 2.3.1 disable_aec() tears down the AEC internal state; a later
+  // enable_aec() fails with "AEC is not initialized". Use the recreate path
+  // (same as NS/VAD/AGC/SE) so the AEC is rebuilt from scratch when toggled.
+  return this->set_reinit_flag_(this->aec_enabled_, enabled, "aec_enabled");
 }
 
 bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
@@ -458,7 +449,9 @@ FrameSpec EspAfe::frame_spec() const {
 FeatureControl EspAfe::feature_control(AudioFeature feature) const {
   switch (feature) {
     case AudioFeature::AEC:
-      return FeatureControl::LIVE_TOGGLE;
+      // esp-sr 2.3.1 disable_aec tears down the internal state, so AEC must
+      // be rebuilt via recreate_instance_ to come back.
+      return FeatureControl::RESTART_REQUIRED;
     case AudioFeature::NS:
     case AudioFeature::AGC:
     case AudioFeature::VAD:
@@ -539,19 +532,16 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     return false;
   }
 
+  // Step 1: stage new input and feed it to AFE when a full frame is assembled.
   int offset = this->staged_input_samples_;
   if (offset + qs > fs) {
     ESP_LOGW(TAG, "AFE staging overflow (%d + %d > %d), dropping staged input", offset, qs, fs);
     offset = 0;
   }
 
-  // Skip interleave during warmup (feed zeros, don't waste cycles packing real data)
   bool in_warmup = (this->warmup_remaining_ > 0) && (offset + qs >= fs);
 
   if (!in_warmup) {
-    // Pointer-increment packing with hoisted ref check.
-    // Guard: if caller sends fewer mic channels than AFE expects (SE transition),
-    // zero-fill the missing channel to prevent OOB read.
     const int tc = this->total_channels_;
     int16_t *dst = this->feed_buf_ + offset * tc;
     if (afe_mic_channels == 1) {
@@ -567,7 +557,6 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
         }
       }
     } else if (transport_mic_channels >= 2) {
-      // Caller provides 2+ interleaved mic channels
       if (in_ref != nullptr) {
         for (int i = 0; i < qs; i++) {
           *dst++ = in_mic[i * 2];
@@ -582,7 +571,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
         }
       }
     } else {
-      // AFE wants 2 mic but caller sends 1 (SE transition window): zero-fill second channel
+      // AFE wants 2 mic channels but caller sent 1 (SE transition): zero-fill.
       if (in_ref != nullptr) {
         for (int i = 0; i < qs; i++) {
           *dst++ = in_mic[i];
@@ -600,53 +589,53 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   }
   offset += qs;
 
-  bool fed = false;
   if (offset == fs) {
     if (this->warmup_remaining_ > 0) {
       memset(this->feed_buf_, 0, static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t));
       this->warmup_remaining_--;
     }
-    this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
-    this->fetch_started_ = true;
+    int feed_ret = this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
+    if (feed_ret > 0) {
+      if (this->feed_signal_ != nullptr) {
+        xSemaphoreGive(this->feed_signal_);
+      }
+    } else {
+      // AFE rejected the frame (input ring full). Do not arm the fetch task:
+      // no new output will be produced for this attempt.
+      this->feed_rejected_.fetch_add(1, std::memory_order_relaxed);
+    }
     offset = 0;
-    fed = true;
   }
   this->staged_input_samples_ = offset;
 
-  afe_fetch_result_t *result = nullptr;
-  if (this->fetch_started_) {
-    TickType_t wait = fed ? pdMS_TO_TICKS(2) : 0;
-    result = this->afe_handle_->fetch_with_delay(this->afe_data_, wait);
-  }
-  // Capture fetch results while holding mutex, then release before RMS computation
+  // Step 2: try to pull a processed frame that the fetch task has pushed into
+  // our side of the bridge. Non-blocking: if nothing is ready we emit
+  // passthrough for this call. The one-frame latency is a consequence of the
+  // decoupled feed/fetch topology mandated by esp-sr.
+  size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
   bool processed = false;
   bool vad_speech = false;
   float input_vol = -120.0f;
-  float ringbuf_pct = 1.0f;
-  if (result != nullptr && result->ret_value == ESP_OK && result->data != nullptr) {
-    ringbuf_pct = result->ringbuff_free_pct;
-    size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
-    size_t copy_bytes = std::min(static_cast<size_t>(result->data_size), output_bytes);
-    memcpy(out, result->data, copy_bytes);
-    if (copy_bytes < output_bytes) {
-      memset(reinterpret_cast<uint8_t *>(out) + copy_bytes, 0, output_bytes - copy_bytes);
+  float ringbuf_pct = this->ringbuf_free_pct_.load(std::memory_order_relaxed);
+  if (this->fetch_output_ring_) {
+    size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
+    if (got == output_bytes) {
+      processed = true;
     }
-    vad_speech = this->vad_enabled_ && result->vad_state == VAD_SPEECH;
-    input_vol = result->data_volume;
-    processed = true;
-  } else {
+  }
+  if (!processed) {
     copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
   xSemaphoreGive(this->config_mutex_);
 
-  // Atomic stores and RMS computation outside the mutex (out buffer owned by caller)
-  this->voice_present_.store(vad_speech, std::memory_order_relaxed);
-  this->ringbuf_free_pct_.store(ringbuf_pct, std::memory_order_relaxed);
-  if (processed && this->input_volume_sensor_enabled_) {
-    this->input_volume_dbfs_.store(input_vol, std::memory_order_relaxed);
-  }
+  // Output-side RMS depends on the samples handed to the caller. VAD / input
+  // volume / ringbuf_free_pct are written by fetch_task_loop_ when it pulls a
+  // frame from AFE, so this function only needs to refresh output RMS.
+  (void) vad_speech;
+  (void) input_vol;
+  (void) ringbuf_pct;
   if (processed && this->output_rms_sensor_enabled_) {
     this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
   }
@@ -693,6 +682,147 @@ bool EspAfe::enable_vad() { return this->set_reinit_flag_(this->vad_enabled_, tr
 bool EspAfe::disable_vad() { return this->set_reinit_flag_(this->vad_enabled_, false, "vad_enabled"); }
 bool EspAfe::enable_agc() { return this->set_reinit_flag_(this->agc_enabled_, true, "agc_enabled"); }
 bool EspAfe::disable_agc() { return this->set_reinit_flag_(this->agc_enabled_, false, "agc_enabled"); }
+
+// ---- Fetch task: decouples AFE's async output from the synchronous caller ----
+
+void EspAfe::fetch_task_trampoline(void *arg) {
+  static_cast<EspAfe *>(arg)->fetch_task_loop_();
+  vTaskDelete(nullptr);
+}
+
+void EspAfe::fetch_task_loop_() {
+  // One AFE output frame lasts fetch_chunksize_/16 ms @ 16kHz. Adding 10ms
+  // slack gives the internal worker enough time even under load, and makes
+  // sure the task exits within ~frame_ms on shutdown (no forced delete).
+  const int frame_ms = (this->fetch_chunksize_ > 0) ? (this->fetch_chunksize_ / 16) : 32;
+  const TickType_t fetch_timeout = pdMS_TO_TICKS(frame_ms + 10);
+
+  while (this->fetch_task_running_.load(std::memory_order_acquire)) {
+    // Wait for process() to confirm at least one feed was accepted.
+    if (this->feed_signal_ != nullptr) {
+      if (xSemaphoreTake(this->feed_signal_, pdMS_TO_TICKS(100)) != pdTRUE) {
+        continue;
+      }
+    }
+    if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
+      break;
+    }
+    // fetch_with_delay() with a finite timeout blocks only until AFE produces
+    // output (or the timeout fires), avoiding both busy polling and an
+    // unkillable portMAX_DELAY wait on shutdown.
+    afe_fetch_result_t *result =
+        this->afe_handle_->fetch_with_delay(this->afe_data_, fetch_timeout);
+    if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
+      break;
+    }
+    if (result == nullptr || result->ret_value != ESP_OK || result->data == nullptr) {
+      this->fetch_timeout_.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+    this->fetch_ok_.fetch_add(1, std::memory_order_relaxed);
+
+    // Telemetry from the frame the worker just handed us.
+    this->ringbuf_free_pct_.store(result->ringbuff_free_pct, std::memory_order_relaxed);
+    this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH,
+                               std::memory_order_relaxed);
+    if (this->input_volume_sensor_enabled_) {
+      this->input_volume_dbfs_.store(result->data_volume, std::memory_order_relaxed);
+    }
+
+    if (this->fetch_output_ring_) {
+      const size_t want = static_cast<size_t>(result->data_size);
+      size_t wrote = this->fetch_output_ring_->write_without_replacement(result->data, want,
+                                                                         pdMS_TO_TICKS(5));
+      if (wrote != want) {
+        this->output_ring_drop_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+  }
+}
+
+bool EspAfe::start_fetch_task_() {
+  if (this->fetch_task_handle_ != nullptr) {
+    return true;  // already running
+  }
+  if (this->afe_handle_ == nullptr || this->afe_data_ == nullptr ||
+      this->fetch_chunksize_ <= 0) {
+    return false;
+  }
+
+  if (!this->fetch_output_ring_) {
+    // Enough capacity for two full output frames (~64ms @ 16kHz) so a brief
+    // stall in process() does not back-pressure the worker.
+    const size_t frame_bytes = static_cast<size_t>(this->fetch_chunksize_) * sizeof(int16_t);
+    this->fetch_output_ring_ = RingBuffer::create(frame_bytes * 2);
+    if (!this->fetch_output_ring_) {
+      ESP_LOGE(TAG, "Failed to allocate AFE fetch output ring buffer");
+      return false;
+    }
+  }
+
+  if (this->feed_signal_ == nullptr) {
+    this->feed_signal_ = xSemaphoreCreateCounting(8, 0);
+    if (this->feed_signal_ == nullptr) {
+      ESP_LOGE(TAG, "Failed to create AFE feed signal semaphore");
+      return false;
+    }
+  }
+
+  if (this->fetch_task_stack_ == nullptr) {
+    RAMAllocator<StackType_t> internal_stack(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
+    this->fetch_task_stack_ = internal_stack.allocate(kFetchTaskStackWords);
+    if (this->fetch_task_stack_ == nullptr) {
+      ESP_LOGE(TAG, "Failed to allocate AFE fetch task stack");
+      return false;
+    }
+  }
+
+  this->fetch_task_running_.store(true, std::memory_order_release);
+  this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(
+      &EspAfe::fetch_task_trampoline, "afe_fetch", kFetchTaskStackWords, this,
+      this->task_priority_ > 0 ? this->task_priority_ - 1 : 1,
+      this->fetch_task_stack_, &this->fetch_task_tcb_,
+      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
+  if (this->fetch_task_handle_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create AFE fetch task");
+    this->fetch_task_running_.store(false, std::memory_order_release);
+    return false;
+  }
+  ESP_LOGI(TAG, "AFE fetch task started (core=%d, priority=%d)",
+           this->task_core_, this->task_priority_ - 1);
+  return true;
+}
+
+void EspAfe::stop_fetch_task_() {
+  if (this->fetch_task_handle_ == nullptr) {
+    return;
+  }
+  this->fetch_task_running_.store(false, std::memory_order_release);
+  // Wake the task if it is waiting on feed_signal_, then let the fetch
+  // timeout (frame_ms + slack) finish naturally on the next iteration.
+  // The task calls vTaskDelete(nullptr) in fetch_task_trampoline.
+  if (this->feed_signal_ != nullptr) {
+    xSemaphoreGive(this->feed_signal_);
+  }
+  // Wait up to ~250ms for the task to mark itself deleted.
+  for (int i = 0; i < 25; i++) {
+    if (eTaskGetState(this->fetch_task_handle_) == eDeleted) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  this->fetch_task_handle_ = nullptr;
+  // Give FreeRTOS IDLE time to reclaim the TCB before it can be reused by the
+  // next xTaskCreateStatic call, otherwise a rapid recreate (e.g. runtime
+  // toggle path) can create on a TCB that's still in a transient state.
+  vTaskDelay(pdMS_TO_TICKS(30));
+  this->fetch_task_tcb_ = StaticTask_t{};
+  this->fetch_output_ring_.reset();
+  if (this->feed_signal_ != nullptr) {
+    vSemaphoreDelete(this->feed_signal_);
+    this->feed_signal_ = nullptr;
+  }
+}
 
 EspAfe::~EspAfe() {
   // Quiesce: acquire mutex to ensure process() is not mid-frame

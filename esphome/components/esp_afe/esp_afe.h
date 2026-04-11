@@ -13,8 +13,12 @@
 #include <esp_afe_sr_models.h>
 #include <esp_afe_config.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
+
+#include "esphome/core/ring_buffer.h"
 
 #include <atomic>
+#include <memory>
 #include <numeric>
 
 namespace esphome {
@@ -116,7 +120,7 @@ class EspAfe : public Component, public AudioProcessor {
   bool set_aec_enabled_runtime_(bool enabled);
   bool set_reinit_flag_(bool &flag, bool enabled, const char *name);
   void destroy_instance_(AfeInstance *instance);
-  void install_instance_(AfeInstance *instance);
+  bool install_instance_(AfeInstance *instance);
   AfeInstance detach_instance_();
   const char *memory_alloc_mode_to_str_() const;
 
@@ -132,7 +136,29 @@ class EspAfe : public Component, public AudioProcessor {
   int process_chunksize_{0};  // external process() input chunk size
   int total_channels_{2};   // 2 for "MR", 3 for "MMR"
   int staged_input_samples_{0};
-  bool fetch_started_{false};
+
+  // esp-sr AFE is asynchronous internally. Per Espressif test_afe.cpp and
+  // esp-skainet the canonical user pattern is two separate tasks: one feeding,
+  // one fetching. We keep the synchronous process() API for the caller (the
+  // I2S duplex audio_task) and move fetch() to a dedicated FreeRTOS task that
+  // blocks on afe->fetch() and drops processed frames into this ring buffer.
+  // process() reads non-blocking from this ring for the output frame.
+  std::unique_ptr<RingBuffer> fetch_output_ring_;
+  TaskHandle_t fetch_task_handle_{nullptr};
+  StaticTask_t fetch_task_tcb_{};
+  StackType_t *fetch_task_stack_{nullptr};
+  std::atomic<bool> fetch_task_running_{false};
+  // Counting semaphore: process() gives a token after each successful feed(),
+  // fetch_task_loop_ takes one before each fetch(). This guarantees fetch()
+  // is only called when a processed frame is actually expected, preventing
+  // the esp-sr "Ringbuffer empty" warning storm caused by naive polling.
+  SemaphoreHandle_t feed_signal_{nullptr};
+  static constexpr uint32_t kFetchTaskStackWords = 4096 / sizeof(StackType_t);
+
+  static void fetch_task_trampoline(void *arg);
+  void fetch_task_loop_();
+  bool start_fetch_task_();
+  void stop_fetch_task_();
 
   // Config (set from Python, used in setup())
   int afe_type_{0};         // AFE_TYPE_SR
@@ -167,6 +193,11 @@ class EspAfe : public Component, public AudioProcessor {
   int warmup_remaining_{3};
   std::atomic<uint32_t> frame_count_{0};
   std::atomic<uint32_t> glitch_count_{0};
+  // Fetch bridge diagnostics.
+  std::atomic<uint32_t> feed_rejected_{0};   // feed() returned <= 0
+  std::atomic<uint32_t> fetch_ok_{0};        // fetch task drained a frame
+  std::atomic<uint32_t> fetch_timeout_{0};   // fetch_with_delay timed out
+  std::atomic<uint32_t> output_ring_drop_{0};// process() ring was full
   std::atomic<float> ringbuf_free_pct_{1.0f};
   std::atomic<uint32_t> frame_spec_revision_{0};
   int last_spec_mic_ch_{1};  // last published mic_channels for revision tracking (1 = default mono)
