@@ -15,14 +15,11 @@
 #include "../audio_processor/ring_buffer_caps.h"
 
 namespace {
-// Convert byte stack size from legacy xTaskCreatePinnedToCore API to FreeRTOS
-// StackType_t word count used by the static variant.
 constexpr uint32_t kServerTaskStackWords = 8192 / sizeof(StackType_t);
 constexpr uint32_t kTxTaskStackWords = 12288 / sizeof(StackType_t);
 constexpr uint32_t kSpeakerTaskStackWords = 8192 / sizeof(StackType_t);
-// Sample counts for pre-allocated processing buffers.
-constexpr size_t MIC_CONVERTED_SAMPLES = 512;  // MAX_SAMPLES in on_microphone_data_
-constexpr size_t SPK_REF_SCALED_SAMPLES = 1024;  // AUDIO_CHUNK_SIZE*4/sizeof(int16_t)
+constexpr size_t MIC_CONVERTED_SAMPLES = 512;
+constexpr size_t SPK_REF_SCALED_SAMPLES = 1024;
 }  // namespace
 
 namespace esphome {
@@ -62,19 +59,18 @@ void IntercomApi::setup() {
       psram_stack.deallocate(this->server_task_stack_, kServerTaskStackWords);
       this->server_task_stack_ = nullptr;
     }
-    RAMAllocator<int16_t> internal_i16(RAMAllocator<int16_t>::ALLOC_INTERNAL);
-    RAMAllocator<uint8_t> internal_u8(RAMAllocator<uint8_t>::ALLOC_INTERNAL);
-    RAMAllocator<uint8_t> psram_u8;  // default: PSRAM first, internal fallback
+    RAMAllocator<int16_t> psram_i16;
+    RAMAllocator<uint8_t> psram_u8;
     if (this->spk_ref_scaled_ != nullptr) {
-      internal_i16.deallocate(this->spk_ref_scaled_, SPK_REF_SCALED_SAMPLES);
+      psram_i16.deallocate(this->spk_ref_scaled_, SPK_REF_SCALED_SAMPLES);
       this->spk_ref_scaled_ = nullptr;
     }
     if (this->mic_converted_ != nullptr) {
-      internal_i16.deallocate(this->mic_converted_, MIC_CONVERTED_SAMPLES);
+      psram_i16.deallocate(this->mic_converted_, MIC_CONVERTED_SAMPLES);
       this->mic_converted_ = nullptr;
     }
     if (this->audio_tx_buffer_ != nullptr) {
-      internal_u8.deallocate(this->audio_tx_buffer_, MAX_MESSAGE_SIZE);
+      psram_u8.deallocate(this->audio_tx_buffer_, MAX_MESSAGE_SIZE);
       this->audio_tx_buffer_ = nullptr;
     }
     if (this->rx_buffer_ != nullptr) {
@@ -133,9 +129,7 @@ void IntercomApi::setup() {
     }
   }
 
-  // Allocate ring buffers via the audio_processor caps-aware helper. Explicit
-  // PREFER_PSRAM policy + boot-time logging makes placement auditable.
-  // mic_buffer always needed (mic callback writes here, server_task or tx_task reads).
+  // mic_buffer: mic callback writes, server_task or tx_task reads.
   this->mic_buffer_ = audio_processor::create_prefer_psram(TX_BUFFER_SIZE, "intercom.mic");
   if (!this->mic_buffer_) {
     ESP_LOGE(TAG, "Failed to allocate mic ring buffer");
@@ -145,7 +139,7 @@ void IntercomApi::setup() {
   }
 
   if (use_intercom_aec) {
-    // speaker_buffer only needed when speaker_task exists (bridges network→speaker with AEC ref).
+    // speaker_buffer: bridges network to speaker with AEC reference feed.
     this->speaker_buffer_ = audio_processor::create_prefer_psram(RX_BUFFER_SIZE, "intercom.speaker");
     if (!this->speaker_buffer_) {
       ESP_LOGE(TAG, "Failed to allocate speaker ring buffer");
@@ -155,10 +149,10 @@ void IntercomApi::setup() {
     }
   }
 
-  // Allocate frame buffers. Protocol frames live in PSRAM (non-hot-path, only
-  // touched once per message). RAMAllocator default flags try external first
-  // and fall back to internal when PSRAM is absent.
+  // Protocol/audio scratch buffers: PSRAM-first (RAMAllocator default falls
+  // back to internal when PSRAM is absent). None are DMA-bound.
   RAMAllocator<uint8_t> psram_u8;
+  RAMAllocator<int16_t> psram_i16;
   this->tx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
   this->rx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
 
@@ -169,15 +163,8 @@ void IntercomApi::setup() {
     return;
   }
 
-  // Dedicated allocators for internal-only buffers used in audio hot paths.
-  RAMAllocator<uint8_t> internal_u8(RAMAllocator<uint8_t>::ALLOC_INTERNAL);
-  RAMAllocator<int16_t> internal_i16(RAMAllocator<int16_t>::ALLOC_INTERNAL);
-
   if (use_intercom_aec) {
-    // audio_tx_buffer only needed by tx_task (dedicated send buffer, no mutex).
-    // Internal RAM: touched on every mic frame during a call, keeps the audio
-    // path off the PSRAM bus when the intercom AEC is active.
-    this->audio_tx_buffer_ = internal_u8.allocate(MAX_MESSAGE_SIZE);
+    this->audio_tx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
     if (!this->audio_tx_buffer_) {
       ESP_LOGE(TAG, "Failed to allocate audio TX buffer");
       cleanup_partial();
@@ -186,8 +173,7 @@ void IntercomApi::setup() {
     }
   }
 
-  // Pre-allocated processing buffers (avoid stack VLAs on 8KB FreeRTOS tasks).
-  this->mic_converted_ = internal_i16.allocate(MIC_CONVERTED_SAMPLES);
+  this->mic_converted_ = psram_i16.allocate(MIC_CONVERTED_SAMPLES);
   if (!this->mic_converted_) {
     ESP_LOGE(TAG, "Failed to allocate mic processing buffer");
     cleanup_partial();
@@ -196,8 +182,7 @@ void IntercomApi::setup() {
   }
 
   if (use_intercom_aec) {
-    // spk_ref_scaled only needed by speaker_task (AEC reference scaling).
-    this->spk_ref_scaled_ = internal_i16.allocate(SPK_REF_SCALED_SAMPLES);
+    this->spk_ref_scaled_ = psram_i16.allocate(SPK_REF_SCALED_SAMPLES);
     if (!this->spk_ref_scaled_) {
       ESP_LOGE(TAG, "Failed to allocate speaker ref buffer");
       cleanup_partial();
@@ -232,14 +217,11 @@ void IntercomApi::setup() {
   this->aec_enabled_ = false;
 #endif
 
-  // Task stacks go in PSRAM (ALLOC_EXTERNAL) to free ~28KB of internal RAM
-  // across the three tasks. Static task allocation keeps the TCB as a class
-  // member so FreeRTOS does not dynamically allocate anything at task start.
+  // Task stacks allocated from PSRAM to preserve internal RAM.
   RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
 
-  // Create server task (Core 1) - handles TCP connections and receiving.
-  // When !use_intercom_aec, also handles TX (mic→network) and direct speaker playback.
-  // Priority 5: i2s_duplex moved to Core 0, so Core 1 is audio-free; prio 5 sufficient.
+  // Server task (Core 1): TCP connections, receive path, plus TX/speaker when
+  // no dedicated intercom processor is configured.
   this->server_task_stack_ = psram_stack.allocate(kServerTaskStackWords);
   if (this->server_task_stack_ == nullptr) {
     ESP_LOGE(TAG, "Failed to allocate server task stack");
@@ -258,8 +240,7 @@ void IntercomApi::setup() {
   }
 
   if (use_intercom_aec) {
-    // Create TX task (Core 0) - handles mic capture, AEC processing, and sending.
-    // Only needed when intercom has its own AEC.
+    // TX task (Core 0): mic capture and AEC processing when intercom drives its own AEC.
     this->tx_task_stack_ = psram_stack.allocate(kTxTaskStackWords);
     if (this->tx_task_stack_ == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate TX task stack");
@@ -267,7 +248,6 @@ void IntercomApi::setup() {
       this->mark_failed();
       return;
     }
-    // Canonical AEC priority 5; i2s_duplex(19) on Core 0 handles real-time, TX is best-effort.
     this->tx_task_handle_ = xTaskCreateStaticPinnedToCore(
         IntercomApi::tx_task, "intercom_tx", kTxTaskStackWords, this, 5,
         this->tx_task_stack_, &this->tx_task_tcb_, 0);
@@ -278,7 +258,7 @@ void IntercomApi::setup() {
       return;
     }
 
-    // Create speaker task (Core 0) - handles playback + AEC reference feed.
+    // Speaker task (Core 0): playback and AEC reference feed.
     this->speaker_task_stack_ = psram_stack.allocate(kSpeakerTaskStackWords);
     if (this->speaker_task_stack_ == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate speaker task stack");
@@ -286,7 +266,6 @@ void IntercomApi::setup() {
       this->mark_failed();
       return;
     }
-    // Priority 4: lower than TX(5) and i2s_duplex(19). Core 1 reserved for LVGL/MWW.
     this->speaker_task_handle_ = xTaskCreateStaticPinnedToCore(
         IntercomApi::speaker_task, "intercom_spk", kSpeakerTaskStackWords, this, 4,
         this->speaker_task_stack_, &this->speaker_task_tcb_, 0);
@@ -618,13 +597,13 @@ void IntercomApi::set_aec_enabled(bool enabled) {
       this->aec_enabled_ = false;
       return;
     }
-    // Lazy allocate AEC buffers on first enable (saves ~13KB when AEC unused)
+    // Lazy allocate AEC buffers on first enable (saves ~13KB when AEC unused).
     if (this->aec_mic_ == nullptr) {
       const size_t frame_samples = static_cast<size_t>(this->aec_frame_samples_);
       const size_t ref_delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * sizeof(int16_t);
       this->spk_ref_buffer_ = audio_processor::create_prefer_psram(
           ref_delay_bytes + RX_BUFFER_SIZE, "intercom.spk_ref");
-      RAMAllocator<int16_t> aec_alloc(RAMAllocator<int16_t>::ALLOC_INTERNAL);
+      RAMAllocator<int16_t> aec_alloc;
       this->aec_mic_ = aec_alloc.allocate(frame_samples);
       this->aec_ref_ = aec_alloc.allocate(frame_samples);
       this->aec_out_ = aec_alloc.allocate(frame_samples);

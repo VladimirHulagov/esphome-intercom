@@ -124,16 +124,13 @@ void I2SAudioDuplex::setup() {
   }
 
   // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
-  // Direct from previous TX frame, no ring buffer needed (single-bus = same DMA cycle).
+  // Direct copy of previous TX frame, used for decimation on the next AEC pass.
   if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
-    size_t bus_frame_size = this->sample_rate_ / 1000 * 32;  // ~32ms at bus rate
-    // Hot path buffer (written every TX frame, read for AEC ref decimation).
-    // Prefer internal RAM to avoid PSRAM bus contention, fall back to PSRAM if needed.
-    this->direct_aec_ref_ = static_cast<int16_t *>(
-        heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_INTERNAL));
-    if (this->direct_aec_ref_ == nullptr) {
-      this->direct_aec_ref_ = static_cast<int16_t *>(
-          heap_caps_calloc(bus_frame_size, sizeof(int16_t), MALLOC_CAP_SPIRAM));
+    size_t bus_frame_size = this->sample_rate_ / 1000 * 32;
+    RAMAllocator<int16_t> alloc;
+    this->direct_aec_ref_ = alloc.allocate(bus_frame_size);
+    if (this->direct_aec_ref_ != nullptr) {
+      memset(this->direct_aec_ref_, 0, bus_frame_size * sizeof(int16_t));
     }
     if (this->direct_aec_ref_) {
       ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples)", (unsigned)bus_frame_size);
@@ -711,14 +708,11 @@ void I2SAudioDuplex::audio_task_() {
   // AEC buffers use 16-byte alignment (ESP-SR may use SIMD internally)
   static constexpr size_t AEC_ALIGN = 16;
 
-  // ESP-IDF new I2S driver manages its own internal DMA ring buffers.
-  // i2s_channel_read/write use memcpy to/from user buffers (verified in i2s_common.c:1337,1387).
-  // rx_buffer and spk_buffer ALWAYS in internal RAM: they are in the I2S hot path
-  // (every frame) and PSRAM bus contention with LVGL/flash cache causes audio glitches.
-  // Other buffers (AEC, processor) use PSRAM when configured to save internal heap.
+  // I2S driver memcpy's to/from user buffers, so they don't need DMA caps and
+  // honour the yaml buffers_in_psram flag.
   const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
   ctx.rx_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.rx_frame_bytes, MALLOC_CAP_INTERNAL));
+      heap_caps_malloc(ctx.rx_frame_bytes, buf_caps));
 
   ctx.mic_separate = (ctx.ratio > 1) || ctx.use_stereo_aec_ref || ctx.use_tdm_ref;
   ctx.mic_buffer = ctx.mic_separate
@@ -732,7 +726,7 @@ void I2SAudioDuplex::audio_task_() {
   }
 
   ctx.spk_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, MALLOC_CAP_INTERNAL));
+      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, buf_caps));
 
   if (ctx.use_stereo_aec_ref || ctx.use_tdm_ref) {
     ctx.spk_ref_buffer = static_cast<int16_t *>(
@@ -782,15 +776,11 @@ void I2SAudioDuplex::audio_task_() {
     ctx.aec_output = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
 
-    // Ring buffer for TYPE2-style AEC reference (no-codec setups only).
-    // Hot path when active (read/written every AEC frame). Small (~10KB at 100ms@48kHz).
-    // Only allocated when user explicitly configures TYPE2 AEC ref — so internal is safe:
-    // it's opt-in, scoped, and bypassing PSRAM here avoids AEC jitter.
+    // TYPE2-style AEC reference ring buffer (no-codec setups only).
     if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
-      // Buffer capacity: aec_ref_buffer_ms_ worth of audio at bus rate
       size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
-      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;  // minimum 4 frames
-      this->aec_ref_ring_buffer_ = audio_processor::create_internal(rb_bytes, "i2s_duplex.aec_ref");
+      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;
+      this->aec_ref_ring_buffer_ = audio_processor::create_prefer_psram(rb_bytes, "i2s_duplex.aec_ref");
       if (!this->aec_ref_ring_buffer_) {
         alloc_fail("AEC reference ring buffer"); goto cleanup;
       }
