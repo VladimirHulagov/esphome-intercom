@@ -21,12 +21,71 @@ static const char *const TAG = "intercom_api";
 void IntercomApi::setup() {
   ESP_LOGI(TAG, "Setting up Intercom API...");
 
+  // MEDIUM fix (Codex): transactional setup. Any early failure triggers this
+  // cleanup so we never leave half-alive tasks, leaked buffers, or dangling
+  // mutexes behind when mark_failed() is called.
+  auto cleanup_partial = [this]() {
+    if (this->speaker_task_handle_ != nullptr) {
+      vTaskDelete(this->speaker_task_handle_);
+      this->speaker_task_handle_ = nullptr;
+    }
+    if (this->tx_task_handle_ != nullptr) {
+      vTaskDelete(this->tx_task_handle_);
+      this->tx_task_handle_ = nullptr;
+    }
+    if (this->server_task_handle_ != nullptr) {
+      vTaskDelete(this->server_task_handle_);
+      this->server_task_handle_ = nullptr;
+    }
+    if (this->spk_ref_scaled_ != nullptr) {
+      heap_caps_free(this->spk_ref_scaled_);
+      this->spk_ref_scaled_ = nullptr;
+    }
+    if (this->mic_converted_ != nullptr) {
+      heap_caps_free(this->mic_converted_);
+      this->mic_converted_ = nullptr;
+    }
+    if (this->audio_tx_buffer_ != nullptr) {
+      heap_caps_free(this->audio_tx_buffer_);
+      this->audio_tx_buffer_ = nullptr;
+    }
+    if (this->rx_buffer_ != nullptr) {
+      heap_caps_free(this->rx_buffer_);
+      this->rx_buffer_ = nullptr;
+    }
+    if (this->tx_buffer_ != nullptr) {
+      heap_caps_free(this->tx_buffer_);
+      this->tx_buffer_ = nullptr;
+    }
+    this->speaker_buffer_.reset();
+    this->mic_buffer_.reset();
+#ifdef USE_AUDIO_PROCESSOR
+    if (this->spk_ref_mutex_ != nullptr) {
+      vSemaphoreDelete(this->spk_ref_mutex_);
+      this->spk_ref_mutex_ = nullptr;
+    }
+#endif
+    if (this->speaker_stopped_sem_ != nullptr) {
+      vSemaphoreDelete(this->speaker_stopped_sem_);
+      this->speaker_stopped_sem_ = nullptr;
+    }
+    if (this->send_mutex_ != nullptr) {
+      vSemaphoreDelete(this->send_mutex_);
+      this->send_mutex_ = nullptr;
+    }
+    if (this->client_mutex_ != nullptr) {
+      vSemaphoreDelete(this->client_mutex_);
+      this->client_mutex_ = nullptr;
+    }
+  };
+
   // Create mutexes
   this->client_mutex_ = xSemaphoreCreateMutex();
   this->send_mutex_ = xSemaphoreCreateMutex();
 
   if (!this->client_mutex_ || !this->send_mutex_) {
     ESP_LOGE(TAG, "Failed to create mutexes");
+    cleanup_partial();
     this->mark_failed();
     return;
   }
@@ -40,6 +99,7 @@ void IntercomApi::setup() {
     this->speaker_stopped_sem_ = xSemaphoreCreateBinary();
     if (!this->speaker_stopped_sem_) {
       ESP_LOGE(TAG, "Failed to create speaker semaphore");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -50,6 +110,7 @@ void IntercomApi::setup() {
   this->mic_buffer_ = RingBuffer::create(TX_BUFFER_SIZE);
   if (!this->mic_buffer_) {
     ESP_LOGE(TAG, "Failed to allocate mic ring buffer");
+    cleanup_partial();
     this->mark_failed();
     return;
   }
@@ -59,6 +120,7 @@ void IntercomApi::setup() {
     this->speaker_buffer_ = RingBuffer::create(RX_BUFFER_SIZE);
     if (!this->speaker_buffer_) {
       ESP_LOGE(TAG, "Failed to allocate speaker ring buffer");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -74,6 +136,7 @@ void IntercomApi::setup() {
 
   if (!this->tx_buffer_ || !this->rx_buffer_) {
     ESP_LOGE(TAG, "Failed to allocate frame buffers");
+    cleanup_partial();
     this->mark_failed();
     return;
   }
@@ -83,6 +146,7 @@ void IntercomApi::setup() {
     this->audio_tx_buffer_ = static_cast<uint8_t *>(heap_caps_malloc(MAX_MESSAGE_SIZE, MALLOC_CAP_INTERNAL));
     if (!this->audio_tx_buffer_) {
       ESP_LOGE(TAG, "Failed to allocate audio TX buffer");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -90,9 +154,11 @@ void IntercomApi::setup() {
 
   // Pre-allocate audio processing buffers (avoid stack VLAs on 8KB FreeRTOS tasks)
   static constexpr size_t MIC_BUF_SAMPLES = 512;  // MAX_SAMPLES in on_microphone_data_
-  this->mic_converted_ = static_cast<int16_t *>(alloc_prefer_spiram(MIC_BUF_SAMPLES * sizeof(int16_t)));
+  this->mic_converted_ = static_cast<int16_t *>(
+      heap_caps_malloc(MIC_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
   if (!this->mic_converted_) {
     ESP_LOGE(TAG, "Failed to allocate mic processing buffer");
+    cleanup_partial();
     this->mark_failed();
     return;
   }
@@ -103,6 +169,7 @@ void IntercomApi::setup() {
     this->spk_ref_scaled_ = static_cast<int16_t *>(heap_caps_malloc(SPK_BUF_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL));
     if (!this->spk_ref_scaled_) {
       ESP_LOGE(TAG, "Failed to allocate speaker ref buffer");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -137,21 +204,13 @@ void IntercomApi::setup() {
   // Create server task (Core 1) - handles TCP connections and receiving
   // When !use_intercom_aec, also handles TX (mic→network) and direct speaker playback
   // Priority 5: i2s_duplex moved to Core 0, so Core 1 is audio-free; prio 5 sufficient
-  // 8KB stack: try PSRAM (saves internal RAM), fall back to internal if unavailable
-  BaseType_t ok = pdFAIL;
-#if CONFIG_SPIRAM
-  ok = xTaskCreatePinnedToCoreWithCaps(
+  BaseType_t ok = xTaskCreatePinnedToCore(
       IntercomApi::server_task, "intercom_srv", 8192, this, 5,
-      &this->server_task_handle_, 1, MALLOC_CAP_SPIRAM);
-#endif
-  if (ok != pdPASS) {
-    ok = xTaskCreatePinnedToCore(
-        IntercomApi::server_task, "intercom_srv", 8192, this, 5,
-        &this->server_task_handle_, 1);
-  }
+      &this->server_task_handle_, 1);
 
   if (ok != pdPASS) {
     ESP_LOGE(TAG, "Failed to create server task");
+    cleanup_partial();
     this->mark_failed();
     return;
   }
@@ -171,6 +230,7 @@ void IntercomApi::setup() {
 
     if (ok != pdPASS) {
       ESP_LOGE(TAG, "Failed to create TX task");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -188,6 +248,7 @@ void IntercomApi::setup() {
 
     if (ok != pdPASS) {
       ESP_LOGE(TAG, "Failed to create speaker task");
+      cleanup_partial();
       this->mark_failed();
       return;
     }
@@ -291,17 +352,17 @@ void IntercomApi::publish_entity_states() {
 
 #ifdef USE_AUDIO_PROCESSOR
   ESP_LOGI(TAG, "Entity states synced (vol=%.0f%%, mic=%.1fdB, auto=%s, aec=%s)",
-           this->volume_ * 100.0f, this->mic_gain_db_,
-           this->auto_answer_ ? "ON" : "OFF", this->aec_enabled_ ? "ON" : "OFF");
+           this->volume_.load() * 100.0f, this->mic_gain_db_,
+           this->auto_answer_ ? "ON" : "OFF", this->aec_enabled_.load() ? "ON" : "OFF");
 #else
   ESP_LOGI(TAG, "Entity states synced (vol=%.0f%%, mic=%.1fdB, auto=%s)",
-           this->volume_ * 100.0f, this->mic_gain_db_,
+           this->volume_.load() * 100.0f, this->mic_gain_db_,
            this->auto_answer_ ? "ON" : "OFF");
 #endif
 
   // For numbers: publish our internal values (loaded from flash)
   if (this->volume_number_ != nullptr) {
-    this->volume_number_->publish_state(this->volume_ * 100.0f);
+    this->volume_number_->publish_state(this->volume_.load() * 100.0f);
   }
   if (this->mic_gain_number_ != nullptr) {
     this->mic_gain_number_->publish_state(this->mic_gain_db_);
@@ -476,7 +537,7 @@ void IntercomApi::set_mic_gain_db(float db) {
   db = std::max(-20.0f, std::min(20.0f, db));
   this->mic_gain_db_ = db;
   this->mic_gain_ = std::pow(10.0f, db / 20.0f);
-  ESP_LOGD(TAG, "Mic gain set to %.1f dB (%.2fx)", db, this->mic_gain_);
+  ESP_LOGD(TAG, "Mic gain set to %.1f dB (%.2fx)", db, this->mic_gain_.load());
   this->schedule_save_settings_();
 }
 
@@ -1124,9 +1185,15 @@ void IntercomApi::speaker_task_() {
 
     // First audio after becoming active: let main loop initialize mixer+resampler pipeline.
     // Without this, the mixer task may read from an uninitialized SourceSpeaker ring buffer.
+    // LOW fix (Codex): poll up to 150ms in 10ms ticks instead of a hard 300ms sleep.
+    // Typical call-start warmup is 20-40ms; the worst case keeps a safety cap.
     if (speaker_was_idle) {
       speaker_was_idle = false;
-      vTaskDelay(pdMS_TO_TICKS(300));
+      for (int i = 0; i < 15; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        if (!this->active_.load(std::memory_order_acquire) || this->speaker_ == nullptr) break;
+        if (this->speaker_buffer_ != nullptr && this->speaker_buffer_->available() >= AUDIO_CHUNK_SIZE) break;
+      }
       continue;
     }
 
@@ -1614,7 +1681,7 @@ void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
   size_t num_samples = std::min(len / sizeof(int16_t), MAX_SAMPLES);
   // Only apply mic_gain if intercom owns the mic_gain number entity.
   // When i2s_audio_duplex provides mic_gain, it's already applied in the audio task.
-  float effective_gain = (this->mic_gain_number_ != nullptr) ? this->mic_gain_ : 1.0f;
+  float effective_gain = (this->mic_gain_number_ != nullptr) ? this->mic_gain_.load() : 1.0f;
   bool needs_processing = effective_gain != 1.0f || this->dc_offset_removal_;
 
   // RingBuffer is thread-safe, no mutex needed

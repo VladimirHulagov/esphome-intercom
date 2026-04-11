@@ -17,6 +17,7 @@ __pycache__/
 
 # Private avatar (offensive gesture idle animation)
 images/assistant/f_off/
+assets/images/assistant/f_off
 
 # Private/local YAML configs (not published)
 *-local.yaml

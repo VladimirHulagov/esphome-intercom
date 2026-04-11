@@ -187,6 +187,8 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   // if esp-sr changes internal channel mapping in future versions).
   int total_channels = handle->get_feed_channel_num(data);
   if (total_channels <= 0) {
+    ESP_LOGW(TAG, "get_feed_channel_num returned %d, falling back to cfg->pcm_config.total_ch_num=%d",
+             total_channels, cfg->pcm_config.total_ch_num);
     total_channels = cfg->pcm_config.total_ch_num;  // fallback
   }
   size_t feed_bytes = static_cast<size_t>(feed_chunksize) * total_channels * sizeof(int16_t);
@@ -333,7 +335,9 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 
   if (spec_changed) {
     this->last_spec_mic_ch_ = new_mic_ch;
-    this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
+    // H2 partial fix: release barrier ensures new frame_spec stores (install_instance_
+    // above) happen-before consumers observe the bumped revision via acquire load.
+    this->frame_spec_revision_.fetch_add(1, std::memory_order_release);
   }
   this->warmup_remaining_ = 3;
   this->frame_count_.store(0, std::memory_order_relaxed);
@@ -496,15 +500,21 @@ bool EspAfe::reconfigure(int type, int mode) {
   if (this->recreate_instance_(false)) {
     return true;
   }
+  // MEDIUM fix (Codex): reconfigure() rollback. Rebuild failed; restore old config
+  // values AND try to rebuild with them so the DSP isn't left permanently down.
+  ESP_LOGW(TAG, "reconfigure: new type=%d mode=%d build failed, rolling back to type=%d mode=%d",
+           type, mode, old_type, old_mode);
   this->afe_type_ = old_type;
   this->afe_mode_ = old_mode;
+  if (!this->recreate_instance_(false)) {
+    ESP_LOGE(TAG, "reconfigure: rollback rebuild ALSO failed - AFE is DOWN");
+  }
   return false;
 }
 
 bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
                      uint8_t mic_channels_in) {
   const int transport_mic_channels = mic_channels_in;
-  const int afe_mic_channels = this->afe_mic_channels_();
   int qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   int os = this->fetch_chunksize_;
   if (!this->is_initialized() || this->config_mutex_ == nullptr) {
@@ -517,6 +527,9 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     return false;
   }
 
+  // H1 fix: read afe_mic_channels INSIDE the mutex so it stays consistent with
+  // total_channels_ / feed_chunksize_ after an SE toggle recreate.
+  const int afe_mic_channels = this->afe_mic_channels_();
   qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   os = this->fetch_chunksize_;
   int fs = this->feed_chunksize_;

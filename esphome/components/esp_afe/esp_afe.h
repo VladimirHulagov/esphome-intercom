@@ -34,7 +34,7 @@ class EspAfe : public Component, public AudioProcessor {
   bool process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
                uint8_t mic_channels_in = 1) override;
   uint32_t frame_spec_revision() const override {
-    return this->frame_spec_revision_.load(std::memory_order_relaxed);
+    return this->frame_spec_revision_.load(std::memory_order_acquire);
   }
   FeatureControl feature_control(AudioFeature feature) const override;
   bool set_feature(AudioFeature feature, bool enabled) override;

@@ -13,9 +13,17 @@ static const char *const TAG = "esp_aec";
 
 void EspAec::setup() {
   ESP_LOGI(TAG, "Initializing AEC...");
+  this->handle_mutex_ = xSemaphoreCreateMutex();
+  if (this->handle_mutex_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create handle_mutex_");
+    this->mark_failed();
+    return;
+  }
   this->handle_ = aec_create(this->sample_rate_, this->filter_length_, 1, this->mode_);
   if (this->handle_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create AEC instance");
+    vSemaphoreDelete(this->handle_mutex_);
+    this->handle_mutex_ = nullptr;
     this->mark_failed();
     return;
   }
@@ -26,9 +34,17 @@ void EspAec::setup() {
 }
 
 EspAec::~EspAec() {
+  if (this->handle_mutex_ != nullptr) {
+    xSemaphoreTake(this->handle_mutex_, portMAX_DELAY);
+  }
   if (this->handle_ != nullptr) {
     aec_destroy(this->handle_);
     this->handle_ = nullptr;
+  }
+  if (this->handle_mutex_ != nullptr) {
+    xSemaphoreGive(this->handle_mutex_);
+    vSemaphoreDelete(this->handle_mutex_);
+    this->handle_mutex_ = nullptr;
   }
 }
 
@@ -54,9 +70,17 @@ FrameSpec EspAec::frame_spec() const {
 bool EspAec::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
                      uint8_t mic_channels_in) {
   // EspAec is single-mic only, mic_channels_in parameter accepted for interface compatibility
+  // L1 fix: serialize against reinit_() so handle_ cannot be destroyed mid-process.
+  if (this->handle_mutex_ == nullptr ||
+      xSemaphoreTake(this->handle_mutex_, pdMS_TO_TICKS(10)) != pdTRUE) {
+    memcpy(out, in_mic, this->cached_frame_size_ * sizeof(int16_t));
+    this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
   if (this->handle_ == nullptr) {
     memcpy(out, in_mic, this->cached_frame_size_ * sizeof(int16_t));
     this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
+    xSemaphoreGive(this->handle_mutex_);
     return false;
   }
   aec_process(this->handle_,
@@ -64,6 +88,7 @@ bool EspAec::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
               const_cast<int16_t *>(in_ref),
               out);
   this->frame_count_.fetch_add(1, std::memory_order_relaxed);
+  xSemaphoreGive(this->handle_mutex_);
   return true;
 }
 
@@ -97,24 +122,37 @@ bool EspAec::reconfigure(int type, int mode) {
 
 bool EspAec::reinit_(aec_mode_t new_mode) {
   ESP_LOGI(TAG, "Reinitializing AEC: mode %d -> %d", (int) this->mode_, (int) new_mode);
-  if (this->handle_ != nullptr) {
-    aec_destroy(this->handle_);
-    this->handle_ = nullptr;
-  }
-  this->mode_ = new_mode;
-  this->handle_ = aec_create(this->sample_rate_, this->filter_length_, 1, this->mode_);
-  if (this->handle_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to recreate AEC instance");
+  // L1 fix: serialize against process() and preserve rollback capability.
+  if (this->handle_mutex_ == nullptr) {
+    ESP_LOGE(TAG, "reinit_: handle_mutex_ not initialized");
     return false;
   }
-  this->cached_frame_size_ = aec_get_chunksize(this->handle_);
+  xSemaphoreTake(this->handle_mutex_, portMAX_DELAY);
+  aec_handle_t *old_handle = this->handle_;
+  aec_mode_t old_mode = this->mode_;
+  int old_frame_size = this->cached_frame_size_;
+  // Try to build new handle BEFORE destroying old (rollback if fails).
+  aec_handle_t *new_handle = aec_create(this->sample_rate_, this->filter_length_, 1, new_mode);
+  if (new_handle == nullptr) {
+    ESP_LOGE(TAG, "Failed to create new AEC instance, keeping old (mode=%d)", (int) old_mode);
+    xSemaphoreGive(this->handle_mutex_);
+    return false;
+  }
+  this->handle_ = new_handle;
+  this->mode_ = new_mode;
+  this->cached_frame_size_ = aec_get_chunksize(new_handle);
+  if (old_handle != nullptr) {
+    aec_destroy(old_handle);
+  }
   if (this->cached_frame_size_ != this->last_frame_size_) {
     this->last_frame_size_ = this->cached_frame_size_;
-    this->frame_spec_revision_.fetch_add(1, std::memory_order_relaxed);
+    this->frame_spec_revision_.fetch_add(1, std::memory_order_release);
   }
+  (void) old_frame_size;
   ESP_LOGI(TAG, "AEC reinitialized: mode=%d, frame=%d (%dms)",
            (int) this->mode_, this->cached_frame_size_,
            this->cached_frame_size_ * 1000 / this->sample_rate_);
+  xSemaphoreGive(this->handle_mutex_);
   return true;
 }
 

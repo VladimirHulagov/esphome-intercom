@@ -8,6 +8,8 @@
 
 #include <esp_aec.h>
 #include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace esphome {
 namespace esp_aec {
@@ -33,7 +35,7 @@ class EspAec : public Component, public AudioProcessor {
   ProcessorTelemetry telemetry() const override;
   bool reconfigure(int type, int mode) override;
   uint32_t frame_spec_revision() const override {
-    return this->frame_spec_revision_.load(std::memory_order_relaxed);
+    return this->frame_spec_revision_.load(std::memory_order_acquire);
   }
 
   aec_mode_t get_mode() const { return this->mode_; }
@@ -44,6 +46,8 @@ class EspAec : public Component, public AudioProcessor {
   bool reinit_(aec_mode_t new_mode);
 
   aec_handle_t *handle_{nullptr};
+  // L1 fix: guards handle_ lifecycle between process() and reinit_() / destructor.
+  SemaphoreHandle_t handle_mutex_{nullptr};
   int sample_rate_{16000};
   int filter_length_{4};
   int cached_frame_size_{512};

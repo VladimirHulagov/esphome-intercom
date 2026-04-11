@@ -337,8 +337,8 @@ class IntercomApi : public Component {
   std::atomic<bool> speaker_stop_requested_{false};
   SemaphoreHandle_t speaker_stopped_sem_{nullptr};  // Signaled when speaker has stopped
 
-  // Volume
-  float volume_{1.0f};
+  // Volume (LOW/MED fix Codex: shared between main/api thread and audio tasks)
+  std::atomic<float> volume_{1.0f};
 
   // Auto-answer (default true for backward compatibility)
   bool auto_answer_{true};
@@ -349,8 +349,9 @@ class IntercomApi : public Component {
   uint32_t outgoing_start_time_{0};
 
   // Mic gain (applied before sending to network)
-  float mic_gain_{1.0f};
-  float mic_gain_db_{0.0f};  // UI-friendly value (dB) for persistence
+  // LOW/MED fix Codex: shared between main/api thread and mic_task
+  std::atomic<float> mic_gain_{1.0f};
+  float mic_gain_db_{0.0f};  // UI-friendly value (dB) for persistence, main thread only
 
   // === Settings persistence (local flash) ===
   static constexpr uint8_t SETTINGS_VERSION = 1;
@@ -381,7 +382,8 @@ class IntercomApi : public Component {
 #ifdef USE_AUDIO_PROCESSOR
   // AEC (Acoustic Echo Cancellation)
   AudioProcessor *aec_{nullptr};
-  bool aec_enabled_{false};
+  // LOW/MED fix Codex: shared between set_aec_enabled (API thread) and audio tasks
+  std::atomic<bool> aec_enabled_{false};
   uint32_t aec_ref_delay_ms_{80};  // Configurable via YAML (default 80ms)
 
   // Speaker reference buffer for AEC (fed by speaker_task)

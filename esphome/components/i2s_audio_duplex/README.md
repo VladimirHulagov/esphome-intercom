@@ -23,7 +23,7 @@ With i2s_audio_duplex:
   - **ES8311 Digital Feedback** (recommended for ES8311): Stereo I2S with L=DAC ref, R=ADC mic. Sample-accurate reference. Enable with `use_stereo_aec_reference: true`.
   - **TDM Hardware Reference** (for ES7210 + ES8311): ES7210 in TDM mode captures DAC analog output on a dedicated ADC channel (e.g. MIC3). Sample-aligned with mic data. Enable with `use_tdm_reference: true`.
 - **Dual Mic Path**: `pre_aec` option for raw mic (diagnostics) alongside AEC-processed mic (VA/STT/MWW)
-- **PSRAM Buffers**: `buffers_in_psram` option moves all audio buffers to PSRAM (~28KB internal heap saved). ESP-IDF new I2S driver uses memcpy for user buffers (not DMA), so PSRAM is safe. Required for `sr_low_cost` AEC on memory-constrained devices.
+- **PSRAM Buffers**: `buffers_in_psram` option moves the non-hot-path audio buffers (AEC mic/ref, processor interleave, multi-channel mic, spk_ref) to PSRAM. `rx_buffer` and `spk_buffer` stay in internal RAM regardless (I2S hot path, PSRAM bus contention would cause glitches). Typical saving: ~15-20KB internal heap. Required for `sr_low_cost` AEC on memory-constrained devices.
 - **Volume Controls**: Mic gain (-20 to +30 dB, persistent), mic gain pre-AEC (for weak MEMS mics), speaker volume (persistent)
 - **Codec-less Support**: `slot_bit_width: 32` for MEMS mics (INMP441, MSM261, SPH0645) + I2S amp on same bus. `correct_dc_offset: true` for mics without built-in HPF
 - **Number Platform**: Native `mic_gain` and `speaker_volume` entities with `ESPPreferenceObject` persistence. When both `i2s_audio_duplex` and `intercom_api` are present, `i2s_audio_duplex` owns the number entities and `intercom_api` defers to avoid conflicts.
@@ -162,7 +162,7 @@ speaker:
 | `task_priority` | int | 19 | FreeRTOS priority of the audio task (1-24). Default 19 is above lwIP (18), below WiFi (23). |
 | `task_core` | int | 0 | Core affinity: 0 or 1 for pinned, -1 for unpinned. Default 0 follows Espressif AEC pattern. |
 | `task_stack_size` | int | 8192 | Audio task stack size in bytes (4096-32768). Increase if you see stack overflow warnings. |
-| `buffers_in_psram` | bool | false | Move all audio buffers (including I2S user buffers) to PSRAM. Saves ~28KB internal heap. Required for `sr_low_cost` AEC mode (512-sample frames). ESP-IDF new I2S driver uses memcpy for user buffers, not DMA. |
+| `buffers_in_psram` | bool | false | Move non-hot-path audio buffers (AEC mic/ref, processor interleave, multi-channel mic, spk_ref) to PSRAM. `rx_buffer`/`spk_buffer` always stay in internal RAM. Saves ~15-20KB internal heap. Required for `sr_low_cost` AEC mode (512-sample frames). |
 
 ### Microphone Options
 

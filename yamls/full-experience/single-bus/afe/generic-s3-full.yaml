@@ -286,8 +286,8 @@ select:
                       args: ['x.c_str()']
                   - micro_wake_word.stop:
                   - i2s_audio_duplex.stop: i2s_duplex
-                  - esp_aec.set_mode:
-                      id: aec_processor
+                  - esp_afe.set_mode:
+                      id: afe_processor
                       mode: !lambda 'return x;'
                   - i2s_audio_duplex.start: i2s_duplex
                   - delay: 300ms

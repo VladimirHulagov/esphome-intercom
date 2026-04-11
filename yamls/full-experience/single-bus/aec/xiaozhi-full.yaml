@@ -54,7 +54,8 @@ substitutions:
   mic_id: mic_aec
 
   # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # Switch to raw/main/ once audio-core-v2 is merged.
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
   # ---- Local mode (for development, clone repo first) ----
   # assets_base: ""
 
@@ -161,8 +162,6 @@ esp32:
       CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
-      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "2048"
-      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "98304"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
@@ -178,7 +177,7 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
       ref: audio-core-v2
-    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
+    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
 # CONNECTIVITY
@@ -260,19 +259,11 @@ audio_dac:
 #   Uses ~60% less CPU than VOIP modes (22% vs 58%).
 #   Frame size: 512 samples (32ms); requires buffers_in_psram.
 # =============================================================================
-esp_afe:
-  id: afe_processor
-  type: sr
-  mode: low_cost
-  mic_num: 1
-  aec_enabled: true
-  aec_filter_length: 4
-  ns_enabled: true
-  vad_enabled: true
-  agc_enabled: true
-  se_enabled: false
-  task_core: 1
-  task_priority: 8
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000
+  filter_length: 4     # 64ms echo tail (sufficient for integrated codec)
+  mode: sr_low_cost    # Linear AEC, preserves spectral features for MWW
 
 # =============================================================================
 # I2S AUDIO DUPLEX (single bus for ES8311)
@@ -290,7 +281,7 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO8
   sample_rate: 48000             # I2S bus rate (ES8311 native)
   output_sample_rate: 16000      # Mic/AEC/MWW/VA output rate (FIR decimation x3)
-  processor_id: afe_processor
+  processor_id: aec_processor
   # ES8311 digital feedback: RX is stereo L=DAC(reference), R=ADC(mic).
   # Sample-accurate reference alignment, no ring buffer delay needed.
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).

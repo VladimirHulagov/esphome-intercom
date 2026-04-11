@@ -15,6 +15,7 @@
 #include "../audio_processor/audio_processor.h"
 #endif
 #include "../audio_processor/audio_utils.h"
+#include "../audio_processor/ring_buffer_caps.h"
 
 namespace esphome {
 namespace i2s_audio_duplex {
@@ -74,7 +75,11 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 static const size_t DMA_BUFFER_COUNT = 8;
 static const size_t DMA_BUFFER_SIZE = 512;
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
-static const size_t SPEAKER_BUFFER_BASE = 16384; // base speaker buffer, scaled by decimation_ratio_
+// MED fix (Codex): reduced from 16384 to 8192. Base buffer is scaled by decimation_ratio_,
+// so at ratio=3 this was 48KB (~512ms at 48kHz) which is wasteful and causes long worst-case
+// playback backlog. 8192*ratio gives ~85ms per ratio unit (256ms at ratio=3), still enough
+// margin to absorb mixer jitter while saving ~24KB RAM.
+static const size_t SPEAKER_BUFFER_BASE = 8192; // base speaker buffer, scaled by decimation_ratio_
 
 // I2S new driver uses milliseconds directly, NOT FreeRTOS ticks
 static const uint32_t I2S_IO_TIMEOUT_MS = 50;
@@ -740,10 +745,14 @@ void I2SAudioDuplex::audio_task_() {
   }
 
   // ── Verify critical allocations ──
+  // MEDIUM fix: also clear running flags so next start() doesn't report "Already running"
+  // on a task that actually exited at alloc time.
   auto alloc_fail = [this](const char *what) {
     ESP_LOGE(TAG, "Failed to allocate %s", what);
     this->has_i2s_error_.store(true, std::memory_order_relaxed);
     this->task_exited_.store(true, std::memory_order_relaxed);
+    this->duplex_running_.store(false, std::memory_order_relaxed);
+    this->speaker_running_.store(false, std::memory_order_relaxed);
   };
 
   if (ctx.processor_mic_channels > 2) {
@@ -760,20 +769,25 @@ void I2SAudioDuplex::audio_task_() {
   }
 
 #ifdef USE_AUDIO_PROCESSOR
-  if (this->processor_ != nullptr) {
+  // MEDIUM fix (Codex): allocate processor-side buffers only when the processor
+  // is actually initialized, not merely attached. Avoids wasting RAM in degraded
+  // boot paths or when processor build failed.
+  if (this->processor_ != nullptr && this->processor_->is_initialized()) {
     if (!ctx.spk_ref_buffer && !ctx.use_tdm_ref)
       ctx.spk_ref_buffer = static_cast<int16_t *>(
           heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
     ctx.aec_output = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
 
-    // Ring buffer for TYPE2-style AEC reference (no-codec setups only)
-    // Uses buf_caps so it goes to PSRAM when buffers_in_psram is enabled.
+    // Ring buffer for TYPE2-style AEC reference (no-codec setups only).
+    // Hot path when active (read/written every AEC frame). Small (~10KB at 100ms@48kHz).
+    // Only allocated when user explicitly configures TYPE2 AEC ref — so internal is safe:
+    // it's opt-in, scoped, and bypassing PSRAM here avoids AEC jitter.
     if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
       // Buffer capacity: aec_ref_buffer_ms_ worth of audio at bus rate
       size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
       if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;  // minimum 4 frames
-      this->aec_ref_ring_buffer_ = RingBuffer::create(rb_bytes);
+      this->aec_ref_ring_buffer_ = audio_processor::create_internal(rb_bytes, "i2s_duplex.aec_ref");
       if (!this->aec_ref_ring_buffer_) {
         alloc_fail("AEC reference ring buffer"); goto cleanup;
       }
