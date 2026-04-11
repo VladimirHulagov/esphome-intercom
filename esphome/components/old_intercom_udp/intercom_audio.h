@@ -209,8 +209,10 @@ class IntercomAudio : public Component {
   std::atomic<bool> streaming_{false};       // True = actively streaming
   std::atomic<uint32_t> session_{0};         // Incremented on start/stop to invalidate in-flight ops
 
-  // Task handle (task created once in setup, runs forever)
+  // Task handle + static task storage (stack in PSRAM)
   TaskHandle_t audio_task_handle_{nullptr};
+  StaticTask_t audio_task_tcb_{};
+  StackType_t *audio_task_stack_{nullptr};
 
   // Separate mutexes to reduce contention
   SemaphoreHandle_t mic_mutex_{nullptr};  // Protects mic_input_buffer_

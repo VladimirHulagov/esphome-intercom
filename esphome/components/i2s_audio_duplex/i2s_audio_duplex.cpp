@@ -112,8 +112,11 @@ void I2SAudioDuplex::setup() {
 
   // Speaker ring buffer: stores data at bus rate (e.g. 48kHz).
   // Scale buffer size with decimation ratio to accommodate higher data rate.
+  // PREFER_PSRAM: staging buffer between API play() and the i2s write path, not
+  // realtime-critical itself (the task drains it at priority 19), so PSRAM is fine.
   this->speaker_buffer_size_ = SPEAKER_BUFFER_BASE * this->decimation_ratio_;
-  this->speaker_buffer_ = RingBuffer::create(this->speaker_buffer_size_);
+  this->speaker_buffer_ = audio_processor::create_prefer_psram(
+      this->speaker_buffer_size_, "i2s_duplex.speaker");
   if (!this->speaker_buffer_) {
     ESP_LOGE(TAG, "Failed to create speaker ring buffer (%u bytes)", (unsigned)this->speaker_buffer_size_);
     this->mark_failed();

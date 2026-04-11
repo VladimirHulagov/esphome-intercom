@@ -327,10 +327,17 @@ class IntercomApi : public Component {
   uint8_t *audio_tx_buffer_{nullptr}; // Used by tx_task for audio (no mutex needed)
   SemaphoreHandle_t send_mutex_{nullptr};  // Protects tx_buffer_ during send
 
-  // Task handles
+  // Task handles + static task storage. Stacks are allocated via RAMAllocator
+  // with ALLOC_EXTERNAL so they live in PSRAM instead of scarce internal RAM.
   TaskHandle_t server_task_handle_{nullptr};
   TaskHandle_t tx_task_handle_{nullptr};
   TaskHandle_t speaker_task_handle_{nullptr};
+  StaticTask_t server_task_tcb_{};
+  StaticTask_t tx_task_tcb_{};
+  StaticTask_t speaker_task_tcb_{};
+  StackType_t *server_task_stack_{nullptr};
+  StackType_t *tx_task_stack_{nullptr};
+  StackType_t *speaker_task_stack_{nullptr};
 
   // Speaker single-owner: only speaker_task_ touches speaker hardware
   // This prevents race conditions between play() and stop()
