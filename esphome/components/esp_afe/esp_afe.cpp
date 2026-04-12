@@ -126,7 +126,7 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
     cfg->afe_type = static_cast<afe_type_t>(this->afe_type_);
   }
 
-  cfg->aec_init = this->aec_enabled_;
+  cfg->aec_init = true;  // always init: AEC is LIVE_TOGGLE via vtable
   cfg->aec_filter_length = this->aec_filter_length_;
   cfg->aec_mode = this->derive_aec_mode_();
 
@@ -268,6 +268,19 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
     ESP_LOGE(TAG, "Installed AFE instance but fetch task failed to start");
     return false;
   }
+
+  // AEC is always initialized (LIVE_TOGGLE). Disable via vtable if config says off.
+  if (!this->aec_enabled_) {
+    this->afe_handle_->disable_aec(this->afe_data_);
+  }
+
+  ESP_LOGI(TAG, "Active: AEC=%s NS=%s VAD=%s AGC=%s",
+           this->aec_enabled_ ? "on" : "off", this->ns_enabled_ ? "on" : "off",
+           this->vad_enabled_ ? "on" : "off", this->agc_enabled_ ? "on" : "off");
+  if (this->afe_handle_->print_pipeline != nullptr) {
+    this->afe_handle_->print_pipeline(this->afe_data_);
+  }
+
   return true;
 }
 
@@ -377,10 +390,36 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 }
 
 bool EspAfe::set_aec_enabled_runtime_(bool enabled) {
-  // esp-sr 2.3.1 disable_aec() tears down the AEC internal state; a later
-  // enable_aec() fails with "AEC is not initialized". Use the recreate path
-  // (same as NS/VAD/AGC/SE) so the AEC is rebuilt from scratch when toggled.
-  return this->set_reinit_flag_(this->aec_enabled_, enabled, "aec_enabled");
+  if (this->aec_enabled_ == enabled) {
+    return true;
+  }
+  if (this->config_mutex_ == nullptr || !this->is_initialized()) {
+    ESP_LOGW(TAG, "AEC toggle requested before initialization");
+    return false;
+  }
+  if (xSemaphoreTake(this->config_mutex_, CONFIG_MUTEX_TIMEOUT) != pdTRUE) {
+    ESP_LOGW(TAG, "Timed out waiting to toggle AEC");
+    return false;
+  }
+
+  auto func = enabled ? this->afe_handle_->enable_aec : this->afe_handle_->disable_aec;
+  if (!is_valid_func(reinterpret_cast<const void *>(func))) {
+    xSemaphoreGive(this->config_mutex_);
+    ESP_LOGW(TAG, "%s_aec not available (ptr=%p)",
+             enabled ? "enable" : "disable", reinterpret_cast<const void *>(func));
+    return false;
+  }
+
+  int ret = func(this->afe_data_);
+  xSemaphoreGive(this->config_mutex_);
+  if (ret < 0) {
+    ESP_LOGW(TAG, "%s_aec failed (ret=%d)", enabled ? "enable" : "disable", ret);
+    return false;
+  }
+
+  ESP_LOGI(TAG, "AEC %s (ret=%d)", enabled ? "enabled" : "disabled", ret);
+  this->aec_enabled_ = enabled;
+  return true;
 }
 
 bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
@@ -447,8 +486,6 @@ void EspAfe::dump_config() {
 FrameSpec EspAfe::frame_spec() const {
   FrameSpec spec;
   spec.sample_rate = 16000;
-  // Dynamic mic contract: expose the actual channel count the AFE needs.
-  // When SE (beamforming) is off, only 1 mic is needed even on 2-mic boards.
   spec.mic_channels = this->afe_mic_channels_();
   spec.ref_channels = 1;
   spec.input_samples = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
@@ -459,9 +496,7 @@ FrameSpec EspAfe::frame_spec() const {
 FeatureControl EspAfe::feature_control(AudioFeature feature) const {
   switch (feature) {
     case AudioFeature::AEC:
-      // esp-sr 2.3.1 disable_aec tears down the internal state, so AEC must
-      // be rebuilt via recreate_instance_ to come back.
-      return FeatureControl::RESTART_REQUIRED;
+      return FeatureControl::LIVE_TOGGLE;
     case AudioFeature::NS:
     case AudioFeature::AGC:
     case AudioFeature::VAD:
@@ -530,8 +565,6 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     return false;
   }
 
-  // H1 fix: read afe_mic_channels INSIDE the mutex so it stays consistent with
-  // total_channels_ / feed_chunksize_ after an SE toggle recreate.
   const int afe_mic_channels = this->afe_mic_channels_();
   qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   os = this->fetch_chunksize_;
