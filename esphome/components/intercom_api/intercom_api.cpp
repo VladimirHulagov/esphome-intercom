@@ -30,9 +30,8 @@ static const char *const TAG = "intercom_api";
 void IntercomApi::setup() {
   ESP_LOGI(TAG, "Setting up Intercom API...");
 
-  // MEDIUM fix (Codex): transactional setup. Any early failure triggers this
-  // cleanup so we never leave half-alive tasks, leaked buffers, or dangling
-  // mutexes behind when mark_failed() is called.
+  // Transactional setup: any early failure triggers cleanup to prevent orphaned
+  // tasks, leaked buffers, or dangling mutexes when mark_failed() is called.
   auto cleanup_partial = [this]() {
     if (this->speaker_task_handle_ != nullptr) {
       vTaskDelete(this->speaker_task_handle_);
@@ -1210,8 +1209,8 @@ void IntercomApi::speaker_task_() {
 
     // First audio after becoming active: let main loop initialize mixer+resampler pipeline.
     // Without this, the mixer task may read from an uninitialized SourceSpeaker ring buffer.
-    // LOW fix (Codex): poll up to 150ms in 10ms ticks instead of a hard 300ms sleep.
-    // Typical call-start warmup is 20-40ms; the worst case keeps a safety cap.
+    // Poll in 10ms intervals (up to 150ms) instead of blocking 300ms sleep.
+    // Typical warmup takes 20-40ms; the cap covers worst-case scenarios.
     if (speaker_was_idle) {
       speaker_was_idle = false;
       for (int i = 0; i < 15; i++) {

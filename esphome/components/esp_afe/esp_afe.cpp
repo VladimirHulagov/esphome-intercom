@@ -374,8 +374,8 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
 
   if (spec_changed) {
     this->last_spec_mic_ch_ = new_mic_ch;
-    // H2 partial fix: release barrier ensures new frame_spec stores (install_instance_
-    // above) happen-before consumers observe the bumped revision via acquire load.
+    // Release barrier ensures new frame_spec stores happen-before consumers
+    // observe the bumped revision via acquire load.
     this->frame_spec_revision_.fetch_add(1, std::memory_order_release);
   }
   this->warmup_remaining_ = 3;
@@ -538,8 +538,8 @@ bool EspAfe::reconfigure(int type, int mode) {
   if (this->recreate_instance_(false)) {
     return true;
   }
-  // MEDIUM fix (Codex): reconfigure() rollback. Rebuild failed; restore old config
-  // values AND try to rebuild with them so the DSP isn't left permanently down.
+  // Rollback on failure: restore old config and rebuild to avoid leaving
+  // the DSP permanently non-functional.
   ESP_LOGW(TAG, "reconfigure: new type=%d mode=%d build failed, rolling back to type=%d mode=%d",
            type, mode, old_type, old_mode);
   this->afe_type_ = old_type;

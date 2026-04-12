@@ -75,9 +75,8 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 static const size_t DMA_BUFFER_COUNT = 8;
 static const size_t DMA_BUFFER_SIZE = 512;
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
-// MED fix (Codex): reduced from 16384 to 8192. Base buffer is scaled by decimation_ratio_,
-// so at ratio=3 this was 48KB (~512ms at 48kHz) which is wasteful and causes long worst-case
-// playback backlog. 8192*ratio gives ~85ms per ratio unit (256ms at ratio=3), still enough
+// Base buffer scaled by decimation_ratio_. At ratio=3 this provides ~256ms capacity,
+// sufficient for stability while avoiding excessive latency from large playback backlogs.
 // margin to absorb mixer jitter while saving ~24KB RAM.
 static const size_t SPEAKER_BUFFER_BASE = 8192; // base speaker buffer, scaled by decimation_ratio_
 
@@ -742,8 +741,8 @@ void I2SAudioDuplex::audio_task_() {
   }
 
   // ── Verify critical allocations ──
-  // MEDIUM fix: also clear running flags so next start() doesn't report "Already running"
-  // on a task that actually exited at alloc time.
+  // Clear running flags so start() correctly reports task state after
+  // allocation failure, preventing false "Already running" errors.
   auto alloc_fail = [this](const char *what) {
     ESP_LOGE(TAG, "Failed to allocate %s", what);
     this->has_i2s_error_.store(true, std::memory_order_relaxed);
@@ -766,9 +765,8 @@ void I2SAudioDuplex::audio_task_() {
   }
 
 #ifdef USE_AUDIO_PROCESSOR
-  // MEDIUM fix (Codex): allocate processor-side buffers only when the processor
-  // is actually initialized, not merely attached. Avoids wasting RAM in degraded
-  // boot paths or when processor build failed.
+  // Allocate processor-side buffers only when the processor is fully initialized,
+  // not merely attached, to avoid wasting RAM on failed processor initialization.
   if (this->processor_ != nullptr && this->processor_->is_initialized()) {
     if (!ctx.spk_ref_buffer && !ctx.use_tdm_ref)
       ctx.spk_ref_buffer = static_cast<int16_t *>(
