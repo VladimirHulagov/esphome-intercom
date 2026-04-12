@@ -582,6 +582,14 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     offset = 0;
   }
 
+  // Input RMS: compute on raw mic BEFORE feeding to AFE pipeline.
+  // Replaces data_volume (always 0 without WakeNet).
+  if (this->input_volume_sensor_enabled_ && !this->warmup_remaining_) {
+    this->input_volume_dbfs_.store(
+        compute_rms_dbfs(in_mic, qs * transport_mic_channels > 0 ? qs : 0),
+        std::memory_order_relaxed);
+  }
+
   bool in_warmup = (this->warmup_remaining_ > 0) && (offset + qs >= fs);
 
   if (!in_warmup) {
@@ -768,9 +776,6 @@ void EspAfe::fetch_task_loop_() {
     this->ringbuf_free_pct_.store(result->ringbuff_free_pct, std::memory_order_relaxed);
     this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH,
                                std::memory_order_relaxed);
-    if (this->input_volume_sensor_enabled_) {
-      this->input_volume_dbfs_.store(result->data_volume, std::memory_order_relaxed);
-    }
 
     if (this->fetch_output_ring_) {
       const size_t want = static_cast<size_t>(result->data_size);
