@@ -336,11 +336,18 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
-  // Check if frame_spec changed BEFORE install (install zeroes the AfeInstance fields)
+  // Compare against the last successfully-installed spec, not against the
+  // (already-detached) `this->*_chunksize_` fields which are zero at this
+  // point. Using the last_spec_* members means a rollback to the previous
+  // config does not spuriously bump frame_spec_revision_, which would make
+  // i2s_audio_duplex try to restart its audio task concurrently with our
+  // fetch task recreation and race inside FreeRTOS.
   int new_mic_ch = this->afe_mic_channels_();
   bool spec_changed = (new_mic_ch != this->last_spec_mic_ch_ ||
-                       next.process_chunksize != old_process ||
-                       next.fetch_chunksize != old_fetch);
+                       next.process_chunksize != this->last_spec_process_size_ ||
+                       next.fetch_chunksize != this->last_spec_fetch_size_);
+  (void) old_process;
+  (void) old_fetch;
 
   if (!this->install_instance_(&next)) {
     AfeInstance failed = this->detach_instance_();
@@ -348,6 +355,9 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
+
+  this->last_spec_process_size_ = this->process_chunksize_;
+  this->last_spec_fetch_size_ = this->fetch_chunksize_;
 
   if (spec_changed) {
     this->last_spec_mic_ch_ = new_mic_ch;
@@ -812,11 +822,12 @@ void EspAfe::stop_fetch_task_() {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   this->fetch_task_handle_ = nullptr;
-  // Give FreeRTOS IDLE time to reclaim the TCB before it can be reused by the
-  // next xTaskCreateStatic call, otherwise a rapid recreate (e.g. runtime
-  // toggle path) can create on a TCB that's still in a transient state.
+  // Give FreeRTOS IDLE time to reclaim the deleted TCB before it is reused
+  // by the next xTaskCreateStatic call.
   vTaskDelay(pdMS_TO_TICKS(30));
-  this->fetch_task_tcb_ = StaticTask_t{};
+  // Do NOT zero fetch_task_tcb_ manually — FreeRTOS may still be holding
+  // back-links into the struct. xTaskCreateStaticPinnedToCore will
+  // reinitialize the fields it cares about.
   this->fetch_output_ring_.reset();
   if (this->feed_signal_ != nullptr) {
     vSemaphoreDelete(this->feed_signal_);
