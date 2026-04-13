@@ -335,8 +335,11 @@ script:
     then:
       - wait_until:
           condition:
-            media_player.is_announcing:
-          timeout: 0.5s
+            or:
+              - media_player.is_announcing:
+              - speaker.is_playing:
+                  id: tts_speaker
+          timeout: 2s
       - wait_until:
           condition:
             and:
@@ -345,7 +348,9 @@ script:
               - not:
                   speaker.is_playing:
                       id: tts_speaker
-          timeout: 30s
+          # Long replies can keep the TTS pipeline draining well after VA on_end.
+          # A short timeout here forces idle cleanup and truncates the tail.
+          timeout: 90s
       - if:
           condition:
             or:
