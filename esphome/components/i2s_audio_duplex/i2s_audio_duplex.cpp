@@ -659,7 +659,7 @@ void I2SAudioDuplex::audio_task_() {
   ctx.tdm_second_mic_slot = this->tdm_second_mic_slot_;
   ctx.tdm_ref_slot = this->tdm_ref_slot_;
 
-  ESP_LOGD(TAG, "Audio task started (stereo=%s, tdm=%s, decimation=%ux)",
+  ESP_LOGI(TAG, "Audio task started (stereo=%s, tdm=%s, decimation=%ux)",
            ctx.use_stereo_aec_ref ? "YES" : "no",
            ctx.use_tdm_ref ? "YES" : "no", (unsigned)ctx.ratio);
 
@@ -674,10 +674,11 @@ void I2SAudioDuplex::audio_task_() {
     ctx.processor_mic_channels = std::max<uint8_t>(1, spec.mic_channels);
     ctx.processor_spec_revision = this->processor_->frame_spec_revision();
     uint32_t out_rate = this->get_output_sample_rate();
-    ESP_LOGD(TAG, "AEC frame sizes: input=%u, output=%u samples, mic_ch=%u (%ums @ %uHz)",
+    ESP_LOGI(TAG, "Processor: input=%u, output=%u samples, mic_ch=%u (%ums @ %uHz), revision=%u",
              (unsigned) ctx.input_frame_size, (unsigned) ctx.output_frame_size,
              (unsigned) ctx.processor_mic_channels,
-             (unsigned) (ctx.input_frame_size * 1000 / out_rate), (unsigned) out_rate);
+             (unsigned) (ctx.input_frame_size * 1000 / out_rate), (unsigned) out_rate,
+             (unsigned) ctx.processor_spec_revision);
   }
 #endif
 

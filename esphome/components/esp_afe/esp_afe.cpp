@@ -262,9 +262,14 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   instance->process_chunksize = 0;
   instance->total_channels = 0;
 
-  // The fetch bridge is mandatory: without it process() would read from an
-  // empty ring forever and the caller would only ever see passthrough.
+  // Start feed task first (it fills the internal ring that fetch drains).
+  if (!this->start_feed_task_()) {
+    ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
+    return false;
+  }
+  // Then start fetch task (reads from AFE internal output ring).
   if (!this->start_fetch_task_()) {
+    this->stop_feed_task_();
     ESP_LOGE(TAG, "Installed AFE instance but fetch task failed to start");
     return false;
   }
@@ -285,8 +290,9 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
 }
 
 EspAfe::AfeInstance EspAfe::detach_instance_() {
-  // Stop the fetch task first so no one is calling afe->fetch() on the
-  // handle we're about to hand back to destroy_instance_.
+  // Stop feed first (it calls afe->feed()), then fetch (it calls afe->fetch()).
+  // Both must stop before we hand the handle back to destroy_instance_.
+  this->stop_feed_task_();
   this->stop_fetch_task_();
 
   AfeInstance instance;
@@ -373,14 +379,20 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   this->last_spec_fetch_size_ = this->fetch_chunksize_;
 
   if (spec_changed) {
+    int old_mic_ch = this->last_spec_mic_ch_;
     this->last_spec_mic_ch_ = new_mic_ch;
     // Release barrier ensures new frame_spec stores happen-before consumers
     // observe the bumped revision via acquire load.
-    this->frame_spec_revision_.fetch_add(1, std::memory_order_release);
+    uint32_t new_rev = this->frame_spec_revision_.fetch_add(1, std::memory_order_release) + 1;
+    ESP_LOGI(TAG, "Frame spec changed: mic_ch=%d->%d, process=%d, fetch=%d (revision %u, audio task will restart)",
+             old_mic_ch, new_mic_ch, this->process_chunksize_, this->fetch_chunksize_, (unsigned) new_rev);
   }
   this->warmup_remaining_ = 3;
   this->frame_count_.store(0, std::memory_order_relaxed);
   this->glitch_count_.store(0, std::memory_order_relaxed);
+  this->input_ring_drop_.store(0, std::memory_order_relaxed);
+  this->feed_ok_.store(0, std::memory_order_relaxed);
+  this->feed_rejected_.store(0, std::memory_order_relaxed);
   this->ringbuf_free_pct_.store(1.0f, std::memory_order_relaxed);
   this->voice_present_.store(false, std::memory_order_relaxed);
   this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
@@ -438,15 +450,21 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   // Flag must be set before rebuild because build_instance_ reads it.
   // The mutex in recreate_instance_ ensures process() either sees the old
   // instance (passthrough) or the new one, never a mix.
+  //
+  // SE toggle changes mic_channels (MR<->MMR) which may alter frame sizes.
+  // Allow frame size changes for SE; require same sizes for NS/VAD/AGC.
+  bool allow_frame_change = (&flag == &this->se_enabled_);
   bool old_value = flag;
   flag = enabled;
-  if (this->recreate_instance_(true)) {
+  ESP_LOGI(TAG, "Applying %s=%s (rebuild, frame_size_change=%s)",
+           name, enabled ? "true" : "false", allow_frame_change ? "allowed" : "locked");
+  if (this->recreate_instance_(!allow_frame_change)) {
     return true;
   }
   // Rebuild failed: restore flag and try to rebuild with old config
   ESP_LOGW(TAG, "Failed to apply %s=%s, rolling back", name, enabled ? "true" : "false");
   flag = old_value;
-  if (!this->recreate_instance_(true)) {
+  if (!this->recreate_instance_(!allow_frame_change)) {
     ESP_LOGE(TAG, "Rollback also failed for %s, AFE is down", name);
   }
   return false;
@@ -645,15 +663,13 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
       memset(this->feed_buf_, 0, static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t));
       this->warmup_remaining_--;
     }
-    int feed_ret = this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
-    if (feed_ret > 0) {
-      if (this->feed_signal_ != nullptr) {
-        xSemaphoreGive(this->feed_signal_);
+    // Enqueue the complete frame for the feed task (non-blocking, atomic).
+    // NOSPLIT ring guarantees the frame is sent/received as one unit.
+    size_t feed_bytes = static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t);
+    if (this->feed_input_ring_ != nullptr) {
+      if (!xRingbufferSend(this->feed_input_ring_, this->feed_buf_, feed_bytes, 0)) {
+        this->input_ring_drop_.fetch_add(1, std::memory_order_relaxed);
       }
-    } else {
-      // AFE rejected the frame (input ring full). Do not arm the fetch task:
-      // no new output will be produced for this attempt.
-      this->feed_rejected_.fetch_add(1, std::memory_order_relaxed);
     }
     offset = 0;
   }
@@ -734,7 +750,144 @@ bool EspAfe::disable_vad() { return this->set_reinit_flag_(this->vad_enabled_, f
 bool EspAfe::enable_agc() { return this->set_reinit_flag_(this->agc_enabled_, true, "agc_enabled"); }
 bool EspAfe::disable_agc() { return this->set_reinit_flag_(this->agc_enabled_, false, "agc_enabled"); }
 
-// ---- Fetch task: decouples AFE's async output from the synchronous caller ----
+// ---- Feed task: offloads afe_feed() from the I2S realtime task ----
+// process() enqueues complete frames into feed_input_ring_.
+// This task reads them and calls afe_handle_->feed(), which may block
+// inside AEC/BSS processing. Running on a dedicated task keeps the
+// I2S DMA task free. Matches Espressif's test_afe.cpp / esp-box pattern.
+
+void EspAfe::feed_task_trampoline(void *arg) {
+  static_cast<EspAfe *>(arg)->feed_task_loop_();
+  vTaskDelete(nullptr);
+}
+
+void EspAfe::feed_task_loop_() {
+  while (this->feed_task_running_.load(std::memory_order_acquire)) {
+    // NOSPLIT receive: blocks until a complete frame is available (atomic item).
+    // Timeout allows clean shutdown when feed_task_running_ goes false.
+    size_t item_size = 0;
+    void *item = xRingbufferReceive(this->feed_input_ring_, &item_size, pdMS_TO_TICKS(100));
+    if (item == nullptr) {
+      continue;  // timeout (shutdown check at loop top)
+    }
+    if (this->feed_task_running_.load(std::memory_order_acquire)) {
+      int ret = this->afe_handle_->feed(this->afe_data_, static_cast<int16_t *>(item));
+      if (ret > 0) {
+        this->feed_ok_.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        this->feed_rejected_.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+    vRingbufferReturnItem(this->feed_input_ring_, item);
+  }
+}
+
+bool EspAfe::start_feed_task_() {
+  if (this->feed_task_handle_ != nullptr) {
+    return true;
+  }
+  if (this->afe_handle_ == nullptr || this->afe_data_ == nullptr ||
+      this->feed_chunksize_ <= 0) {
+    return false;
+  }
+
+  if (this->feed_input_ring_ == nullptr) {
+    // NOSPLIT ring: each xRingbufferSend is an atomic item, xRingbufferReceive
+    // returns it whole. 4 frames capacity for MMR/BSS jitter headroom.
+    // NOSPLIT adds 8-byte header per item, accounted for in sizing.
+    const size_t frame_bytes = static_cast<size_t>(this->feed_chunksize_) *
+                               this->total_channels_ * sizeof(int16_t);
+    const size_t ring_size = (frame_bytes + 8) * 4;  // 4 items + headers
+    this->feed_input_ring_storage_ = static_cast<uint8_t *>(
+        heap_caps_malloc(ring_size, MALLOC_CAP_SPIRAM));
+    if (this->feed_input_ring_storage_ == nullptr) {
+      this->feed_input_ring_storage_ = static_cast<uint8_t *>(
+          heap_caps_malloc(ring_size, MALLOC_CAP_INTERNAL));
+    }
+    if (this->feed_input_ring_storage_ == nullptr) {
+      ESP_LOGE(TAG, "Failed to allocate AFE feed input ring storage (%u bytes)", (unsigned) ring_size);
+      return false;
+    }
+    this->feed_input_ring_struct_ = static_cast<StaticRingbuffer_t *>(
+        heap_caps_malloc(sizeof(StaticRingbuffer_t), MALLOC_CAP_INTERNAL));
+    if (this->feed_input_ring_struct_ == nullptr) {
+      heap_caps_free(this->feed_input_ring_storage_);
+      this->feed_input_ring_storage_ = nullptr;
+      ESP_LOGE(TAG, "Failed to allocate AFE feed input ring struct");
+      return false;
+    }
+    this->feed_input_ring_ = xRingbufferCreateStatic(
+        ring_size, RINGBUF_TYPE_NOSPLIT, this->feed_input_ring_storage_, this->feed_input_ring_struct_);
+    if (this->feed_input_ring_ == nullptr) {
+      heap_caps_free(this->feed_input_ring_storage_);
+      this->feed_input_ring_storage_ = nullptr;
+      heap_caps_free(this->feed_input_ring_struct_);
+      this->feed_input_ring_struct_ = nullptr;
+      ESP_LOGE(TAG, "Failed to create AFE feed input ring");
+      return false;
+    }
+    ESP_LOGI(TAG, "Feed input ring: %u bytes (%u per frame, 4 slots, NOSPLIT)",
+             (unsigned) ring_size, (unsigned) frame_bytes);
+  }
+
+  if (this->feed_task_stack_ == nullptr) {
+    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+    this->feed_task_stack_ = stack_alloc.allocate(kFeedTaskStackWords);
+    if (this->feed_task_stack_ == nullptr) {
+      ESP_LOGE(TAG, "Failed to allocate AFE feed task stack");
+      return false;
+    }
+  }
+
+  this->feed_task_running_.store(true, std::memory_order_release);
+  this->feed_task_handle_ = xTaskCreateStaticPinnedToCore(
+      &EspAfe::feed_task_trampoline, "afe_feed", kFeedTaskStackWords, this,
+      this->task_priority_ > 1 ? this->task_priority_ - 1 : 1,  // feed >= fetch
+      this->feed_task_stack_, &this->feed_task_tcb_,
+      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
+  if (this->feed_task_handle_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create AFE feed task");
+    this->feed_task_running_.store(false, std::memory_order_release);
+    this->feed_input_ring_ = nullptr;
+    heap_caps_free(this->feed_input_ring_storage_);
+    this->feed_input_ring_storage_ = nullptr;
+    heap_caps_free(this->feed_input_ring_struct_);
+    this->feed_input_ring_struct_ = nullptr;
+    return false;
+  }
+  ESP_LOGI(TAG, "AFE feed task started (core=%d, priority=%d)",
+           this->task_core_, this->task_priority_ > 1 ? this->task_priority_ - 1 : 1);
+  return true;
+}
+
+void EspAfe::stop_feed_task_() {
+  if (this->feed_task_handle_ == nullptr) {
+    return;
+  }
+  this->feed_task_running_.store(false, std::memory_order_release);
+  // Feed task exits when blocking read times out and it re-checks running flag.
+  for (int i = 0; i < 25; i++) {
+    if (eTaskGetState(this->feed_task_handle_) == eDeleted) {
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  this->feed_task_handle_ = nullptr;
+  vTaskDelay(pdMS_TO_TICKS(30));
+  // Static ring: we own the handle, storage, and struct. Just null the handle
+  // and free the allocations (vRingbufferDelete is for dynamic rings only).
+  this->feed_input_ring_ = nullptr;
+  if (this->feed_input_ring_storage_ != nullptr) {
+    heap_caps_free(this->feed_input_ring_storage_);
+    this->feed_input_ring_storage_ = nullptr;
+  }
+  if (this->feed_input_ring_struct_ != nullptr) {
+    heap_caps_free(this->feed_input_ring_struct_);
+    this->feed_input_ring_struct_ = nullptr;
+  }
+}
+
+// ---- Fetch task: drains AFE output into the ring for process() ----
 
 void EspAfe::fetch_task_trampoline(void *arg) {
   static_cast<EspAfe *>(arg)->fetch_task_loop_();
@@ -742,25 +895,17 @@ void EspAfe::fetch_task_trampoline(void *arg) {
 }
 
 void EspAfe::fetch_task_loop_() {
-  // One AFE output frame lasts fetch_chunksize_/16 ms @ 16kHz. Adding 10ms
-  // slack gives the internal worker enough time even under load, and makes
-  // sure the task exits within ~frame_ms on shutdown (no forced delete).
-  const int frame_ms = (this->fetch_chunksize_ > 0) ? (this->fetch_chunksize_ / 16) : 32;
-  const TickType_t fetch_timeout = pdMS_TO_TICKS(frame_ms + 10);
+  // Timeout based on the feed cycle: with MMR feed_chunksize=1024 @ 16kHz = 64ms.
+  // Using feed_chunksize ensures the fetch waits long enough for the internal
+  // AFE worker to produce output, avoiding the "Ringbuffer of AFE is empty"
+  // spam from esp-sr when polling faster than the feed rate.
+  const int feed_ms = (this->feed_chunksize_ > 0) ? (this->feed_chunksize_ / 16) : 64;
+  const TickType_t fetch_timeout = pdMS_TO_TICKS(feed_ms + 10);
 
   while (this->fetch_task_running_.load(std::memory_order_acquire)) {
-    // Wait for process() to confirm at least one feed was accepted.
-    if (this->feed_signal_ != nullptr) {
-      if (xSemaphoreTake(this->feed_signal_, pdMS_TO_TICKS(100)) != pdTRUE) {
-        continue;
-      }
-    }
-    if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
-      break;
-    }
-    // fetch_with_delay() with a finite timeout blocks only until AFE produces
-    // output (or the timeout fires), avoiding both busy polling and an
-    // unkillable portMAX_DELAY wait on shutdown.
+    // fetch_with_delay() blocks internally on esp-sr's output ring until a
+    // processed frame is ready or the timeout fires. This is the synchronization
+    // mechanism designed by Espressif (no external semaphore needed).
     afe_fetch_result_t *result =
         this->afe_handle_->fetch_with_delay(this->afe_data_, fetch_timeout);
     if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
@@ -808,17 +953,9 @@ bool EspAfe::start_fetch_task_() {
     }
   }
 
-  if (this->feed_signal_ == nullptr) {
-    this->feed_signal_ = xSemaphoreCreateCounting(8, 0);
-    if (this->feed_signal_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to create AFE feed signal semaphore");
-      return false;
-    }
-  }
-
   if (this->fetch_task_stack_ == nullptr) {
-    RAMAllocator<StackType_t> internal_stack(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
-    this->fetch_task_stack_ = internal_stack.allocate(kFetchTaskStackWords);
+    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+    this->fetch_task_stack_ = stack_alloc.allocate(kFetchTaskStackWords);
     if (this->fetch_task_stack_ == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch task stack");
       return false;
@@ -828,7 +965,7 @@ bool EspAfe::start_fetch_task_() {
   this->fetch_task_running_.store(true, std::memory_order_release);
   this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(
       &EspAfe::fetch_task_trampoline, "afe_fetch", kFetchTaskStackWords, this,
-      this->task_priority_ > 0 ? this->task_priority_ - 1 : 1,
+      this->task_priority_ > 2 ? this->task_priority_ - 2 : 1,  // fetch below feed
       this->fetch_task_stack_, &this->fetch_task_tcb_,
       this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
   if (this->fetch_task_handle_ == nullptr) {
@@ -837,7 +974,7 @@ bool EspAfe::start_fetch_task_() {
     return false;
   }
   ESP_LOGI(TAG, "AFE fetch task started (core=%d, priority=%d)",
-           this->task_core_, this->task_priority_ - 1);
+           this->task_core_, this->task_priority_ > 2 ? this->task_priority_ - 2 : 1);
   return true;
 }
 
@@ -846,12 +983,8 @@ void EspAfe::stop_fetch_task_() {
     return;
   }
   this->fetch_task_running_.store(false, std::memory_order_release);
-  // Wake the task if it is waiting on feed_signal_, then let the fetch
-  // timeout (frame_ms + slack) finish naturally on the next iteration.
-  // The task calls vTaskDelete(nullptr) in fetch_task_trampoline.
-  if (this->feed_signal_ != nullptr) {
-    xSemaphoreGive(this->feed_signal_);
-  }
+  // The fetch task will exit naturally when fetch_with_delay() times out
+  // and it re-checks fetch_task_running_. No wake needed.
   // Wait up to ~250ms for the task to mark itself deleted.
   for (int i = 0; i < 25; i++) {
     if (eTaskGetState(this->fetch_task_handle_) == eDeleted) {
@@ -867,10 +1000,6 @@ void EspAfe::stop_fetch_task_() {
   // back-links into the struct. xTaskCreateStaticPinnedToCore will
   // reinitialize the fields it cares about.
   this->fetch_output_ring_.reset();
-  if (this->feed_signal_ != nullptr) {
-    vSemaphoreDelete(this->feed_signal_);
-    this->feed_signal_ = nullptr;
-  }
 }
 
 EspAfe::~EspAfe() {

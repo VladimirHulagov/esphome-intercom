@@ -467,8 +467,8 @@ voice_assistant:
   microphone: mic_aec    # Post-AEC: clean audio for STT (no speaker echo)
   media_player: speaker_media_player
   micro_wake_word: mww
-  noise_suppression_level: 2
-  auto_gain: 31dBFS
+  noise_suppression_level: 0       # AFE does NS locally
+  auto_gain: 0dBFS                 # AFE does AGC locally
   volume_multiplier: 2.0
   on_timer_started:
     - script.execute: update_timer_state

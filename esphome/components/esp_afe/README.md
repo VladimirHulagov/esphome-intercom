@@ -96,8 +96,8 @@ esp_afe:
   memory_alloc_mode: more_psram  # Memory allocation strategy
   afe_linear_gain: 1.0        # Linear gain applied to output (0.1-10.0)
   task_core: 1                # FreeRTOS task core (0 or 1)
-  task_priority: 5            # FreeRTOS task priority (1-24)
-  ringbuf_size: 8             # Internal ring buffer size in frames
+  task_priority: 8            # FreeRTOS task priority (1-24, default 8)
+  ringbuf_size: 8             # Internal ring buffer size in frames (default 8)
 ```
 
 ### Configuration Options
@@ -107,24 +107,49 @@ esp_afe:
 | `id` | ID | Required | Component ID |
 | `type` | string | `sr` | AFE type: `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
 | `mode` | string | `low_cost` | AFE mode: `low_cost` or `high_perf` |
-| `mic_num` | int | 1 | Number of microphones (1 or 2). Set to 2 for dual-mic beamforming with `se_enabled: true` |
-| `se_enabled` | bool | false | Enable beamforming (BSS). Requires `mic_num: 2`. Replaces NS and AGC with spatial source separation |
-| `aec_enabled` | bool | true | Enable acoustic echo cancellation |
-| `aec_filter_length` | int | 4 | AEC filter length in frames (1-8). 4 = 64ms tail, sufficient for most setups |
-| `ns_enabled` | bool | true | Enable noise suppression (WebRTC engine) |
-| `vad_enabled` | bool | false | Enable voice activity detection |
-| `vad_mode` | int | 3 | VAD aggressiveness (0-4). Higher = rejects more noise but may miss quiet speech |
-| `vad_min_speech_ms` | int | 128 | Minimum speech duration to trigger voice detection (32-60000 ms) |
-| `vad_min_noise_ms` | int | 1000 | Minimum noise duration before VAD clears (64-60000 ms) |
-| `vad_delay_ms` | int | 128 | VAD state transition delay (0-60000 ms) |
-| `agc_enabled` | bool | true | Enable automatic gain control (WebRTC engine) |
-| `agc_compression_gain` | int | 9 | AGC compression gain in dB (0-30) |
-| `agc_target_level` | int | 3 | AGC target level (0-31, lower value = louder output) |
+| `mic_num` | int | `1` | Number of microphones (1 or 2). Set to 2 for dual-mic beamforming with `se_enabled: true` |
+| `aec_enabled` | bool | **true** | Enable acoustic echo cancellation |
+| `aec_filter_length` | int | `4` | AEC filter length in frames (1-8). 4 = 64ms tail, sufficient for most setups |
+| `ns_enabled` | bool | **true** | Enable noise suppression (WebRTC engine) |
+| `agc_enabled` | bool | **true** | Enable automatic gain control (WebRTC engine) |
+| `se_enabled` | bool | **false** | Enable beamforming (BSS). Requires `mic_num: 2`. Replaces NS and AGC with spatial source separation |
+| `vad_enabled` | bool | **false** | Enable voice activity detection |
+| `vad_mode` | int | `3` | VAD aggressiveness (0-4). Higher = rejects more noise but may miss quiet speech |
+| `vad_min_speech_ms` | int | `128` | Minimum speech duration to trigger voice detection (32-60000 ms) |
+| `vad_min_noise_ms` | int | `1000` | Minimum noise duration before VAD clears (64-60000 ms) |
+| `vad_delay_ms` | int | `128` | VAD state transition delay (0-60000 ms) |
+| `agc_compression_gain` | int | `9` | AGC compression gain in dB (0-30) |
+| `agc_target_level` | int | `3` | AGC target level (0-31, lower value = louder output) |
 | `memory_alloc_mode` | string | `more_psram` | Memory allocation: `more_internal`, `internal_psram_balance`, `more_psram` |
-| `afe_linear_gain` | float | 1.0 | Linear gain multiplier applied to output (0.1-10.0) |
-| `task_core` | int | 1 | FreeRTOS task core affinity (0 or 1) |
-| `task_priority` | int | 5 | FreeRTOS task priority (1-24) |
-| `ringbuf_size` | int | 8 | Internal ring buffer size in frames (2-32). Larger = more latency tolerance, more memory |
+| `afe_linear_gain` | float | `1.0` | Linear gain multiplier applied to output (0.1-10.0) |
+| `task_core` | int | `1` | FreeRTOS task core affinity (0 or 1) |
+| `task_priority` | int | `8` | FreeRTOS task priority (1-24) |
+| `ringbuf_size` | int | `8` | Internal ring buffer size in frames (2-32). Larger = more latency tolerance, more memory |
+
+> **Defaults are designed so that a minimal config already enables AEC + NS + AGC.** You only need to declare options that differ from the defaults. In particular:
+> - `aec_enabled`, `ns_enabled`, `agc_enabled` are **true** by default. Only set them if you want to **disable** a feature.
+> - `se_enabled` and `vad_enabled` are **false** by default. Set them to `true` to opt in.
+> - `memory_alloc_mode` defaults to `more_psram`, `task_core` to `1`, `task_priority` to `8`. Override only if your hardware requires it.
+>
+> **Minimal single-mic** (AEC + NS + AGC out of the box):
+> ```yaml
+> esp_afe:
+>   id: afe_processor
+>   type: sr
+>   mode: low_cost
+> ```
+>
+> **Minimal dual-mic** (adds beamforming):
+> ```yaml
+> esp_afe:
+>   id: afe_processor
+>   type: sr
+>   mode: low_cost
+>   mic_num: 2
+>   se_enabled: true
+> ```
+>
+> Everything else (AEC, NS, AGC, memory, task settings) uses sensible defaults and does not need to be repeated.
 
 ### AFE Type and Mode
 
@@ -295,12 +320,10 @@ esp_afe:
   id: afe_processor
   type: sr
   mode: low_cost
-  mic_num: 2                  # 1 for single-mic, 2 for dual-mic beamforming
-  se_enabled: true            # Beamforming (requires mic_num: 2)
-  aec_filter_length: 4
-  ns_enabled: true
-  agc_enabled: true
-  vad_enabled: true
+  mic_num: 2                  # 2 for dual-mic beamforming (default: 1)
+  se_enabled: true            # Beamforming (requires mic_num: 2, default: false)
+  vad_enabled: true           # Voice activity detection (default: false)
+  # aec_enabled, ns_enabled, agc_enabled are true by default - no need to repeat
 
 i2s_audio_duplex:
   id: i2s_duplex
