@@ -831,7 +831,7 @@ bool EspAfe::start_feed_task_() {
   }
 
   if (this->feed_task_stack_ == nullptr) {
-    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
     this->feed_task_stack_ = stack_alloc.allocate(kFeedTaskStackWords);
     if (this->feed_task_stack_ == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate AFE feed task stack");
@@ -954,7 +954,7 @@ bool EspAfe::start_fetch_task_() {
   }
 
   if (this->fetch_task_stack_ == nullptr) {
-    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
     this->fetch_task_stack_ = stack_alloc.allocate(kFetchTaskStackWords);
     if (this->fetch_task_stack_ == nullptr) {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch task stack");
