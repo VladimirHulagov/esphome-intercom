@@ -155,7 +155,7 @@ class EspAfe : public Component, public AudioProcessor {
   StaticTask_t feed_task_tcb_{};
   StackType_t *feed_task_stack_{nullptr};
   std::atomic<bool> feed_task_running_{false};
-  static constexpr uint32_t kFeedTaskStackWords = 4096 / sizeof(StackType_t);
+  static constexpr uint32_t kFeedTaskStackWords = 12288 / sizeof(StackType_t);
 
   static void feed_task_trampoline(void *arg);
   void feed_task_loop_();

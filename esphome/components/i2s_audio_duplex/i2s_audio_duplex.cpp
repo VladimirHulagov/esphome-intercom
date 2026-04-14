@@ -1128,8 +1128,12 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
   } else
 #endif
   if (!ctx.use_tdm_ref && ctx.processor_ready &&
-      ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr && ctx.speaker_running &&
-      (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)) {
+      ctx.spk_ref_buffer != nullptr && ctx.aec_output != nullptr &&
+      // Stereo AEC: reference is embedded in I2S RX (L=DAC loopback), always available.
+      // Mono AEC: reference comes from speaker ring buffer, only valid when speaker is active.
+      (ctx.use_stereo_aec_ref ||
+       (ctx.speaker_running &&
+        (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)))) {
 
     // Mono mode: get AEC reference (direct from TX or ring buffer)
     // Reference is post-volume PCM, no additional scaling (Espressif TYPE2 pattern).

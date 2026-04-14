@@ -154,9 +154,13 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->agc_compression_gain_db = this->agc_compression_gain_;
   cfg->agc_target_level_dbfs = this->agc_target_level_;
 
-  cfg->afe_perferred_core = this->task_core_;
+  // 1-mic: internal AFE worker on opposite core from feed task to avoid
+  // CPU starvation (WebRTC NS/AGC in feed is heavy). 2-mic: same core.
+  cfg->afe_perferred_core = (this->mic_num_ <= 1 && this->task_core_ >= 0)
+      ? (1 - this->task_core_) : this->task_core_;
   cfg->afe_perferred_priority = this->task_priority_;
-  cfg->afe_ringbuf_size = this->ringbuf_size_;
+  cfg->afe_ringbuf_size = (this->mic_num_ <= 1 && this->ringbuf_size_ < 16)
+      ? 16 : this->ringbuf_size_;
   cfg->memory_alloc_mode = static_cast<afe_memory_alloc_mode_t>(this->memory_alloc_mode_);
   cfg->afe_linear_gain = this->afe_linear_gain_;
   cfg->debug_init = false;
@@ -262,12 +266,13 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   instance->process_chunksize = 0;
   instance->total_channels = 0;
 
-  // Start feed task first (it fills the internal ring that fetch drains).
+  // Start feed task (all mic configs). esp-sr's internal worker task needs
+  // feed() on a separate task so it can process between feed and fetch.
   if (!this->start_feed_task_()) {
     ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
     return false;
   }
-  // Then start fetch task (reads from AFE internal output ring).
+  // Fetch task always needed (drains AFE output ring).
   if (!this->start_fetch_task_()) {
     this->stop_feed_task_();
     ESP_LOGE(TAG, "Installed AFE instance but fetch task failed to start");
@@ -839,10 +844,17 @@ bool EspAfe::start_feed_task_() {
     }
   }
 
+  // 1-mic: WebRTC NS/AGC runs inline in afe_feed() (CPU-heavy). fetch must
+  // preempt feed to drain the output ring, otherwise feed fills the internal
+  // ring and all frames are rejected. 2-mic: BSS has lighter feed path.
+  const int feed_priority = (this->mic_num_ <= 1)
+      ? (this->task_priority_ > 2 ? this->task_priority_ - 2 : 1)
+      : (this->task_priority_ > 1 ? this->task_priority_ - 1 : 1);
+
   this->feed_task_running_.store(true, std::memory_order_release);
   this->feed_task_handle_ = xTaskCreateStaticPinnedToCore(
       &EspAfe::feed_task_trampoline, "afe_feed", kFeedTaskStackWords, this,
-      this->task_priority_ > 1 ? this->task_priority_ - 1 : 1,  // feed >= fetch
+      feed_priority,
       this->feed_task_stack_, &this->feed_task_tcb_,
       this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
   if (this->feed_task_handle_ == nullptr) {
@@ -856,7 +868,7 @@ bool EspAfe::start_feed_task_() {
     return false;
   }
   ESP_LOGI(TAG, "AFE feed task started (core=%d, priority=%d)",
-           this->task_core_, this->task_priority_ > 1 ? this->task_priority_ - 1 : 1);
+           this->task_core_, feed_priority);
   return true;
 }
 
@@ -903,9 +915,8 @@ void EspAfe::fetch_task_loop_() {
   const TickType_t fetch_timeout = pdMS_TO_TICKS(feed_ms + 10);
 
   while (this->fetch_task_running_.load(std::memory_order_acquire)) {
-    // fetch_with_delay() blocks internally on esp-sr's output ring until a
-    // processed frame is ready or the timeout fires. This is the synchronization
-    // mechanism designed by Espressif (no external semaphore needed).
+    // fetch_with_delay: blocks on esp-sr's output ring with a finite timeout.
+    // Allows clean shutdown when fetch_task_running_ goes false.
     afe_fetch_result_t *result =
         this->afe_handle_->fetch_with_delay(this->afe_data_, fetch_timeout);
     if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
@@ -962,19 +973,25 @@ bool EspAfe::start_fetch_task_() {
     }
   }
 
+  const int fetch_priority = this->task_priority_ > 1 ? this->task_priority_ - 1 : 1;
+  // 1-mic: put fetch on the OTHER core so WebRTC NS/AGC in feed doesn't starve it.
+  // 2-mic: both on the same core (BSS feed is lighter).
+  const int fetch_core = (this->mic_num_ <= 1 && this->task_core_ >= 0)
+      ? (1 - this->task_core_) : (this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
+
   this->fetch_task_running_.store(true, std::memory_order_release);
   this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(
       &EspAfe::fetch_task_trampoline, "afe_fetch", kFetchTaskStackWords, this,
-      this->task_priority_ > 2 ? this->task_priority_ - 2 : 1,  // fetch below feed
+      fetch_priority,
       this->fetch_task_stack_, &this->fetch_task_tcb_,
-      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
+      fetch_core);
   if (this->fetch_task_handle_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create AFE fetch task");
     this->fetch_task_running_.store(false, std::memory_order_release);
     return false;
   }
   ESP_LOGI(TAG, "AFE fetch task started (core=%d, priority=%d)",
-           this->task_core_, this->task_priority_ > 2 ? this->task_priority_ - 2 : 1);
+           fetch_core, fetch_priority);
   return true;
 }
 
@@ -983,8 +1000,6 @@ void EspAfe::stop_fetch_task_() {
     return;
   }
   this->fetch_task_running_.store(false, std::memory_order_release);
-  // The fetch task will exit naturally when fetch_with_delay() times out
-  // and it re-checks fetch_task_running_. No wake needed.
   // Wait up to ~250ms for the task to mark itself deleted.
   for (int i = 0; i < 25; i++) {
     if (eTaskGetState(this->fetch_task_handle_) == eDeleted) {
