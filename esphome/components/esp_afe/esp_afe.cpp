@@ -269,15 +269,38 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   instance->process_chunksize = 0;
   instance->total_channels = 0;
 
-  // Start feed task (all mic configs). esp-sr's internal worker task needs
-  // feed() on a separate task so it can process between feed and fetch.
-  if (!this->start_feed_task_()) {
-    ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
-    return false;
+  // Topology decision: physical 1-mic uses the inline-feed + feed_signal_
+  // pattern (matches commit f755fff, was confirmed working on Xiaozhi).
+  // Physical dual-mic keeps the 3-task pattern (matches commit 6d6c249,
+  // tested OK on Waveshare S3).
+  this->use_inline_feed_ = (this->mic_num_ <= 1);
+
+  if (this->use_inline_feed_) {
+    // Counting semaphore: process() gives on each accepted feed(), fetch
+    // task takes before fetch_with_delay so fetch is only called when a
+    // frame is actually pending. Prevents "Ringbuffer of AFE is empty"
+    // spam on single-mic MR where feed_chunksize != fetch_chunksize.
+    if (this->feed_signal_ == nullptr) {
+      this->feed_signal_ = xSemaphoreCreateCountingStatic(
+          kFeedSignalMaxCount, 0, &this->feed_signal_storage_);
+      if (this->feed_signal_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create feed_signal_ semaphore");
+        return false;
+      }
+    }
+  } else {
+    // 3-task path: dedicated feed task reads NOSPLIT ring and calls feed().
+    if (!this->start_feed_task_()) {
+      ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
+      return false;
+    }
   }
-  // Fetch task always needed (drains AFE output ring).
+
+  // Fetch task always needed (drains AFE output ring in both topologies).
   if (!this->start_fetch_task_()) {
-    this->stop_feed_task_();
+    if (!this->use_inline_feed_) {
+      this->stop_feed_task_();
+    }
     ESP_LOGE(TAG, "Installed AFE instance but fetch task failed to start");
     return false;
   }
@@ -298,10 +321,21 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
 }
 
 EspAfe::AfeInstance EspAfe::detach_instance_() {
-  // Stop feed first (it calls afe->feed()), then fetch (it calls afe->fetch()).
-  // Both must stop before we hand the handle back to destroy_instance_.
-  this->stop_feed_task_();
+  // Stop fetch first: in inline-feed topology, fetch task takes feed_signal_
+  // which is given from process(); we want fetch quiesced before we delete
+  // the semaphore below. In 3-task topology order is also safe because
+  // feed_task and fetch_task are independent at this point.
   this->stop_fetch_task_();
+  if (!this->use_inline_feed_) {
+    this->stop_feed_task_();
+  }
+  // Destroy feed_signal_ (inline topology only). Process() may still race
+  // to give on it concurrently, but by the time detach is called, drain
+  // protocol has quiesced process(). Safe to delete.
+  if (this->feed_signal_ != nullptr) {
+    vSemaphoreDelete(this->feed_signal_);
+    this->feed_signal_ = nullptr;
+  }
 
   AfeInstance instance;
   instance.handle = this->afe_handle_;
@@ -700,12 +734,32 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
       memset(this->feed_buf_, 0, static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t));
       this->warmup_remaining_--;
     }
-    // Enqueue the complete frame for the feed task (non-blocking, atomic).
-    // NOSPLIT ring guarantees the frame is sent/received as one unit.
-    size_t feed_bytes = static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t);
-    if (this->feed_input_ring_ != nullptr) {
-      if (!xRingbufferSend(this->feed_input_ring_, this->feed_buf_, feed_bytes, 0)) {
-        this->input_ring_drop_.fetch_add(1, std::memory_order_relaxed);
+    if (this->use_inline_feed_) {
+      // Inline feed: call afe->feed() directly on the caller thread, then
+      // signal the fetch task. Matches the f755fff topology that was
+      // confirmed working on single-mic. Skips the NOSPLIT ring entirely.
+      int ret = this->afe_handle_->feed(this->afe_data_, this->feed_buf_);
+      if (ret > 0) {
+        this->feed_ok_.fetch_add(1, std::memory_order_relaxed);
+        if (this->feed_signal_ != nullptr) {
+          // Counting semaphore: fetch task takes one token per processed
+          // frame. give() can fail only if the counter saturates, which
+          // means fetch is too slow - count that as an output backpressure.
+          if (xSemaphoreGive(this->feed_signal_) != pdTRUE) {
+            this->output_ring_drop_.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+      } else {
+        this->feed_rejected_.fetch_add(1, std::memory_order_relaxed);
+      }
+    } else {
+      // 3-task topology: enqueue the complete frame for the feed task
+      // (non-blocking, atomic). NOSPLIT ring guarantees atomic send/receive.
+      size_t feed_bytes = static_cast<size_t>(fs) * this->total_channels_ * sizeof(int16_t);
+      if (this->feed_input_ring_ != nullptr) {
+        if (!xRingbufferSend(this->feed_input_ring_, this->feed_buf_, feed_bytes, 0)) {
+          this->input_ring_drop_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
     offset = 0;
@@ -949,6 +1003,24 @@ void EspAfe::fetch_task_loop_() {
   const TickType_t fetch_timeout = pdMS_TO_TICKS(feed_ms + 10);
 
   while (this->fetch_task_running_.load(std::memory_order_acquire)) {
+    // Inline-feed topology: wait on feed_signal_ so fetch is only invoked
+    // when process() has actually fed a frame. Prevents calling
+    // fetch_with_delay ahead of feed() and spamming esp-sr's "Ringbuffer
+    // empty" warning. If the token times out we loop and re-check the
+    // running flag to allow clean shutdown.
+    if (this->use_inline_feed_) {
+      if (this->feed_signal_ == nullptr) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
+      if (xSemaphoreTake(this->feed_signal_, fetch_timeout) != pdTRUE) {
+        continue;  // no frame produced in this window, re-check shutdown
+      }
+      if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
+        break;
+      }
+    }
+
     // fetch_with_delay: blocks on esp-sr's output ring with a finite timeout.
     // Allows clean shutdown when fetch_task_running_ goes false.
     afe_fetch_result_t *result =

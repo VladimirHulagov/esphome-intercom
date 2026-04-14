@@ -146,8 +146,27 @@ class EspAfe : public Component, public AudioProcessor {
   // afe->fetch_with_delay() and writes to fetch_output_ring_. process() reads
   // the output ring non-blocking for the processed frame.
 
-  // Feed bridge: process() enqueues, feed task dequeues and calls afe->feed().
-  // Uses RINGBUF_TYPE_NOSPLIT for atomic frame send/receive (not ESPHome BYTEBUF).
+  // Two feed topologies switched at install time:
+  //
+  //  use_inline_feed_ == true (physical 1-mic, e.g. ES8311 low_cost):
+  //    process() calls afe_handle_->feed() inline on the caller thread
+  //    (i2s_audio_task) and gives feed_signal_. The NOSPLIT ring and
+  //    feed_task are NOT used. This matches the commit f755fff topology
+  //    that was confirmed working on single-mic before the 3-task refactor.
+  //
+  //  use_inline_feed_ == false (physical 2-mic, e.g. ES7210 with BSS):
+  //    process() enqueues a complete frame into feed_input_ring_ (NOSPLIT).
+  //    feed_task dequeues and calls afe_handle_->feed() off the realtime
+  //    path. feed_signal_ is unused. This matches commit 6d6c249 and is
+  //    what tested OK on dual-mic WS3.
+  //
+  // fetch_task is used in BOTH topologies (takes feed_signal_ in inline
+  // mode, blocks directly on fetch_with_delay in 3-task mode).
+  bool use_inline_feed_{false};
+  SemaphoreHandle_t feed_signal_{nullptr};
+  StaticSemaphore_t feed_signal_storage_{};
+  static constexpr int kFeedSignalMaxCount = 8;
+
   RingbufHandle_t feed_input_ring_{nullptr};
   uint8_t *feed_input_ring_storage_{nullptr};
   StaticRingbuffer_t *feed_input_ring_struct_{nullptr};
