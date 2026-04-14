@@ -184,7 +184,7 @@ external_components:
   - source:
       type: local
       path: ../../../../esphome/components
-    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor, microphone]
+    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
   # Override micro_wake_word with upstream dev containing PR #15628
   # (arena size probing + esp-nn pin). Remove when ESPHome 2026.4.0 ships.
   - source:
@@ -767,9 +767,19 @@ script:
       - light.turn_on:
           id: backlight
           brightness: 100%
-      - script.execute: update_replying_text
-      - script.execute: reply_pagination_timer
-      - script.execute: draw_display
+      - if:
+          condition:
+            lambda: |-
+              return id(current_mode) == 0;
+          then:
+            - script.execute: update_replying_text
+            - if:
+                condition:
+                  lambda: |-
+                    return id(reply_total_pages) > 1;
+                then:
+                  - script.execute: reply_pagination_timer
+            - script.execute: draw_display
 
   # STT text display (extends package placeholder)
   - id: !extend ui_stt_ended
@@ -783,6 +793,7 @@ script:
   - id: !extend ui_ic_call
     then:
       - script.stop: ai_animation_loop
+      - script.stop: reply_pagination_timer
       - lambda: |-
           id(peer_name) = peer;
           id(previous_mode) = id(current_mode);
@@ -1147,10 +1158,23 @@ script:
           id: current_mode
           value: '0'
       - script.execute: set_idle_or_mute_phase
+      - if:
+          condition:
+            lambda: |-
+              return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};
+          then:
+            - script.execute: update_replying_text
+            - if:
+                condition:
+                  lambda: |-
+                    return id(reply_total_pages) > 1;
+                then:
+                  - script.execute: reply_pagination_timer
       - script.execute: draw_display
 
   - id: switch_to_intercom
     then:
+      - script.stop: reply_pagination_timer
       - globals.set:
           id: current_mode
           value: '1'
@@ -1220,31 +1244,33 @@ script:
   - id: update_replying_text
     then:
       - lambda: |-
+          if (id(current_mode) != 0 ||
+              id(voice_assistant_phase) != ${voice_assist_replying_phase_id}) {
+            return;
+          }
+          static std::vector<std::string> visible_lines(10);
+          static std::string page_counter_text;
           lv_obj_t* lines[] = {
             id(reply_line_0), id(reply_line_1), id(reply_line_2), id(reply_line_3), id(reply_line_4),
             id(reply_line_5), id(reply_line_6), id(reply_line_7), id(reply_line_8), id(reply_line_9)
           };
           const size_t total_rows = 10;
           const auto &wrapped = id(wrapped_lines_reply);
-          const size_t total_lines = wrapped.size();
-          const size_t cur_page = id(reply_page_index) % id(reply_total_pages);
+          const size_t total_pages = std::max(1, id(reply_total_pages));
+          const size_t cur_page = id(reply_page_index) % total_pages;
           const size_t start_line = cur_page * total_rows;
-          const size_t end_line = std::min(start_line + total_rows, total_lines);
           for (size_t i = 0; i < total_rows; i++) {
             size_t line_idx = start_line + i;
-            if (line_idx < end_line && !wrapped[line_idx].empty()) {
-              lv_label_set_text(lines[i], wrapped[line_idx].c_str());
-            } else {
-              lv_label_set_text(lines[i], "");
-            }
+            visible_lines[i] = line_idx < wrapped.size() ? wrapped[line_idx] : "";
+            lv_label_set_text_static(lines[i], visible_lines[i].c_str());
           }
           // Update page counter
-          if (id(reply_total_pages) > 1) {
-            char buf[12];
-            snprintf(buf, sizeof(buf), "%d/%d", (int)(cur_page + 1), (int)id(reply_total_pages));
-            lv_label_set_text(id(reply_page_counter), buf);
+          if (total_pages > 1) {
+            page_counter_text = str_sprintf("%d/%d", (int) (cur_page + 1), (int) total_pages);
+            lv_label_set_text_static(id(reply_page_counter), page_counter_text.c_str());
           } else {
-            lv_label_set_text(id(reply_page_counter), "");
+            page_counter_text.clear();
+            lv_label_set_text_static(id(reply_page_counter), page_counter_text.c_str());
           }
 
   # Auto-advance replying text pages every 14 seconds
@@ -1252,11 +1278,18 @@ script:
     mode: restart
     then:
       - delay: 14s
-      - globals.set:
-          id: reply_page_index
-          value: !lambda 'return id(reply_page_index) + 1;'
-      - script.execute: update_replying_text
-      - script.execute: reply_pagination_timer
+      - if:
+          condition:
+            lambda: |-
+              return id(current_mode) == 0 &&
+                     id(voice_assistant_phase) == ${voice_assist_replying_phase_id} &&
+                     id(reply_total_pages) > 1;
+          then:
+            - globals.set:
+                id: reply_page_index
+                value: !lambda 'return id(reply_page_index) + 1;'
+            - script.execute: update_replying_text
+            - script.execute: reply_pagination_timer
 
   # Timer alarm: play sound in a loop until timer_ringing is turned off
   - id: timer_alarm_loop
@@ -1916,7 +1949,11 @@ text_sensor:
                 line_count++;
               }
             }
-            id(reply_total_pages) = (line_count + total_rows - 1) / total_rows;
+            while (!id(wrapped_lines_reply).empty() && (id(wrapped_lines_reply).size() % 10) != 0) {
+              id(wrapped_lines_reply).push_back("");
+            }
+            line_count = id(wrapped_lines_reply).size();
+            id(reply_total_pages) = (line_count + 10 - 1) / 10;
             if (id(reply_total_pages) < 1) id(reply_total_pages) = 1;
 
 # =============================================================================
@@ -2250,7 +2287,7 @@ display:
     id: s3_box_lcd
     model: GC9A01A
     invert_colors: true
-    data_rate: 40MHz
+    data_rate: 80MHz
     cs_pin: 5
     dc_pin: 47
     reset_pin:
@@ -2269,7 +2306,7 @@ display:
 lvgl:
   displays:
     - s3_box_lcd
-  buffer_size: 50%
+  buffer_size: 25%
   color_depth: 16
   log_level: WARN
   top_layer:
