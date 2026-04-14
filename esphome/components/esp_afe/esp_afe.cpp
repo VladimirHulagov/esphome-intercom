@@ -154,15 +154,12 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->agc_compression_gain_db = this->agc_compression_gain_;
   cfg->agc_target_level_dbfs = this->agc_target_level_;
 
-  // 1-mic: internal AFE worker on opposite core from feed task to avoid
-  // CPU starvation (WebRTC NS/AGC in feed is heavy). 2-mic: same core.
-  cfg->afe_perferred_core = (this->mic_num_ <= 1 && this->task_core_ >= 0)
-      ? (1 - this->task_core_) : this->task_core_;
-  // 1-mic: lower worker priority so it doesn't round-robin with i2s_duplex
-  // (both at task_priority_ causes DMA underruns during TTS playback).
-  cfg->afe_perferred_priority = (this->mic_num_ <= 1)
-      ? (this->task_priority_ > 3 ? this->task_priority_ - 3 : 1)
-      : this->task_priority_;
+  // 1-mic: ALL AFE tasks on task_core_ (core 1). Core 0 stays free for I2S
+  // DMA + lwIP. Worker at task_priority_ preempts feed (task_priority_-2)
+  // so it processes immediately when data arrives. ringbuf=16 absorbs bursts.
+  // 2-mic: worker on task_core_ (BSS feed is lighter, no core split needed).
+  cfg->afe_perferred_core = this->task_core_;
+  cfg->afe_perferred_priority = this->task_priority_;
   cfg->afe_ringbuf_size = (this->mic_num_ <= 1 && this->ringbuf_size_ < 16)
       ? 16 : this->ringbuf_size_;
   cfg->memory_alloc_mode = static_cast<afe_memory_alloc_mode_t>(this->memory_alloc_mode_);
@@ -978,10 +975,10 @@ bool EspAfe::start_fetch_task_() {
   }
 
   const int fetch_priority = this->task_priority_ > 1 ? this->task_priority_ - 1 : 1;
-  // 1-mic: put fetch on the OTHER core so WebRTC NS/AGC in feed doesn't starve it.
-  // 2-mic: both on the same core (BSS feed is lighter).
-  const int fetch_core = (this->mic_num_ <= 1 && this->task_core_ >= 0)
-      ? (1 - this->task_core_) : (this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
+  // 1-mic: fetch on SAME core as feed (task_core_) to keep core 0 free for
+  // I2S + lwIP + worker. Fetch is lightweight (blocks on fetch_with_delay).
+  // 2-mic: same core as feed (default behavior).
+  const int fetch_core = this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY;
 
   this->fetch_task_running_.store(true, std::memory_order_release);
   this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(
