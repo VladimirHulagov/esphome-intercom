@@ -158,7 +158,11 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   // CPU starvation (WebRTC NS/AGC in feed is heavy). 2-mic: same core.
   cfg->afe_perferred_core = (this->mic_num_ <= 1 && this->task_core_ >= 0)
       ? (1 - this->task_core_) : this->task_core_;
-  cfg->afe_perferred_priority = this->task_priority_;
+  // 1-mic: lower worker priority so it doesn't round-robin with i2s_duplex
+  // (both at task_priority_ causes DMA underruns during TTS playback).
+  cfg->afe_perferred_priority = (this->mic_num_ <= 1)
+      ? (this->task_priority_ > 3 ? this->task_priority_ - 3 : 1)
+      : this->task_priority_;
   cfg->afe_ringbuf_size = (this->mic_num_ <= 1 && this->ringbuf_size_ < 16)
       ? 16 : this->ringbuf_size_;
   cfg->memory_alloc_mode = static_cast<afe_memory_alloc_mode_t>(this->memory_alloc_mode_);
