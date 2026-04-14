@@ -18,7 +18,9 @@ namespace esp_afe {
 
 static const char *const TAG = "esp_afe";
 static const TickType_t CONFIG_MUTEX_TIMEOUT = pdMS_TO_TICKS(250);
-static const TickType_t PROCESS_MUTEX_TIMEOUT = pdMS_TO_TICKS(20);
+// Max wait for process() to finish its current frame when a config change
+// needs to rebuild the AFE instance. ~2 frame periods at 16 kHz / 512 samples.
+static const TickType_t DRAIN_WAIT_TIMEOUT = pdMS_TO_TICKS(50);
 
 // Validate function pointer using ESP-IDF's memory map knowledge.
 static inline bool is_valid_func(const void *ptr) {
@@ -338,6 +340,22 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     return false;
   }
 
+  // Drain protocol: signal process() to bail, then wait for any in-flight
+  // call to complete. process_busy_ is cleared at the end of process() with
+  // release semantics; our acquire load here pairs with that store so we
+  // observe a quiesced state before touching the instance. Timeout is a
+  // safety net: if i2s_audio_task is stuck elsewhere we proceed anyway to
+  // avoid deadlocking the reconfiguration.
+  this->drain_request_.store(true, std::memory_order_release);
+  TickType_t drain_deadline = xTaskGetTickCount() + DRAIN_WAIT_TIMEOUT;
+  while (this->process_busy_.load(std::memory_order_acquire)) {
+    if (xTaskGetTickCount() >= drain_deadline) {
+      ESP_LOGW(TAG, "Drain timeout waiting for process() to quiesce, proceeding");
+      break;
+    }
+    vTaskDelay(1);
+  }
+
   // esp-sr FFT resources are global: only one AFE instance can exist.
   // Must destroy old before creating new.
   int old_process = this->process_chunksize_;
@@ -348,6 +366,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   AfeInstance next;
   if (!this->build_instance_(&next)) {
     ESP_LOGE(TAG, "Failed to build new AFE instance. AFE is DOWN until successful rebuild.");
+    this->drain_request_.store(false, std::memory_order_release);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
@@ -357,6 +376,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     ESP_LOGW(TAG, "Reinit changed external frame sizes (%d/%d -> %d/%d), rejecting",
              old_process, old_fetch, next.process_chunksize, next.fetch_chunksize);
     this->destroy_instance_(&next);
+    this->drain_request_.store(false, std::memory_order_release);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
@@ -377,6 +397,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   if (!this->install_instance_(&next)) {
     AfeInstance failed = this->detach_instance_();
     this->destroy_instance_(&failed);
+    this->drain_request_.store(false, std::memory_order_release);
     xSemaphoreGive(this->config_mutex_);
     return false;
   }
@@ -403,6 +424,9 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   this->voice_present_.store(false, std::memory_order_relaxed);
   this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
   this->output_rms_dbfs_.store(-120.0f, std::memory_order_relaxed);
+  // Release drain: new instance is fully installed (feed/fetch tasks started
+  // inside install_instance_). process() can resume real work on next frame.
+  this->drain_request_.store(false, std::memory_order_release);
   xSemaphoreGive(this->config_mutex_);
   return true;
 }
@@ -579,12 +603,19 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   const int transport_mic_channels = mic_channels_in;
   int qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   int os = this->fetch_chunksize_;
-  if (!this->is_initialized() || this->config_mutex_ == nullptr) {
+  if (!this->is_initialized()) {
     if (qs > 0 && os > 0) copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     return false;
   }
 
-  if (xSemaphoreTake(this->config_mutex_, PROCESS_MUTEX_TIMEOUT) != pdTRUE) {
+  // Drain protocol entry: mark busy before observing drain flag. The release
+  // on busy is paired with the acquire on drain_request_ in the writer
+  // (recreate_instance_), so either the writer sees busy=true and waits, or
+  // we see drain_request_=true and bail. We cannot see both false/false and
+  // then observe a torn instance.
+  this->process_busy_.store(true, std::memory_order_release);
+  if (this->drain_request_.load(std::memory_order_acquire)) {
+    this->process_busy_.store(false, std::memory_order_release);
     copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     return false;
   }
@@ -595,7 +626,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   int fs = this->feed_chunksize_;
   if (qs <= 0 || os <= 0 || fs <= 0 || this->feed_buf_ == nullptr) {
     copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
-    xSemaphoreGive(this->config_mutex_);
+    this->process_busy_.store(false, std::memory_order_release);
     return false;
   }
 
@@ -701,7 +732,9 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
     this->glitch_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  xSemaphoreGive(this->config_mutex_);
+  // Release drain guard BEFORE emitting telemetry / counters: those touch
+  // only atomics on this and can safely race with a rebuild.
+  this->process_busy_.store(false, std::memory_order_release);
 
   // Output-side RMS depends on the samples handed to the caller. VAD / input
   // volume / ringbuf_free_pct are written by fetch_task_loop_ when it pulls a
@@ -975,10 +1008,13 @@ bool EspAfe::start_fetch_task_() {
   }
 
   const int fetch_priority = this->task_priority_ > 1 ? this->task_priority_ - 1 : 1;
-  // 1-mic: fetch on SAME core as feed (task_core_) to keep core 0 free for
-  // I2S + lwIP + worker. Fetch is lightweight (blocks on fetch_with_delay).
-  // 2-mic: same core as feed (default behavior).
-  const int fetch_core = this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY;
+  // 1-mic: fetch on OPPOSITE core from feed. Fetch blocks on esp-sr internal
+  // semaphore (~zero CPU), moving it to core 1 frees a scheduling slot on core 0
+  // for feed to keep up with i2s_duplex (core 0 prio 19). Without this, feed@17
+  // gets preempted by fetch@18 on core 0 and esp-sr output ring runs empty.
+  // 2-mic: same core as feed (BSS heavier, benefits from feed+fetch co-located).
+  const int fetch_core = (this->mic_num_ <= 1 && this->task_core_ == 0) ? 1
+                         : (this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
 
   this->fetch_task_running_.store(true, std::memory_order_release);
   this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(

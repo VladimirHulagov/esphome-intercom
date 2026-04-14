@@ -199,7 +199,21 @@ class EspAfe : public Component, public AudioProcessor {
   int task_priority_{5};
   int ringbuf_size_{8};
 
+  // config_mutex_ serialises config-change paths (recreate_instance_,
+  // set_aec_enabled_runtime_, destructor). It is NOT taken by process() on
+  // the hot path. process() uses the drain protocol below instead.
   SemaphoreHandle_t config_mutex_{nullptr};
+
+  // Drain protocol for process() vs recreate_instance_:
+  //   recreate_instance_ sets drain_request_ = true and waits until
+  //   process_busy_ == false before touching instance state. process() marks
+  //   itself busy, then checks drain_request_; if set, it bails with
+  //   passthrough. This removes mutex overhead from the per-frame path while
+  //   preserving the invariant that process() never observes a
+  //   half-demolished instance.
+  std::atomic<bool> drain_request_{false};
+  std::atomic<bool> process_busy_{false};
+
   std::atomic<bool> voice_present_{false};
   std::atomic<float> input_volume_dbfs_{-120.0f};
   std::atomic<float> output_rms_dbfs_{-120.0f};
