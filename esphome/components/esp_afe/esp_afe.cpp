@@ -388,26 +388,6 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   AfeInstance old = this->detach_instance_();
   this->destroy_instance_(&old);
 
-  // If every user-facing feature is disabled there is nothing to build.
-  // Stay in the torn-down state; process() will passthrough via the
-  // afe_stopped_ fast path using the last-known frame spec.
-  //
-  // Guard: only take this shortcut once we have a cached spec to hand out
-  // via frame_spec(). On the very first call (setup() before any successful
-  // install) last_spec_* are zero; build the instance normally so downstream
-  // learns the frame shape, then subsequent toggles can tear down cleanly.
-  if (this->all_features_disabled_() && this->last_spec_process_size_ > 0 &&
-      this->last_spec_fetch_size_ > 0) {
-    bool was_running = !this->afe_stopped_.load(std::memory_order_acquire);
-    this->afe_stopped_.store(true, std::memory_order_release);
-    this->drain_request_.store(false, std::memory_order_release);
-    xSemaphoreGive(this->config_mutex_);
-    if (was_running) {
-      ESP_LOGI(TAG, "AFE stopped (all features disabled); audio path in passthrough");
-    }
-    return true;
-  }
-
   AfeInstance next;
   if (!this->build_instance_(&next)) {
     ESP_LOGE(TAG, "Failed to build new AFE instance. AFE is DOWN until successful rebuild.");
@@ -482,12 +462,6 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
   this->voice_present_.store(false, std::memory_order_relaxed);
   this->input_volume_dbfs_.store(-120.0f, std::memory_order_relaxed);
   this->output_rms_dbfs_.store(-120.0f, std::memory_order_relaxed);
-  // Clear the stopped flag: a live instance is running. Paired with the
-  // acquire load in process() so the hot path sees the transition cleanly.
-  bool was_stopped = this->afe_stopped_.exchange(false, std::memory_order_release);
-  if (was_stopped) {
-    ESP_LOGI(TAG, "AFE restarted (feature re-enabled)");
-  }
   // Release drain: new instance is fully installed (feed/fetch tasks started
   // inside install_instance_). process() can resume real work on next frame.
   this->drain_request_.store(false, std::memory_order_release);
@@ -499,22 +473,7 @@ bool EspAfe::set_aec_enabled_runtime_(bool enabled) {
   if (this->aec_enabled_ == enabled) {
     return true;
   }
-  if (this->config_mutex_ == nullptr) {
-    ESP_LOGW(TAG, "AEC toggle requested before setup");
-    return false;
-  }
-
-  // AFE currently torn down (all features were off). Flip the flag and let
-  // recreate_instance_ rebuild (or stay stopped if still all-off).
-  if (this->afe_stopped_.load(std::memory_order_acquire)) {
-    this->aec_enabled_ = enabled;
-    if (!enabled) {
-      return true;  // nothing to rebuild
-    }
-    return this->recreate_instance_(false);
-  }
-
-  if (!this->is_initialized()) {
+  if (this->config_mutex_ == nullptr || !this->is_initialized()) {
     ESP_LOGW(TAG, "AEC toggle requested before initialization");
     return false;
   }
@@ -540,27 +499,12 @@ bool EspAfe::set_aec_enabled_runtime_(bool enabled) {
 
   ESP_LOGI(TAG, "AEC %s (ret=%d)", enabled ? "enabled" : "disabled", ret);
   this->aec_enabled_ = enabled;
-
-  // Live toggle left AFE running. If the user just turned AEC off and every
-  // other feature was already off, we should stop the whole pipeline.
-  if (!enabled && this->all_features_disabled_()) {
-    this->recreate_instance_(false);  // no-features path tears down inside
-  }
   return true;
 }
 
 bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   if (flag == enabled) {
     return true;
-  }
-  // AFE torn down (all-off) and a feature is coming back: commit the flag and
-  // rebuild via recreate_instance_.
-  if (this->afe_stopped_.load(std::memory_order_acquire)) {
-    flag = enabled;
-    if (!enabled) {
-      return true;  // stays torn down
-    }
-    return this->recreate_instance_(false);
   }
   if (!this->is_initialized() || this->config_mutex_ == nullptr || this->feed_chunksize_ == 0 ||
       this->fetch_chunksize_ == 0) {
@@ -630,13 +574,8 @@ FrameSpec EspAfe::frame_spec() const {
   spec.sample_rate = 16000;
   spec.mic_channels = this->afe_mic_channels_();
   spec.ref_channels = 1;
-  // While running, use the live instance sizes. While torn down (all-off) the
-  // live values are zero; fall back to the last successfully-installed spec
-  // so consumers keep a stable frame shape for the passthrough fast path.
-  int live_in = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
-  int live_out = this->fetch_chunksize_;
-  spec.input_samples = live_in > 0 ? live_in : this->last_spec_process_size_;
-  spec.output_samples = live_out > 0 ? live_out : this->last_spec_fetch_size_;
+  spec.input_samples = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
+  spec.output_samples = this->fetch_chunksize_;
   return spec;
 }
 
@@ -726,15 +665,6 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   const int transport_mic_channels = mic_channels_in;
   int qs = this->process_chunksize_ > 0 ? this->process_chunksize_ : this->fetch_chunksize_;
   int os = this->fetch_chunksize_;
-  // Fast path when user has disabled every AFE feature: the instance is torn
-  // down, but the caller still expects a frame-shaped output. Use the last
-  // known spec so mic_afe consumers (MWW, VA) keep receiving audio.
-  if (this->afe_stopped_.load(std::memory_order_acquire)) {
-    int pqs = this->last_spec_process_size_ > 0 ? this->last_spec_process_size_ : qs;
-    int pos = this->last_spec_fetch_size_ > 0 ? this->last_spec_fetch_size_ : os;
-    if (pqs > 0 && pos > 0) copy_passthrough_frame(in_mic, pqs, transport_mic_channels, out, pos);
-    return false;
-  }
   if (!this->is_initialized()) {
     if (qs > 0 && os > 0) copy_passthrough_frame(in_mic, qs, transport_mic_channels, out, os);
     return false;
