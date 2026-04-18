@@ -572,7 +572,6 @@ select:
       - "sr_low_cost"
       - "sr_high_perf"
     initial_option: "sr_low_cost"
-    optimistic: true
     restore_value: true
     set_action:
       - if:
