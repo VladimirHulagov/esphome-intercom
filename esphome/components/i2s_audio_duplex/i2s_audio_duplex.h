@@ -129,8 +129,10 @@ class FirDecimator {
   bool ensure_scratch_(size_t count) {
     if (this->scratch_size_ >= count) return true;
     if (this->scratch_ != nullptr) heap_caps_free(this->scratch_);
+    // PSRAM first: scratch is read sequentially by dsps_fird_s16 (burst-friendly),
+    // keeping it out of internal DRAM preserves DMA-capable heap for WiFi/TLS.
     this->scratch_ = static_cast<int16_t *>(
-        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (this->scratch_ == nullptr) {
       this->scratch_ = static_cast<int16_t *>(
           heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
@@ -297,7 +299,8 @@ class MultiChannelFirDecimator {
 
   // Grow (one-shot in practice: called with fixed frame size from process_multi*).
   // Shared int16 scratch (in_count samples) + per-channel int16 out (out_count each).
-  // Internal RAM preferred for SIMD access speed; falls back to any 8-bit heap if full.
+  // PSRAM-first: FIR SIMD reads are sequential (burst-friendly), keeping these out of
+  // internal DRAM preserves DMA-capable heap for WiFi/TLS under streaming load.
   bool ensure_buffers_(size_t in_count, size_t out_count, uint8_t nch) {
     if (this->scratch_size_ >= in_count && this->out_size_ >= out_count) return true;
     if (this->scratch_ != nullptr) {
@@ -326,7 +329,7 @@ class MultiChannelFirDecimator {
 
   static int16_t *alloc_int16_preferred_(size_t count) {
     int16_t *p = static_cast<int16_t *>(
-        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (p == nullptr) {
       p = static_cast<int16_t *>(
           heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
