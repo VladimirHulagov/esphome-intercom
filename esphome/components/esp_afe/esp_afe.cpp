@@ -284,21 +284,15 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   instance->process_chunksize = 0;
   instance->total_channels = 0;
 
-  // Single-mic MR has feed_chunksize != fetch_chunksize (e.g. 32ms vs 16ms).
-  // Without a sync primitive fetch_task would poll fetch_with_delay between
-  // feeds and spam esp-sr's "Ringbuffer empty" warning. feed_signal_ is a
-  // counting semaphore: process() gives on each accepted feed(), fetch_task
-  // takes before fetch_with_delay. Dual-mic BSS has feed == fetch 1:1 and
-  // does not need the semaphore (fetch_task blocks directly on a long
-  // fetch_with_delay timeout, which is the canonical Espressif pattern).
-  if (this->mic_num_ <= 1 && this->feed_signal_ == nullptr) {
-    this->feed_signal_ = xSemaphoreCreateCountingStatic(
-        kFeedSignalMaxCount, 0, &this->feed_signal_storage_);
-    if (this->feed_signal_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to create feed_signal_ semaphore");
-      return false;
-    }
-  }
+  // No semaphore gating between feed and fetch on any topology: fetch_task
+  // blocks directly on fetch_with_delay, the canonical Espressif pattern.
+  // An earlier 1-mic MR path used a counting semaphore to suppress "Ringbuffer
+  // empty" warnings during idle (feed_chunksize 32ms != fetch_chunksize 16ms).
+  // JTAG audit 2026-04-18 showed that gating turned any transient feed reject
+  // into a permanent self-locking deadlock: first reject -> no signal given ->
+  // fetch_task sleeps -> rb_out never drained -> esp-sr internal back-pressure
+  // keeps rb_in full -> feed keeps rejecting. Letting fetch_task run freely
+  // breaks that loop; startup "ringbuffer empty" warnings are cosmetic.
 
   if (!this->start_feed_task_()) {
     ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
@@ -327,15 +321,10 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
 }
 
 EspAfe::AfeInstance EspAfe::detach_instance_() {
-  // Stop fetch first so it stops Taking feed_signal_, then feed_task so it
-  // stops Giving. Drain protocol has already quiesced process() before
-  // detach is called, so no more enqueues can race.
+  // Drain protocol has already quiesced process() before detach is called,
+  // so no more enqueues can race. Stop fetch first, then feed.
   this->stop_fetch_task_();
   this->stop_feed_task_();
-  if (this->feed_signal_ != nullptr) {
-    vSemaphoreDelete(this->feed_signal_);
-    this->feed_signal_ = nullptr;
-  }
 
   AfeInstance instance;
   instance.handle = this->afe_handle_;
@@ -899,13 +888,6 @@ void EspAfe::feed_task_loop_() {
       update_peak_atomic(this->feed_us_max_, feed_us);
       if (ret > 0) {
         this->feed_ok_.fetch_add(1, std::memory_order_relaxed);
-        if (this->feed_signal_ != nullptr) {
-          // 1-mic only: signal fetch_task that a new frame is ready.
-          // Saturation means fetch is falling behind -> record backpressure.
-          if (xSemaphoreGive(this->feed_signal_) != pdTRUE) {
-            this->output_ring_drop_.fetch_add(1, std::memory_order_relaxed);
-          }
-        }
       } else {
         this->feed_rejected_.fetch_add(1, std::memory_order_relaxed);
       }
@@ -1029,24 +1011,11 @@ void EspAfe::fetch_task_trampoline(void *arg) {
 }
 
 void EspAfe::fetch_task_loop_() {
-  // 1-mic (feed_signal_ allocated): take semaphore with a feed-cycle timeout
-  // so fetch is only invoked when process() has actually fed a frame.
-  // 2-mic BSS: no semaphore; block directly on fetch_with_delay with a long
-  // timeout (canonical Espressif pattern, feed/fetch 1:1).
-  const int feed_ms = (this->feed_chunksize_ > 0) ? (this->feed_chunksize_ / 16) : 64;
-  const TickType_t signal_timeout = pdMS_TO_TICKS(feed_ms + 10);
+  // Canonical Espressif pattern on every topology: block on fetch_with_delay
+  // with a finite timeout. rb_out inside esp-sr is the natural sync point.
   const TickType_t fetch_timeout = pdMS_TO_TICKS(2000);
 
   while (this->fetch_task_running_.load(std::memory_order_acquire)) {
-    if (this->feed_signal_ != nullptr) {
-      if (xSemaphoreTake(this->feed_signal_, signal_timeout) != pdTRUE) {
-        continue;  // no frame produced in this window, re-check shutdown
-      }
-      if (!this->fetch_task_running_.load(std::memory_order_acquire)) {
-        break;
-      }
-    }
-
     // fetch_with_delay: blocks on esp-sr's output ring with a finite timeout.
     // 2s allows clean shutdown when fetch_task_running_ goes false without
     // risking false "ringbuffer empty" warnings under BSS worker jitter.

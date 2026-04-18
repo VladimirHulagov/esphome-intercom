@@ -153,16 +153,6 @@ class EspAfe : public Component, public AudioProcessor {
   //     -> blocks on fetch_with_delay() and writes processed frames into
   //        fetch_output_ring_. process() reads this ring non-blocking.
   //
-  // feed_signal_ is a counting semaphore used ONLY for single-mic MR where
-  // feed_chunksize != fetch_chunksize (e.g. 32ms feed vs 16ms fetch). In
-  // that case fetch_task would otherwise poll empty between feeds and
-  // trigger esp-sr "Ringbuffer empty" warnings. feed_task gives on each
-  // accepted feed(); fetch_task takes before fetch_with_delay. For dual-mic
-  // BSS (feed == fetch, 1:1) the semaphore is not allocated and fetch_task
-  // blocks directly on fetch_with_delay with a long timeout.
-  SemaphoreHandle_t feed_signal_{nullptr};
-  StaticSemaphore_t feed_signal_storage_{};
-  static constexpr int kFeedSignalMaxCount = 8;
   // Fixed low priority for feed_task matches esp-skainet reference. Must
   // stay well below i2s_audio_task (prio 19) and the speaker pipeline (1)
   // so that BSS saturation never starves the realtime path.
@@ -251,7 +241,7 @@ class EspAfe : public Component, public AudioProcessor {
   std::atomic<uint32_t> feed_rejected_{0};   // feed() returned <= 0
   std::atomic<uint32_t> fetch_ok_{0};        // fetch task drained a frame
   std::atomic<uint32_t> fetch_timeout_{0};   // fetch_with_delay timed out
-  std::atomic<uint32_t> output_ring_drop_{0};// feed_signal_ saturated or fetch_output_ring_ full
+  std::atomic<uint32_t> output_ring_drop_{0};// fetch_output_ring_ full
   std::atomic<uint32_t> feed_queue_frames_{0};
   std::atomic<uint32_t> feed_queue_peak_{0};
   std::atomic<uint32_t> fetch_queue_frames_{0};

@@ -290,9 +290,11 @@ esp_afe:
   aec_enabled: true
   aec_filter_length: 4
   ns_enabled: true
-  # esp-sr 2.3.1 stalls 1-mic sr_low_cost SE task after ~9 feeds when VAD
-  # is in the pipeline together with AEC+NS+AGC (verified by bisection).
-  # MWW handles wake detection, so AFE VAD is redundant here.
+  # esp-sr 2.3.1 1-mic sr_low_cost stalls with VAD enabled together with AEC
+  # (JTAG audit 2026-04-18 binary call-graph: afe_fetch_with_delay runs
+  # sr_rb_read -> afe_vad_run_single_mic -> afe_wn_run_single_mic, so VAD is
+  # on the fetch side; with VAD active fetch never produces output and rb_in
+  # fills). MWW covers wake detection, AFE VAD is redundant.
   vad_enabled: false
   agc_enabled: true
   se_enabled: false
