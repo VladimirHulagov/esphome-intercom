@@ -125,6 +125,14 @@ class EspAfe : public Component, public AudioProcessor {
   AfeInstance detach_instance_();
   const char *memory_alloc_mode_to_str_() const;
 
+  // True when the user has every AFE feature turned off. In that state
+  // running the pipeline is pointless, so recreate_instance_ and the runtime
+  // toggle paths tear the instance down instead of rebuilding it.
+  bool all_features_disabled_() const {
+    return !this->aec_enabled_ && !this->ns_enabled_ && !this->agc_enabled_ &&
+           !this->vad_enabled_ && !this->is_se_enabled();
+  }
+
   // AFE vtable, opaque data, and config (config must outlive afe_data)
   const esp_afe_sr_iface_t *afe_handle_{nullptr};
   esp_afe_sr_data_t *afe_data_{nullptr};
@@ -226,6 +234,11 @@ class EspAfe : public Component, public AudioProcessor {
   //   half-demolished instance.
   std::atomic<bool> drain_request_{false};
   std::atomic<bool> process_busy_{false};
+
+  // afe_stopped_ == true means the AFE handle + feed/fetch tasks are torn
+  // down (all user-facing features off). process() takes a cheap passthrough
+  // path using the last-known chunksizes. Re-enabling any feature rebuilds.
+  std::atomic<bool> afe_stopped_{false};
 
   std::atomic<bool> voice_present_{false};
   std::atomic<float> input_volume_dbfs_{-120.0f};
