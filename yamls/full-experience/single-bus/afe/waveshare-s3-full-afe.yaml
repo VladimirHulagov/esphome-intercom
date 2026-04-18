@@ -571,8 +571,6 @@ select:
     options:
       - "sr_low_cost"
       - "sr_high_perf"
-      - "voip_low_cost"
-      - "voip_high_perf"
     initial_option: "sr_low_cost"
     optimistic: true
     restore_value: true

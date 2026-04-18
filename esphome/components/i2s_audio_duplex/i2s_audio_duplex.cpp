@@ -884,7 +884,7 @@ void I2SAudioDuplex::audio_task_() {
       t_spk_underruns += ctx.speaker_underrun ? 1 : 0;
       t_frame_count++;
       if (t_frame_count >= this->telemetry_log_interval_frames_) {
-        ESP_LOGI(TAG, "Perf[%u frames]: spk_underrun=%u, heap_int=%u, heap_ps=%u",
+        ESP_LOGD(TAG, "Perf[%u frames]: spk_underrun=%u, heap_int=%u, heap_ps=%u",
                  (unsigned) t_frame_count, (unsigned) t_spk_underruns,
                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -896,7 +896,7 @@ void I2SAudioDuplex::audio_task_() {
           auto delta_u32 = [](uint32_t current, uint32_t previous) -> uint32_t {
             return current >= previous ? (current - previous) : current;
           };
-          ESP_LOGI(TAG,
+          ESP_LOGD(TAG,
                    "AFE[%u]: +glitch=%u +in_drop=%u +feed_ok=%u +feed_rej=%u "
                    "+fetch_ok=%u +fetch_to=%u +out_drop=%u rb=%.0f%% "
                    "q(feed=%u pk=%u, fetch=%u pk=%u)",
@@ -913,7 +913,7 @@ void I2SAudioDuplex::audio_task_() {
                    (unsigned) telem.feed_queue_peak,
                    (unsigned) telem.fetch_queue_frames,
                    (unsigned) telem.fetch_queue_peak);
-          ESP_LOGI(TAG,
+          ESP_LOGD(TAG,
                    "AFE timing: proc last/max=%u/%uus feed last/max=%u/%uus "
                    "fetch last/max=%u/%uus stackB audio/feed/fetch=%u/%u/%u",
                    (unsigned) telem.process_us_last,
