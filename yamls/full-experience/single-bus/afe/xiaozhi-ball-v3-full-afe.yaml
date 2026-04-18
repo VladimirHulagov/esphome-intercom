@@ -171,6 +171,13 @@ esp32:
       CONFIG_ESP_WIFI_IRAM_OPT: "n"
       CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"
       CONFIG_ESP_WIFI_PHY_IRAM_OPT: "n"
+      # WiFi/lwip buffers in PSRAM: recupera ~40-80KB internal sotto streaming,
+      # complementa HARDWARE_AES=n e MALLOC_RESERVE_INTERNAL=64K contro la
+      # fragmentazione DMA-heap durante TLS+musica+MWW.
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: "y"
+      # JTAG: emit FreeRTOS task table for OpenOCD thread-aware view
+      # (pxCurrentTCBs-based snapshots stay accurate even with PSRAM stacks).
+      CONFIG_ESP_DEBUG_OCDAWARE: "y"
 
 psram:
   mode: octal
@@ -283,7 +290,10 @@ esp_afe:
   aec_enabled: true
   aec_filter_length: 4
   ns_enabled: true
-  vad_enabled: true
+  # esp-sr 2.3.1 stalls 1-mic sr_low_cost SE task after ~9 feeds when VAD
+  # is in the pipeline together with AEC+NS+AGC (verified by bisection).
+  # MWW handles wake detection, so AFE VAD is redundant here.
+  vad_enabled: false
   agc_enabled: true
   se_enabled: false
   memory_alloc_mode: more_psram
@@ -311,6 +321,7 @@ i2s_audio_duplex:
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
   use_stereo_aec_reference: true
   buffers_in_psram: true       # All audio buffers in PSRAM; required for sr_low_cost (512-sample frames)
+  telemetry: true              # Per-stage counters in logs (feed/fetch us, queue depths) per l'audit 1-mic
 
 # =============================================================================
 # MICROPHONE
@@ -1872,8 +1883,9 @@ text_sensor:
                 const auto &word = words[word_idx];
                 std::string test = line.empty() ? word : (line + ' ' + word);
                 if ((int)(test.length() * avg_char_w) > chord_w) {
-                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
-                  if (w > chord_w) {
+                  lv_point_t size;
+                  lv_text_get_size(&size, test.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  if (size.x > chord_w) {
                     if (word_idx == sw) { line = word; word_idx++; }
                     break;
                   }
@@ -1928,8 +1940,9 @@ text_sensor:
                 const auto &word = words[word_idx];
                 std::string test = line.empty() ? word : (line + ' ' + word);
                 if ((int)(test.length() * avg_char_w) > chord_w) {
-                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
-                  if (w > chord_w) {
+                  lv_point_t size;
+                  lv_text_get_size(&size, test.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  if (size.x > chord_w) {
                     if (word_idx == start_word) { line = word; word_idx++; }
                     break;
                   }
