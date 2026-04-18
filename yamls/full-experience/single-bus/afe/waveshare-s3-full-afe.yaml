@@ -209,7 +209,6 @@ esp_afe:
   type: sr
   mode: low_cost
   mic_num: 2
-  memory_alloc_mode: more_psram
   aec_filter_length: 4
   se_enabled: true
   ns_enabled: true

@@ -298,7 +298,6 @@ esp_afe:
   vad_enabled: false
   agc_enabled: true
   se_enabled: false
-  memory_alloc_mode: more_psram
   task_priority: 19
 
 # =============================================================================

@@ -218,6 +218,8 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
 
   int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_SPIRAM));
   if (feed_buf == nullptr) {
+    ESP_LOGW(TAG, "feed_buf (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
+             static_cast<unsigned>(feed_bytes));
     feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_INTERNAL));
   }
   if (feed_buf == nullptr) {
@@ -915,6 +917,8 @@ bool EspAfe::start_feed_task_() {
     this->feed_input_ring_storage_ = static_cast<uint8_t *>(
         heap_caps_malloc(ring_size, MALLOC_CAP_SPIRAM));
     if (this->feed_input_ring_storage_ == nullptr) {
+      ESP_LOGW(TAG, "feed_input_ring (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
+               (unsigned) ring_size);
       this->feed_input_ring_storage_ = static_cast<uint8_t *>(
           heap_caps_malloc(ring_size, MALLOC_CAP_INTERNAL));
     }

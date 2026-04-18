@@ -14,6 +14,7 @@
 #include <freertos/task.h>
 
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 #include <dsps_fir.h>
 
 #include <atomic>
@@ -131,11 +132,14 @@ class FirDecimator {
     if (this->scratch_ != nullptr) heap_caps_free(this->scratch_);
     // PSRAM first: scratch is read sequentially by dsps_fird_s16 (burst-friendly),
     // keeping it out of internal DRAM preserves DMA-capable heap for WiFi/TLS.
+    const size_t bytes = count * sizeof(int16_t);
     this->scratch_ = static_cast<int16_t *>(
-        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (this->scratch_ == nullptr) {
+      ESP_LOGW("FirDecim", "scratch (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
+               static_cast<unsigned>(bytes));
       this->scratch_ = static_cast<int16_t *>(
-          heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
+          heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
     }
     this->scratch_size_ = (this->scratch_ != nullptr) ? count : 0;
     return this->scratch_ != nullptr;
@@ -328,11 +332,14 @@ class MultiChannelFirDecimator {
   }
 
   static int16_t *alloc_int16_preferred_(size_t count) {
+    const size_t bytes = count * sizeof(int16_t);
     int16_t *p = static_cast<int16_t *>(
-        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (p == nullptr) {
+      ESP_LOGW("MCFirDecim", "buffer (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
+               static_cast<unsigned>(bytes));
       p = static_cast<int16_t *>(
-          heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
+          heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
     }
     return p;
   }
