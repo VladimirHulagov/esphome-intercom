@@ -138,6 +138,9 @@ esp32:
       CONFIG_ESP_WIFI_IRAM_OPT: "n"
       CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"
       CONFIG_ESP_PHY_IRAM_OPT: "n"
+      # JTAG: emit FreeRTOS task table for OpenOCD thread-aware view.
+      # Without this, OpenOCD's "info threads" reads garbage on PSRAM stacks.
+      CONFIG_ESP_DEBUG_OCDAWARE: "y"
 
 psram:
   mode: octal
@@ -226,6 +229,7 @@ i2s_audio_duplex:
   tdm_mic_slots: [0, 2]  # Verified right-side mic, left-side mic
   tdm_ref_slot: 1        # Verified playback reference for AEC
   buffers_in_psram: true
+  telemetry: true
 
 # =============================================================================
 # Microphone (ES7210 ADC, 16kHz output after FIR decimation + AEC)

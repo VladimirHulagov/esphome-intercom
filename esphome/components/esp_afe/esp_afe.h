@@ -138,34 +138,35 @@ class EspAfe : public Component, public AudioProcessor {
   int total_channels_{2};   // 2 for "MR", 3 for "MMR"
   int staged_input_samples_{0};
 
-  // esp-sr AFE is asynchronous internally. Per Espressif test_afe.cpp,
-  // esp-skainet, and esp-box the canonical pattern is feed() and fetch() on
-  // separate tasks with no semaphore between them. process() (called by the
-  // I2S duplex audio_task) stages frames into feed_input_ring_. The feed task
-  // reads from that ring and calls afe->feed(). The fetch task blocks on
-  // afe->fetch_with_delay() and writes to fetch_output_ring_. process() reads
-  // the output ring non-blocking for the processed frame.
-
-  // Two feed topologies switched at install time:
+  // esp-sr AFE pipeline. Canonical Espressif pattern (esp-skainet,
+  // test_afe.cpp): feed() and fetch() run on dedicated tasks at low priority
+  // so that BSS/AEC processing never blocks the caller of process().
   //
-  //  use_inline_feed_ == true (physical 1-mic, e.g. ES8311 low_cost):
-  //    process() calls afe_handle_->feed() inline on the caller thread
-  //    (i2s_audio_task) and gives feed_signal_. The NOSPLIT ring and
-  //    feed_task are NOT used. This matches the commit f755fff topology
-  //    that was confirmed working on single-mic before the 3-task refactor.
+  //   process() (called by i2s_audio_duplex audio_task on core 0 at prio 19)
+  //     -> assembles a full feed frame in feed_buf_ and pushes it into the
+  //        NOSPLIT ring (non-blocking, atomic frame).
+  //   feed_task (core task_core_, priority kFeedTaskPriority = 5)
+  //     -> pops the frame and calls afe_handle_->feed(). feed() may block
+  //        on the internal AFE ring when BSS is saturated; that blocking
+  //        stays off the realtime I2S path because the task priority is low.
+  //   fetch_task (core task_core_, priority task_priority_ - 1)
+  //     -> blocks on fetch_with_delay() and writes processed frames into
+  //        fetch_output_ring_. process() reads this ring non-blocking.
   //
-  //  use_inline_feed_ == false (physical 2-mic, e.g. ES7210 with BSS):
-  //    process() enqueues a complete frame into feed_input_ring_ (NOSPLIT).
-  //    feed_task dequeues and calls afe_handle_->feed() off the realtime
-  //    path. feed_signal_ is unused. This matches commit 6d6c249 and is
-  //    what tested OK on dual-mic WS3.
-  //
-  // fetch_task is used in BOTH topologies (takes feed_signal_ in inline
-  // mode, blocks directly on fetch_with_delay in 3-task mode).
-  bool use_inline_feed_{false};
+  // feed_signal_ is a counting semaphore used ONLY for single-mic MR where
+  // feed_chunksize != fetch_chunksize (e.g. 32ms feed vs 16ms fetch). In
+  // that case fetch_task would otherwise poll empty between feeds and
+  // trigger esp-sr "Ringbuffer empty" warnings. feed_task gives on each
+  // accepted feed(); fetch_task takes before fetch_with_delay. For dual-mic
+  // BSS (feed == fetch, 1:1) the semaphore is not allocated and fetch_task
+  // blocks directly on fetch_with_delay with a long timeout.
   SemaphoreHandle_t feed_signal_{nullptr};
   StaticSemaphore_t feed_signal_storage_{};
   static constexpr int kFeedSignalMaxCount = 8;
+  // Fixed low priority for feed_task matches esp-skainet reference. Must
+  // stay well below i2s_audio_task (prio 19) and the speaker pipeline (1)
+  // so that BSS saturation never starves the realtime path.
+  static constexpr UBaseType_t kFeedTaskPriority = 5;
 
   RingbufHandle_t feed_input_ring_{nullptr};
   uint8_t *feed_input_ring_storage_{nullptr};
@@ -174,7 +175,10 @@ class EspAfe : public Component, public AudioProcessor {
   StaticTask_t feed_task_tcb_{};
   StackType_t *feed_task_stack_{nullptr};
   std::atomic<bool> feed_task_running_{false};
-  static constexpr uint32_t kFeedTaskStackWords = 12288 / sizeof(StackType_t);
+  // 1-mic feeds WebRTC NS/AGC inline (~8KB stack on WebRtcNs_ProcessCore);
+  // dual-mic BSS runs in the esp-sr worker so feed_task only enqueues frames.
+  static constexpr uint32_t kFeedTaskStackWordsSingleMic = 12288 / sizeof(StackType_t);
+  static constexpr uint32_t kFeedTaskStackWordsDualMic = 6144 / sizeof(StackType_t);
 
   static void feed_task_trampoline(void *arg);
   void feed_task_loop_();
@@ -215,7 +219,7 @@ class EspAfe : public Component, public AudioProcessor {
   int memory_alloc_mode_{AFE_MEMORY_ALLOC_MORE_PSRAM};
   float afe_linear_gain_{1.0f};
   int task_core_{1};
-  int task_priority_{5};
+  int task_priority_{8};
   int ringbuf_size_{8};
 
   // config_mutex_ serialises config-change paths (recreate_instance_,
@@ -241,13 +245,23 @@ class EspAfe : public Component, public AudioProcessor {
   int warmup_remaining_{3};
   std::atomic<uint32_t> frame_count_{0};
   std::atomic<uint32_t> glitch_count_{0};
-  // Feed/fetch bridge diagnostics.
-  std::atomic<uint32_t> input_ring_drop_{0}; // process() could not enqueue (ring full)
-  std::atomic<uint32_t> feed_ok_{0};         // feed task successfully called feed()
+  // Feed/fetch diagnostics.
+  std::atomic<uint32_t> input_ring_drop_{0}; // process() could not enqueue (NOSPLIT full)
+  std::atomic<uint32_t> feed_ok_{0};         // feed_task successfully called feed()
   std::atomic<uint32_t> feed_rejected_{0};   // feed() returned <= 0
   std::atomic<uint32_t> fetch_ok_{0};        // fetch task drained a frame
   std::atomic<uint32_t> fetch_timeout_{0};   // fetch_with_delay timed out
-  std::atomic<uint32_t> output_ring_drop_{0};// process() ring was full
+  std::atomic<uint32_t> output_ring_drop_{0};// feed_signal_ saturated or fetch_output_ring_ full
+  std::atomic<uint32_t> feed_queue_frames_{0};
+  std::atomic<uint32_t> feed_queue_peak_{0};
+  std::atomic<uint32_t> fetch_queue_frames_{0};
+  std::atomic<uint32_t> fetch_queue_peak_{0};
+  std::atomic<uint32_t> process_us_last_{0};
+  std::atomic<uint32_t> process_us_max_{0};
+  std::atomic<uint32_t> feed_us_last_{0};
+  std::atomic<uint32_t> feed_us_max_{0};
+  std::atomic<uint32_t> fetch_us_last_{0};
+  std::atomic<uint32_t> fetch_us_max_{0};
   std::atomic<float> ringbuf_free_pct_{1.0f};
   std::atomic<uint32_t> frame_spec_revision_{0};
   int last_spec_mic_ch_{1};  // last published mic_channels for revision tracking (1 = default mono)

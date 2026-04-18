@@ -185,13 +185,6 @@ external_components:
       type: local
       path: ../../../../esphome/components
     components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
-  # Override micro_wake_word with upstream dev containing PR #15628
-  # (arena size probing + esp-nn pin). Remove when ESPHome 2026.4.0 ships.
-  - source:
-      type: git
-      url: https://github.com/esphome/esphome
-      ref: d3591c8d9e3724e21a508c58d4f4fe7459e17aa9
-    components: [micro_wake_word]
 
 # =============================================================================
 # CONNECTIVITY

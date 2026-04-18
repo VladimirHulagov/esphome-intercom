@@ -203,6 +203,9 @@ void I2SAudioDuplex::dump_config() {
   ESP_LOGCONFIG(TAG, "  AEC: %s", this->processor_ != nullptr ? "enabled" : "disabled");
   ESP_LOGCONFIG(TAG, "  Task: priority=%u, core=%d, stack=%u",
                 this->task_priority_, this->task_core_, (unsigned)this->task_stack_size_);
+#ifdef USE_DUPLEX_TELEMETRY
+  ESP_LOGCONFIG(TAG, "  Telemetry Log Interval: %u frames", (unsigned) this->telemetry_log_interval_frames_);
+#endif
 }
 
 bool I2SAudioDuplex::init_i2s_duplex_() {
@@ -645,6 +648,13 @@ void I2SAudioDuplex::audio_task(void *param) {
 
 void I2SAudioDuplex::audio_task_() {
   AudioTaskCtx ctx{};
+#ifdef USE_DUPLEX_TELEMETRY
+  uint32_t t_frame_count = 0;
+  uint32_t t_spk_underruns = 0;
+#ifdef USE_AUDIO_PROCESSOR
+  ProcessorTelemetry prev_processor_telem{};
+#endif
+#endif
 
   // ── Populate invariants ──
   ctx.ratio = this->decimation_ratio_;
@@ -814,15 +824,10 @@ void I2SAudioDuplex::audio_task_() {
   ESP_LOGI(TAG, "Heap after audio init: internal=%u, PSRAM=%u",
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
-  static constexpr uint32_t TELEM_LOG_INTERVAL = 128;
-  uint32_t t_frame_count = 0;
-  uint32_t t_spk_underruns = 0;
 #endif
 
   // ── Main loop ──
   while (this->duplex_running_.load(std::memory_order_relaxed)) {
-
     // Service ring buffer operations requested by main thread
     if (this->request_speaker_reset_.exchange(false, std::memory_order_relaxed)) {
       this->speaker_buffer_->reset();
@@ -878,11 +883,51 @@ void I2SAudioDuplex::audio_task_() {
       // t_frame_count and t_spk_underruns declared before the loop (reset on task restart)
       t_spk_underruns += ctx.speaker_underrun ? 1 : 0;
       t_frame_count++;
-      if (t_frame_count >= TELEM_LOG_INTERVAL) {
+      if (t_frame_count >= this->telemetry_log_interval_frames_) {
         ESP_LOGI(TAG, "Perf[%u frames]: spk_underrun=%u, heap_int=%u, heap_ps=%u",
                  (unsigned) t_frame_count, (unsigned) t_spk_underruns,
                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#ifdef USE_AUDIO_PROCESSOR
+        if (this->processor_ != nullptr) {
+          ProcessorTelemetry telem = this->processor_->telemetry();
+          const uint32_t audio_stack_high_water =
+              uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t);
+          auto delta_u32 = [](uint32_t current, uint32_t previous) -> uint32_t {
+            return current >= previous ? (current - previous) : current;
+          };
+          ESP_LOGI(TAG,
+                   "AFE[%u]: +glitch=%u +in_drop=%u +feed_ok=%u +feed_rej=%u "
+                   "+fetch_ok=%u +fetch_to=%u +out_drop=%u rb=%.0f%% "
+                   "q(feed=%u pk=%u, fetch=%u pk=%u)",
+                   (unsigned) telem.frame_count,
+                   (unsigned) delta_u32(telem.glitch_count, prev_processor_telem.glitch_count),
+                   (unsigned) delta_u32(telem.input_ring_drop, prev_processor_telem.input_ring_drop),
+                   (unsigned) delta_u32(telem.feed_ok, prev_processor_telem.feed_ok),
+                   (unsigned) delta_u32(telem.feed_rejected, prev_processor_telem.feed_rejected),
+                   (unsigned) delta_u32(telem.fetch_ok, prev_processor_telem.fetch_ok),
+                   (unsigned) delta_u32(telem.fetch_timeout, prev_processor_telem.fetch_timeout),
+                   (unsigned) delta_u32(telem.output_ring_drop, prev_processor_telem.output_ring_drop),
+                   telem.ringbuf_free_pct * 100.0f,
+                   (unsigned) telem.feed_queue_frames,
+                   (unsigned) telem.feed_queue_peak,
+                   (unsigned) telem.fetch_queue_frames,
+                   (unsigned) telem.fetch_queue_peak);
+          ESP_LOGI(TAG,
+                   "AFE timing: proc last/max=%u/%uus feed last/max=%u/%uus "
+                   "fetch last/max=%u/%uus stackB audio/feed/fetch=%u/%u/%u",
+                   (unsigned) telem.process_us_last,
+                   (unsigned) telem.process_us_max,
+                   (unsigned) telem.feed_us_last,
+                   (unsigned) telem.feed_us_max,
+                   (unsigned) telem.fetch_us_last,
+                   (unsigned) telem.fetch_us_max,
+                   (unsigned) audio_stack_high_water,
+                   (unsigned) telem.feed_stack_high_water,
+                   (unsigned) telem.fetch_stack_high_water);
+          prev_processor_telem = telem;
+        }
+#endif
         t_frame_count = 0;
         t_spk_underruns = 0;
       }

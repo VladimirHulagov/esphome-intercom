@@ -13,6 +13,9 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <esp_heap_caps.h>
+#include <dsps_fir.h>
+
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -40,38 +43,43 @@ using MicDataCallback = std::function<void(const uint8_t *data, size_t len)>;
 using SpeakerOutputCallback = std::function<void(uint32_t frames, int64_t timestamp)>;
 
 // FIR coefficients: 32-tap (31 original + 1 zero pad), cutoff=7500Hz, fs=48kHz, Kaiser beta=8.0
-// Unity DC gain, ~35dB stopband attenuation (adequate for speech), symmetric (linear phase)
-// Padded to power-of-2 so modulo can use bitmask (& 0x1F) instead of division
+// ~35dB stopband, symmetric linear phase. Q15 fixed-point for dsps_fird_s16_aes3 SIMD.
+// Source float max |c| = 0.3125 -> q15 10238 (no overflow). DC gain ~0.975.
 static constexpr size_t FIR_NUM_TAPS = 32;
-static constexpr float FIR_COEFFS[FIR_NUM_TAPS] = {
-    4.1270231666e-05f, 2.1633893589e-04f, 1.2531119530e-04f, -9.9999988238e-04f,
-    -2.6821920740e-03f, -1.8518117881e-03f, 4.4563387256e-03f, 1.2653483833e-02f,
-    1.0683467077e-02f, -1.0893520506e-02f, -4.0743026823e-02f, -4.2934182572e-02f,
-    1.7799016112e-02f, 1.3755146771e-01f, 2.6031620059e-01f, 3.1252367847e-01f,
-    2.6031620059e-01f, 1.3755146771e-01f, 1.7799016112e-02f, -4.2934182572e-02f,
-    -4.0743026823e-02f, -1.0893520506e-02f, 1.0683467077e-02f, 1.2653483833e-02f,
-    4.4563387256e-03f, -1.8518117881e-03f, -2.6821920740e-03f, -9.9999988238e-04f,
-    1.2531119530e-04f, 2.1633893589e-04f, 4.1270231666e-05f, 0.0f,
+// Q15 = round(float * 32767). Reference buffer; each decimator memcpys into an aligned
+// member buffer and reverses it in-place (dsps_fird_s16_aes3 asm reads forward).
+static constexpr int16_t FIR_COEFFS_Q15[FIR_NUM_TAPS] = {
+        1,     7,     4,   -33,   -88,   -61,   146,   415,
+      350,  -357, -1335, -1407,   583,  4507,  8528, 10238,
+     8528,  4507,   583, -1407, -1335,  -357,   350,   415,
+      146,   -61,   -88,   -33,     4,     7,     1,     0,
 };
 
 // FIR decimator: consumes samples at high rate, produces at low rate.
-// Mirrored delay line (64 float) for always-contiguous convolution window.
-// Symmetric coefficients (c[k]==c[30-k]) halve multiplications.
-// 4 independent accumulators break FPU pipeline dependency.
-// Strided variants read directly from I2S rx_buffer, eliminating deinterleave buffers.
-static_assert(FIR_NUM_TAPS == 32, "convolve_ is hardcoded for 32 taps");
-static_assert((FIR_NUM_TAPS & (FIR_NUM_TAPS - 1)) == 0, "FIR_NUM_TAPS must be power of 2");
+// Backed by esp-dsp dsps_fird_s16; on ESP32-S3 resolves to the _aes3 SIMD kernel
+// (8 MAC per ee.vmulas.s16.accx.ld.ip). Strided variants deinterleave into a shared
+// scratch buffer before the FIR, since the SIMD kernel requires contiguous input.
+static_assert(FIR_NUM_TAPS % 8 == 0, "FIR_NUM_TAPS must be divisible by 8 for dsps_fird_s16_aes3");
 
 class FirDecimator {
  public:
+  ~FirDecimator() {
+    dsps_fird_s16_aexx_free(&this->fir_);
+    if (this->scratch_ != nullptr) heap_caps_free(this->scratch_);
+  }
+
   void init(uint32_t ratio) {
     this->ratio_ = ratio;
-    this->reset();
+    memcpy(this->coeffs_local_, FIR_COEFFS_Q15, sizeof(FIR_COEFFS_Q15));
+    dsps_fird_init_s16(&this->fir_, this->coeffs_local_, this->delay_,
+                       FIR_NUM_TAPS, static_cast<int16_t>(ratio), 0, 0);
+    dsps_16_array_rev(this->fir_.coeffs, this->fir_.coeffs_len);
   }
 
   void reset() {
-    memset(this->delay_line_, 0, sizeof(this->delay_line_));
-    this->delay_pos_ = 0;
+    memset(this->delay_, 0, sizeof(this->delay_));
+    this->fir_.pos = 0;
+    this->fir_.d_pos = 0;
   }
 
   // Contiguous int16 input (backward compatible)
@@ -80,16 +88,10 @@ class FirDecimator {
       memcpy(out, in, in_count * sizeof(int16_t));
       return;
     }
-    size_t out_count = in_count / this->ratio_;
-    for (size_t o = 0; o < out_count; o++) {
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        this->push_sample_(static_cast<float>(*in++));
-      }
-      out[o] = this->convolve_();
-    }
+    dsps_fird_s16(&this->fir_, in, out, static_cast<int32_t>(in_count / this->ratio_));
   }
 
-  // Strided int16 input (eliminates deinterleave buffers for TDM/stereo)
+  // Strided int16 input: deinterleave into scratch, then SIMD FIR.
   void process_strided(const int16_t *in, int16_t *out, size_t out_count,
                        size_t stride, size_t offset) {
     if (this->ratio_ <= 1) {
@@ -98,17 +100,15 @@ class FirDecimator {
       }
       return;
     }
-    size_t idx = 0;
-    for (size_t o = 0; o < out_count; o++) {
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        this->push_sample_(static_cast<float>(in[(idx + r) * stride + offset]));
-      }
-      idx += this->ratio_;
-      out[o] = this->convolve_();
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_scratch_(in_count)) return;
+    for (size_t i = 0; i < in_count; i++) {
+      this->scratch_[i] = in[i * stride + offset];
     }
+    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
   }
 
-  // Strided int32 input with inline >>16 downshift (eliminates 32-to-16 conversion loop)
+  // Strided int32 input with inline >>16 downshift.
   void process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
                           size_t stride, size_t offset) {
     if (this->ratio_ <= 1) {
@@ -117,71 +117,70 @@ class FirDecimator {
       }
       return;
     }
-    size_t idx = 0;
-    for (size_t o = 0; o < out_count; o++) {
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        this->push_sample_(static_cast<float>(in[(idx + r) * stride + offset] >> 16));
-      }
-      idx += this->ratio_;
-      out[o] = this->convolve_();
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_scratch_(in_count)) return;
+    for (size_t i = 0; i < in_count; i++) {
+      this->scratch_[i] = static_cast<int16_t>(in[i * stride + offset] >> 16);
     }
+    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
   }
 
  private:
-  inline void push_sample_(float s) {
-    uint32_t p = this->delay_pos_;
-    this->delay_line_[p] = s;
-    this->delay_line_[p + FIR_NUM_TAPS] = s;  // mirror for contiguous window
-    this->delay_pos_ = (p + 1) & (FIR_NUM_TAPS - 1);
-  }
-
-  inline int16_t convolve_() {
-    // w[0..31] is always a valid contiguous window thanks to the mirrored delay line
-    const float *w = &this->delay_line_[this->delay_pos_];
-    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-
-    // 3 groups of 4 symmetric pairs (k=0..11)
-    for (size_t k = 0; k < 12; k += 4) {
-      a0 += (w[k]     + w[30 - k])     * FIR_COEFFS[k];
-      a1 += (w[k + 1] + w[29 - k])     * FIR_COEFFS[k + 1];
-      a2 += (w[k + 2] + w[28 - k])     * FIR_COEFFS[k + 2];
-      a3 += (w[k + 3] + w[27 - k])     * FIR_COEFFS[k + 3];
+  bool ensure_scratch_(size_t count) {
+    if (this->scratch_size_ >= count) return true;
+    if (this->scratch_ != nullptr) heap_caps_free(this->scratch_);
+    this->scratch_ = static_cast<int16_t *>(
+        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (this->scratch_ == nullptr) {
+      this->scratch_ = static_cast<int16_t *>(
+          heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
     }
-
-    // Remaining 3 pairs (k=12,13,14) + center tap (k=15)
-    a0 += (w[12] + w[18]) * FIR_COEFFS[12];
-    a1 += (w[13] + w[17]) * FIR_COEFFS[13];
-    a2 += (w[14] + w[16]) * FIR_COEFFS[14];
-    a3 += w[15] * FIR_COEFFS[15];
-
-    float acc = a0 + a1 + a2 + a3;
-    if (acc > 32767.0f) acc = 32767.0f;
-    if (acc < -32768.0f) acc = -32768.0f;
-    return static_cast<int16_t>(acc);
+    this->scratch_size_ = (this->scratch_ != nullptr) ? count : 0;
+    return this->scratch_ != nullptr;
   }
 
   uint32_t ratio_{1};
-  float delay_line_[FIR_NUM_TAPS * 2]{};  // mirrored: 64 floats, always-contiguous window
-  uint32_t delay_pos_{0};
+  fir_s16_t fir_{};
+  alignas(16) int16_t coeffs_local_[FIR_NUM_TAPS]{};
+  alignas(16) int16_t delay_[FIR_NUM_TAPS]{};
+  int16_t *scratch_{nullptr};
+  size_t scratch_size_{0};
 };
 
 // Multi-channel FIR decimator: decimates N channels from TDM/stereo rx_buffer in one pass.
-// Produces interleaved mic output (for AFE) + mono mic1 (for callbacks) + ref (for AEC).
-// Eliminates separate per-channel FIR instances, intermediate buffers, and re-interleave passes.
-// Max 3 channels (MMR: mic1 + mic2 + ref). Each channel has its own mirrored delay line.
+// Per-channel dsps_fird_s16 (SIMD _aes3 on S3). Deinterleaves channel c into a shared scratch
+// buffer, runs the FIR, and stores the decimated samples in out_ch_[c] before redistributing
+// into interleaved/mono/ref output buffers. Max 3 channels (MMR: mic1 + mic2 + ref).
 static constexpr uint8_t MC_FIR_MAX_CH = 3;
 
 class MultiChannelFirDecimator {
  public:
+  ~MultiChannelFirDecimator() {
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      dsps_fird_s16_aexx_free(&this->fir_ch_[c]);
+      if (this->out_ch_[c] != nullptr) heap_caps_free(this->out_ch_[c]);
+    }
+    if (this->scratch_ != nullptr) heap_caps_free(this->scratch_);
+  }
+
   void init(uint32_t ratio, uint8_t num_channels) {
     this->ratio_ = ratio;
     this->num_channels_ = num_channels > MC_FIR_MAX_CH ? MC_FIR_MAX_CH : num_channels;
-    this->reset();
+    for (uint8_t c = 0; c < this->num_channels_; c++) {
+      memcpy(this->coeffs_local_ch_[c], FIR_COEFFS_Q15, sizeof(FIR_COEFFS_Q15));
+      dsps_fird_init_s16(&this->fir_ch_[c], this->coeffs_local_ch_[c],
+                         this->delay_ch_[c], FIR_NUM_TAPS,
+                         static_cast<int16_t>(ratio), 0, 0);
+      dsps_16_array_rev(this->fir_ch_[c].coeffs, this->fir_ch_[c].coeffs_len);
+    }
   }
 
   void reset() {
-    memset(this->delay_lines_, 0, sizeof(this->delay_lines_));
-    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) this->delay_pos_[c] = 0;
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      memset(this->delay_ch_[c], 0, sizeof(this->delay_ch_[c]));
+      this->fir_ch_[c].pos = 0;
+      this->fir_ch_[c].d_pos = 0;
+    }
   }
 
   // Decimate N channels from strided int16 TDM input, producing:
@@ -200,41 +199,27 @@ class MultiChannelFirDecimator {
       return;
     }
     const uint8_t nch = this->num_channels_;
-    size_t idx = 0;
-    for (size_t o = 0; o < out_count; o++) {
-      // Push ratio_ samples per channel into delay lines
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        for (uint8_t c = 0; c < nch; c++) {
-          this->push_sample_(c, static_cast<float>(in[(idx + r) * in_stride + channel_offsets[c]]));
-        }
-      }
-      idx += this->ratio_;
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_buffers_(in_count, out_count, nch)) return;
 
-      // Convolve each channel
-      int16_t s0 = this->convolve_(0);
-      if (mic_mono) mic_mono[o] = s0;
-
-      if (num_mic_ch >= 2 && nch >= 2) {
-        int16_t s1 = this->convolve_(1);
-        if (mic_interleaved) {
-          mic_interleaved[o * 2] = s0;
-          mic_interleaved[o * 2 + 1] = s1;
-        }
-        if (ref_out && nch >= 3) ref_out[o] = this->convolve_(2);
-      } else {
-        // Single mic: mic_interleaved not needed (processor_input = mic_mono)
-        if (ref_out && nch >= 2) ref_out[o] = this->convolve_(1);
+    // Deinterleave channel by channel into shared scratch, then SIMD FIR into out_ch_[c].
+    for (uint8_t c = 0; c < nch; c++) {
+      const uint8_t off = channel_offsets[c];
+      for (size_t i = 0; i < in_count; i++) {
+        this->scratch_[i] = in[i * in_stride + off];
       }
+      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                    static_cast<int32_t>(out_count));
     }
+    this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
   }
 
-  // Same but for 32-bit I2S input with inline >>16 downshift
+  // Same but for 32-bit I2S input with inline >>16 downshift.
   void process_multi_32(const int32_t *in, size_t out_count, size_t in_stride,
                         const uint8_t *channel_offsets,
                         int16_t *mic_interleaved, int16_t *mic_mono,
                         int16_t *ref_out, uint8_t num_mic_ch) {
     if (this->ratio_ <= 1) {
-      // Passthrough with 32->16 conversion
       for (size_t o = 0; o < out_count; o++) {
         int16_t s0 = static_cast<int16_t>(in[o * in_stride + channel_offsets[0]] >> 16);
         if (mic_mono) mic_mono[o] = s0;
@@ -254,29 +239,18 @@ class MultiChannelFirDecimator {
       return;
     }
     const uint8_t nch = this->num_channels_;
-    size_t idx = 0;
-    for (size_t o = 0; o < out_count; o++) {
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        for (uint8_t c = 0; c < nch; c++) {
-          this->push_sample_(c, static_cast<float>(in[(idx + r) * in_stride + channel_offsets[c]] >> 16));
-        }
-      }
-      idx += this->ratio_;
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_buffers_(in_count, out_count, nch)) return;
 
-      int16_t s0 = this->convolve_(0);
-      if (mic_mono) mic_mono[o] = s0;
-
-      if (num_mic_ch >= 2 && nch >= 2) {
-        int16_t s1 = this->convolve_(1);
-        if (mic_interleaved) {
-          mic_interleaved[o * 2] = s0;
-          mic_interleaved[o * 2 + 1] = s1;
-        }
-        if (ref_out && nch >= 3) ref_out[o] = this->convolve_(2);
-      } else {
-        if (ref_out && nch >= 2) ref_out[o] = this->convolve_(1);
+    for (uint8_t c = 0; c < nch; c++) {
+      const uint8_t off = channel_offsets[c];
+      for (size_t i = 0; i < in_count; i++) {
+        this->scratch_[i] = static_cast<int16_t>(in[i * in_stride + off] >> 16);
       }
+      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                    static_cast<int32_t>(out_count));
     }
+    this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
   }
 
  private:
@@ -302,36 +276,73 @@ class MultiChannelFirDecimator {
     }
   }
 
-  inline void push_sample_(uint8_t ch, float s) {
-    uint32_t p = this->delay_pos_[ch];
-    this->delay_lines_[ch][p] = s;
-    this->delay_lines_[ch][p + FIR_NUM_TAPS] = s;
-    this->delay_pos_[ch] = (p + 1) & (FIR_NUM_TAPS - 1);
+  // Fan out per-channel FIR outputs into interleaved/mono/ref buffers.
+  void distribute_output_(size_t out_count, int16_t *mic_interleaved, int16_t *mic_mono,
+                          int16_t *ref_out, uint8_t num_mic_ch) {
+    for (size_t o = 0; o < out_count; o++) {
+      int16_t s0 = this->out_ch_[0][o];
+      if (mic_mono) mic_mono[o] = s0;
+      if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+        int16_t s1 = this->out_ch_[1][o];
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && this->num_channels_ >= 3) ref_out[o] = this->out_ch_[2][o];
+      } else {
+        if (ref_out && this->num_channels_ >= 2) ref_out[o] = this->out_ch_[1][o];
+      }
+    }
   }
 
-  inline int16_t convolve_(uint8_t ch) {
-    const float *w = &this->delay_lines_[ch][this->delay_pos_[ch]];
-    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-    for (size_t k = 0; k < 12; k += 4) {
-      a0 += (w[k]     + w[30 - k])     * FIR_COEFFS[k];
-      a1 += (w[k + 1] + w[29 - k])     * FIR_COEFFS[k + 1];
-      a2 += (w[k + 2] + w[28 - k])     * FIR_COEFFS[k + 2];
-      a3 += (w[k + 3] + w[27 - k])     * FIR_COEFFS[k + 3];
+  // Grow (one-shot in practice: called with fixed frame size from process_multi*).
+  // Shared int16 scratch (in_count samples) + per-channel int16 out (out_count each).
+  // Internal RAM preferred for SIMD access speed; falls back to any 8-bit heap if full.
+  bool ensure_buffers_(size_t in_count, size_t out_count, uint8_t nch) {
+    if (this->scratch_size_ >= in_count && this->out_size_ >= out_count) return true;
+    if (this->scratch_ != nullptr) {
+      heap_caps_free(this->scratch_);
+      this->scratch_ = nullptr;
+      this->scratch_size_ = 0;
     }
-    a0 += (w[12] + w[18]) * FIR_COEFFS[12];
-    a1 += (w[13] + w[17]) * FIR_COEFFS[13];
-    a2 += (w[14] + w[16]) * FIR_COEFFS[14];
-    a3 += w[15] * FIR_COEFFS[15];
-    float acc = a0 + a1 + a2 + a3;
-    if (acc > 32767.0f) acc = 32767.0f;
-    if (acc < -32768.0f) acc = -32768.0f;
-    return static_cast<int16_t>(acc);
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      if (this->out_ch_[c] != nullptr) {
+        heap_caps_free(this->out_ch_[c]);
+        this->out_ch_[c] = nullptr;
+      }
+    }
+    this->out_size_ = 0;
+
+    this->scratch_ = alloc_int16_preferred_(in_count);
+    if (this->scratch_ == nullptr) return false;
+    this->scratch_size_ = in_count;
+    for (uint8_t c = 0; c < nch; c++) {
+      this->out_ch_[c] = alloc_int16_preferred_(out_count);
+      if (this->out_ch_[c] == nullptr) return false;
+    }
+    this->out_size_ = out_count;
+    return true;
+  }
+
+  static int16_t *alloc_int16_preferred_(size_t count) {
+    int16_t *p = static_cast<int16_t *>(
+        heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (p == nullptr) {
+      p = static_cast<int16_t *>(
+          heap_caps_malloc(count * sizeof(int16_t), MALLOC_CAP_8BIT));
+    }
+    return p;
   }
 
   uint32_t ratio_{1};
   uint8_t num_channels_{0};
-  float delay_lines_[MC_FIR_MAX_CH][FIR_NUM_TAPS * 2]{};  // 3 mirrored delay lines = 768 bytes
-  uint32_t delay_pos_[MC_FIR_MAX_CH]{};
+  fir_s16_t fir_ch_[MC_FIR_MAX_CH]{};
+  alignas(16) int16_t coeffs_local_ch_[MC_FIR_MAX_CH][FIR_NUM_TAPS]{};
+  alignas(16) int16_t delay_ch_[MC_FIR_MAX_CH][FIR_NUM_TAPS]{};
+  int16_t *scratch_{nullptr};
+  int16_t *out_ch_[MC_FIR_MAX_CH]{};
+  size_t scratch_size_{0};
+  size_t out_size_{0};
 };
 
 class I2SAudioDuplex : public Component {
@@ -444,6 +455,7 @@ class I2SAudioDuplex : public Component {
   void set_buffers_in_psram(bool psram) { this->buffers_in_psram_ = psram; }
   void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
   void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
+  void set_telemetry_log_interval_frames(uint16_t frames) { this->telemetry_log_interval_frames_ = frames; }
 
  protected:
   bool init_i2s_duplex_();
@@ -614,6 +626,7 @@ class I2SAudioDuplex : public Component {
   int8_t task_core_{0};           // Core 0: canonical Espressif AEC pattern; -1 = unpinned
   uint32_t task_stack_size_{8192};
   bool buffers_in_psram_{false};  // Non-DMA buffers in PSRAM (saves ~15KB internal RAM)
+  uint16_t telemetry_log_interval_frames_{128};
 
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};

@@ -38,6 +38,24 @@ struct ProcessorTelemetry {
   float ringbuf_free_pct{1.0f};
   uint32_t glitch_count{0};
   uint32_t frame_count{0};
+  uint32_t input_ring_drop{0};
+  uint32_t feed_ok{0};
+  uint32_t feed_rejected{0};
+  uint32_t fetch_ok{0};
+  uint32_t fetch_timeout{0};
+  uint32_t output_ring_drop{0};
+  uint32_t feed_queue_frames{0};
+  uint32_t feed_queue_peak{0};
+  uint32_t fetch_queue_frames{0};
+  uint32_t fetch_queue_peak{0};
+  uint32_t process_us_last{0};
+  uint32_t process_us_max{0};
+  uint32_t feed_us_last{0};
+  uint32_t feed_us_max{0};
+  uint32_t fetch_us_last{0};
+  uint32_t fetch_us_max{0};
+  uint32_t feed_stack_high_water{0};
+  uint32_t fetch_stack_high_water{0};
 };
 
 /// Abstract audio processor interface.

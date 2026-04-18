@@ -63,6 +63,7 @@ CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
 CONF_AEC_REFERENCE_MODE = "aec_reference"
 CONF_AEC_REF_BUFFER_MS = "aec_reference_buffer_ms"
 CONF_TELEMETRY = "telemetry"
+CONF_TELEMETRY_LOG_INTERVAL_FRAMES = "telemetry_log_interval_frames"
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
@@ -228,6 +229,7 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=32, max=500),
         # Enable per-stage cycle counting and diagnostics (debug only, adds overhead)
         cv.Optional(CONF_TELEMETRY, default=False): cv.boolean,
+        cv.Optional(CONF_TELEMETRY_LOG_INTERVAL_FRAMES, default=128): cv.int_range(min=1, max=8192),
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
@@ -377,6 +379,7 @@ async def to_code(config):
     # Telemetry: per-stage cycle counting and diagnostics
     if config[CONF_TELEMETRY]:
         cg.add_define("USE_DUPLEX_TELEMETRY")
+    cg.add(var.set_telemetry_log_interval_frames(config[CONF_TELEMETRY_LOG_INTERVAL_FRAMES]))
 
     # Link audio processor if configured
     if CONF_PROCESSOR_ID in config:
