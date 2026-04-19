@@ -26,8 +26,9 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 │  │   (Core 1, p7)  │  │   (Core 0, p6)  │  │   (Core 0, p4)  │ │
 │  │                 │  │                 │  │                 │ │
 │  │ • TCP accept    │  │ • mic_buffer_   │  │ • speaker_buf   │ │
-│  │ • RX handling   │  │ • AEC process   │  │ • I2S write     │ │
-│  │ • Protocol FSM  │  │ • TCP send      │  │ • Scheduled     │ │
+│  │ • RX handling   │  │ • audio_proc.   │  │ • I2S write     │ │
+│  │ • Protocol FSM  │  │   process()     │  │ • Scheduled     │ │
+│  │                 │  │ • TCP send      │  │                 │ │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘ │
 │           │                    │                    │          │
 │           ▼                    ▼                    ▼          │

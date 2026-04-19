@@ -295,16 +295,18 @@ def _final_validate(config):
             "or esp_aec (standalone echo cancellation), not both."
         )
 
-    # Cross-component validation: check for AEC conflict with intercom_api
+    # Cross-component validation: check for audio processor conflict with intercom_api.
+    # Both components accept processor_id; if both set it the audio processor is fed
+    # from two producers and races on every frame. Reject at validation time.
 
     intercom_configs = full_config.get("intercom_api", [])
     if intercom_configs:
-        has_duplex_aec = CONF_PROCESSOR_ID in config and config.get(CONF_PROCESSOR_ID) is not None
+        has_duplex_processor = CONF_PROCESSOR_ID in config and config.get(CONF_PROCESSOR_ID) is not None
         for ic in (intercom_configs if isinstance(intercom_configs, list) else [intercom_configs]):
-            if isinstance(ic, dict) and ic.get("aec_id") is not None and has_duplex_aec:
+            if isinstance(ic, dict) and ic.get("processor_id") is not None and has_duplex_processor:
                 raise cv.Invalid(
                     "Both i2s_audio_duplex and intercom_api have processor_id configured. "
-                    "This causes a race condition on the AEC processor. "
+                    "This causes a race condition on the audio processor. "
                     "Use processor_id on only ONE component (i2s_audio_duplex recommended)."
                 )
 

@@ -298,10 +298,15 @@ The reinit is safe: the old AFE is destroyed first (ESP-SR's FFT resources are a
             +----------+-----------+
             |                      |
     i2s_audio_duplex         intercom_api
-    (processor_id)            (aec_id)
+    (processor_id)         (processor_id)
 ```
 
-Both `EspAec` and `EspAfe` implement `AudioProcessor`. The consumer components (`i2s_audio_duplex` and `intercom_api`) call `process(mic, ref, out)` without knowing which implementation is behind it.
+Both `EspAec` and `EspAfe` implement `AudioProcessor`. The consumer components (`i2s_audio_duplex` and `intercom_api`) call `process(mic, ref, out)` without knowing which implementation is behind it. The supported pairings are:
+
+| Consumer | esp_aec | esp_afe |
+|----------|---------|---------|
+| `i2s_audio_duplex` | yes | yes |
+| `intercom_api` standalone (no `i2s_audio_duplex`) | yes | **no** (the AFE feed/fetch tasks need the steady frames `i2s_audio_duplex` produces) |
 
 ### Internal Pipeline
 

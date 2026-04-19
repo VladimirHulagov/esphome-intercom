@@ -49,16 +49,16 @@ graph TD
     Mono --> mic_path
 
     mic_path --> atten["mic_attenuation<br/>(optional)"]
-    atten --> raw["raw_mic_callbacks<br/>(mic_raw, pre-AEC)"]
-    atten --> AEC["AEC process(mic, ref)"]
+    atten --> raw["raw_mic_callbacks<br/>(mic_raw, pre-processing)"]
+    atten --> Processor["audio_processor.process(mic, ref)<br/>(esp_aec or esp_afe)"]
 
     ref_path --> spk_ref[spk_ref_buffer]
     spk_ref --> reference[reference]
-    reference --> AEC
+    reference --> Processor
 
     raw --> Diag[Diagnostics only]
 
-    AEC --> post["mic_callbacks<br/>(mic_aec, post-AEC)"]
+    Processor --> post["mic_callbacks<br/>(mic_processed, post-processing)"]
     post --> VA[Voice Assistant]
     post --> ICT[Intercom TX]
     post --> MWW[Micro Wake Word]
@@ -66,17 +66,17 @@ graph TD
     Mixer["mixer<br/>(VA TTS + Intercom RX)"] --> SPK[Speaker buffer]
     SPK --> VOL[volume scaling]
     VOL --> TX[I2S TX]
-    VOL --> DirectRef["direct ref buffer<br/>(mono mode only)"]
-    RingBuf -.-> reference
+    VOL --> DirectRef["direct ref buffer<br/>(mono previous_frame mode)"]
+    RingBuf["aec_ref_ring_buffer<br/>(mono ring_buffer mode)"] -.-> reference
 ```
 
 ### Task Layout
 
 | Task | Core | Priority | Role |
 |------|------|----------|------|
-| `i2s_duplex` (audio_task) | **Core 0** | **19** | I2S read/write + FIR decimation + AEC |
-| `intercom_tx` | Core 0 | 5 | Mic→network + AEC during intercom calls |
-| `intercom_spk` | Core 0 | 4 | Network→speaker, AEC reference feed |
+| `i2s_duplex` (audio_task) | **Core 0** | **19** | I2S read/write + FIR decimation + audio processor (esp_aec/esp_afe) |
+| `intercom_tx` | Core 0 | 5 | Mic to network + audio processor during intercom calls |
+| `intercom_spk` | Core 0 | 4 | Network to speaker, AEC reference feed |
 | `intercom_srv` | Core 1 | 5 | TCP RX, call FSM (stays Core 1 for LVGL callback safety) |
 | `mixer` (ESPHome) | Any | 10 | Mix VA + intercom audio to speaker |
 | `MWW inference` (ESPHome) | Unpinned | 3→**8** | Wake word TFLite inference (boost via on_boot lambda) |
