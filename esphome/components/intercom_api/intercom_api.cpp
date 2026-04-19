@@ -711,7 +711,8 @@ void IntercomApi::set_contacts(const std::string &contacts_csv) {
 bool IntercomApi::set_contact(const std::string &name) {
   if (this->contacts_.empty()) {
     ESP_LOGW(TAG, "set_contact('%s') failed: contacts list is empty", name.c_str());
-    this->call_failed_trigger_.trigger(std::string("Contact not found: ") + name);
+    std::string msg = std::string("Contact not found: ") + name;
+    this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
     return false;
   }
   for (size_t i = 0; i < this->contacts_.size(); i++) {
@@ -723,7 +724,8 @@ bool IntercomApi::set_contact(const std::string &name) {
     }
   }
   ESP_LOGW(TAG, "set_contact('%s') failed: not found in %zu contacts", name.c_str(), this->contacts_.size());
-  this->call_failed_trigger_.trigger(std::string("Contact not found: ") + name);
+  std::string msg = std::string("Contact not found: ") + name;
+  this->defer([this, msg]() { this->call_failed_trigger_.trigger(msg); });
   return false;
 }
 
@@ -803,7 +805,7 @@ void IntercomApi::set_active_(bool on) {
       this->speaker_->start();
     }
 #endif
-    this->start_trigger_.trigger();
+    this->defer([this]() { this->start_trigger_.trigger(); });
   } else {
     // Stopping
 
@@ -832,7 +834,7 @@ void IntercomApi::set_active_(bool on) {
     }
 #endif
 
-    this->stop_trigger_.trigger();
+    this->defer([this]() { this->stop_trigger_.trigger(); });
   }
 }
 
@@ -877,24 +879,28 @@ void IntercomApi::set_call_state_(CallState new_state) {
              call_state_to_str(old_state), call_state_to_str(new_state));
   }
 
-  // Fire appropriate trigger
+  // Defer all YAML trigger fires to the main loop. Call-state changes are
+  // initiated from the intercom_srv task on Core 1; YAML on_* actions often
+  // touch LVGL (label set_text, page show), which must run on the ESPHome
+  // main loop. Running them inline here blocks Core 1 long enough to trip
+  // the task watchdog (5s default) under concurrent audio load.
   switch (new_state) {
     case CallState::IDLE:
-      this->idle_trigger_.trigger();
+      this->defer([this]() { this->idle_trigger_.trigger(); });
       break;
     case CallState::OUTGOING:
-      this->outgoing_call_trigger_.trigger();
+      this->defer([this]() { this->outgoing_call_trigger_.trigger(); });
       break;
     case CallState::INCOMING:
       break;
     case CallState::RINGING:
-      this->ringing_trigger_.trigger();
+      this->defer([this]() { this->ringing_trigger_.trigger(); });
       break;
     case CallState::ANSWERING:
-      this->answered_trigger_.trigger();
+      this->defer([this]() { this->answered_trigger_.trigger(); });
       break;
     case CallState::STREAMING:
-      this->streaming_trigger_.trigger();
+      this->defer([this]() { this->streaming_trigger_.trigger(); });
       break;
   }
 
@@ -907,14 +913,14 @@ void IntercomApi::end_call_(CallEndReason reason) {
   std::string reason_str = call_end_reason_to_str(reason);
   ESP_LOGI(TAG, "%s: call ended (%s)", this->device_name_.c_str(), reason_str.c_str());
 
-  // Fire appropriate trigger based on reason type
+  // Fire appropriate trigger based on reason type (deferred to main loop).
   if (reason == CallEndReason::UNREACHABLE ||
       reason == CallEndReason::BUSY ||
       reason == CallEndReason::PROTOCOL_ERROR ||
       reason == CallEndReason::BRIDGE_ERROR) {
-    this->call_failed_trigger_.trigger(reason_str);
+    this->defer([this, reason_str]() { this->call_failed_trigger_.trigger(reason_str); });
   } else {
-    this->hangup_trigger_.trigger(reason_str);
+    this->defer([this, reason_str]() { this->hangup_trigger_.trigger(reason_str); });
   }
 
   // NOTE: stop_trigger_ is NOT fired here. set_active_(false) already fires it.
@@ -998,7 +1004,7 @@ void IntercomApi::server_task_() {
           } else {
             this->publish_state_();
           }
-          this->disconnect_trigger_.trigger();
+          this->defer([this]() { this->disconnect_trigger_.trigger(); });
         }
       }
 
@@ -1690,7 +1696,7 @@ void IntercomApi::accept_client_() {
   xSemaphoreGive(this->client_mutex_);
 
   this->state_ = ConnectionState::CONNECTED;
-  this->connect_trigger_.trigger();
+  this->defer([this]() { this->connect_trigger_.trigger(); });
 }
 
 // === Microphone Callback ===
