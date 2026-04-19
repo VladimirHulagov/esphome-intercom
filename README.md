@@ -600,130 +600,21 @@ sequenceDiagram
 
 ---
 
-## i2s_audio_duplex
+## Audio components
 
-Standard ESPHome `i2s_audio` **cannot drive mic and speaker on the same I2S bus simultaneously**. This is a problem for most audio codecs (ES8311, ES8388, WM8960) and single-bus setups with discrete MEMS mics and I2S amps. **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** solves this.
+Three ESPHome components sit between your codec and the intercom / voice assistant pipelines. Each has its own README with the full option list and tuning notes; the highlights below exist just to help you pick.
 
-### Why it matters
+### [`i2s_audio_duplex`](esphome/components/i2s_audio_duplex/README.md)
 
-Without full-duplex I2S, you can't have Voice Assistant, Micro Wake Word, intercom, and media playback all running at the same time. With `i2s_audio_duplex`:
+Full-duplex I2S driver that lets mic and speaker share one I2S bus (ES8311, ES8388, WM8960, or MEMS + I2S amp). Runs the codec bus at 48 kHz and decimates the mic to 16 kHz via a 31-tap Kaiser FIR. Three zero-config AEC reference modes (direct TX, ES8311 stereo loopback, ES7210 TDM), dual mic outputs (pre-AEC for MWW, post-AEC for VA/STT), runtime AEC mode switching from Home Assistant, and optional PSRAM buffer placement.
 
-- **Intercom, VA, and MWW receive completely clean audio** - echo cancellation removes speaker output from the mic signal. You can listen to music, receive an intercom call, and talk to the voice assistant without any of them hearing each other's audio
-- **Wake word detection works during music/TTS playback** - barge-in support: say the wake word while music is playing, the system ducks the audio and starts listening
-- **Media plays at full quality** - the I2S bus runs at 48kHz (codec native rate). Only the mic output is decimated to 16kHz via FIR filter for AEC/VA/intercom
+### [`esp_aec`](esphome/components/esp_aec/README.md)
 
-### Key features
+Standalone ESP-SR echo cancellation (~80 KB internal RAM). Four modes (`sr_low_cost` recommended for VA+MWW, `voip_*` for pure VoIP). See the mode table in [docs/reference.md](docs/reference.md#esp_aec-component) before changing defaults.
 
-- **True full-duplex** on a single I2S bus (or discrete MEMS mic + I2S amp on same bus with `slot_bit_width: 32`)
-- **Three AEC reference modes**, all zero-configuration:
-  - **Direct TX reference** (default) - uses previous TX frame, no delay tuning needed. Works with any hardware
-  - **ES8311 stereo digital feedback** - sample-accurate DAC loopback via I2S stereo frame
-  - **ES7210 TDM hardware reference** - DAC output captured by dedicated ADC channel
-- **48kHz FIR decimation** - bus runs at 48kHz, mic output decimated to 16kHz (31-tap Kaiser FIR, ~60dB stopband)
-- **Dual mic outputs** - post-AEC mic for VA/STT/intercom, raw (pre-AEC) mic available for any consumer that needs unprocessed audio
-- **Pre-AEC and post-AEC gain** - `mic_gain_pre_aec` for weak MEMS mics (SPH0645), `mic_gain` for post-AEC amplification. Both as HA number entities, persistent across reboots
-- **Runtime AEC mode switching** - change between sr_low_cost, sr_high_perf, voip_low_cost, voip_high_perf from HA without reflashing
-- **DC offset correction** - `correct_dc_offset: true` for MEMS mics without built-in HPF (MSM261, SPH0645)
-- **PSRAM buffer support** - `buffers_in_psram` frees ~28KB internal heap (required for SR AEC on memory-constrained devices)
-- **Audio mixer with ducking** - combine media, TTS, and intercom through a mixer. Music auto-ducks during calls and VA interactions
+### [`esp_afe`](esphome/components/esp_afe/README.md) — experimental
 
-### Quick start
-
-```yaml
-external_components:
-  - source: github://n-IA-hane/esphome-intercom
-    components: [audio_processor, i2s_audio_duplex, esp_aec]
-
-esp_aec:
-  id: aec_processor
-  sample_rate: 16000
-  mode: sr_low_cost
-
-i2s_audio_duplex:
-  id: i2s_duplex
-  i2s_lrclk_pin: GPIO37
-  i2s_bclk_pin: GPIO36
-  i2s_din_pin: GPIO35          # mic data
-  i2s_dout_pin: GPIO7          # speaker data
-  sample_rate: 48000
-  output_sample_rate: 16000    # FIR decimation to 16kHz
-  slot_bit_width: 32           # required for MEMS mics without codec
-  correct_dc_offset: true
-  processor_id: aec_processor
-
-microphone:
-  - platform: i2s_audio_duplex
-    id: mic_aec
-    i2s_audio_duplex_id: i2s_duplex
-
-speaker:
-  - platform: i2s_audio_duplex
-    id: hw_speaker
-    i2s_audio_duplex_id: i2s_duplex
-    sample_rate: 48000
-```
-
-For codec-specific configurations (ES8311 stereo feedback, ES7210 TDM, register setup), see the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md).
-
----
-
-## Audio Front-End (AFE)
-
-> **Experimental.** The AFE integration is functional but should be considered experimental. Evaluate carefully whether your use case requires it.
-
-The `esp_afe` component integrates Espressif's ESP-SR Audio Front-End framework, providing a complete audio processing pipeline beyond basic echo cancellation.
-
-### What AFE adds over esp_aec
-
-| Feature | esp_aec | esp_afe |
-|---------|---------|---------|
-| Echo Cancellation (AEC) | Yes | Yes |
-| Noise Suppression (NS) | No | Yes (WebRTC) |
-| Voice Activity Detection (VAD) | No | Yes |
-| Automatic Gain Control (AGC) | No | Yes |
-| Beamforming (BSS) | No | Yes (dual-mic only) |
-| Runtime feature toggles | Mode only | All features via HA switches |
-| Diagnostic sensors | None | Input volume, output RMS, VAD state |
-
-### Resource cost
-
-The ESP-SR AFE framework is a closed-source binary library originally designed for IDF-centric applications. It carries a significant fixed resource cost, even when configured with the lightest options and all non-essential buffers placed in PSRAM:
-
-| Configuration | Internal RAM | PSRAM | CPU (both cores) |
-|---------------|-------------|-------|------------------|
-| 1 mic + ref (MR SR LOW_COST) | ~72 KB | ~733 KB | ~23% |
-| 2 mic + ref, beamforming (MMNR SR LOW_COST) | ~77 KB | ~1.2 MB | ~67% |
-
-These costs are fixed once the AFE is initialized. Disabling features at runtime skips processing but does not free memory. Only the `*_init` flags at creation time control memory allocation.
-
-### When to use esp_afe vs esp_aec
-
-- **Use `esp_aec`** for single-mic devices where you only need echo cancellation. It is lightweight (~40 KB total), has minimal CPU impact, and is battle-tested on all supported hardware. This is the recommended choice for most intercom-only setups.
-
-- **Use `esp_afe`** when you need noise suppression, AGC, VAD, or dual-mic beamforming. On single-mic boards the AFE works and provides NS/AGC/VAD, but the resource cost is substantial. On dual-mic boards (e.g., Waveshare S3/P4 with ES7210), beamforming provides real spatial voice isolation that esp_aec cannot offer.
-
-### Dual-mic beamforming
-
-On boards with two physical microphones (ES7210 TDM), enabling SE (Speech Enhancement/beamforming) activates BSS (Blind Source Separation). This uses both microphones to spatially isolate the speaker's voice from ambient noise and other sound sources.
-
-```yaml
-esp_afe:
-  id: afe_processor
-  type: sr
-  mode: low_cost
-  mic_num: 2
-  se_enabled: true           # Beamforming ON
-  # ...
-
-i2s_audio_duplex:
-  processor_id: afe_processor
-  use_tdm_reference: true
-  tdm_total_slots: 4
-  tdm_mic_slots: [0, 2]     # Physical mic slots in TDM frame
-  tdm_ref_slot: 1           # DAC feedback reference slot
-```
-
-Beamforming can be toggled at runtime via a Home Assistant switch. When turned off, the system automatically restarts with single-mic processing, saving one FIR decimator, one DC offset filter, and the beamforming CPU cost.
+Full ESP-SR audio front-end: AEC + NS + VAD + AGC, optionally BSS beamforming with dual mics. Runtime toggles for every feature, diagnostic sensors (input volume, output RMS, voice presence), and mode switching in Home Assistant. Memory and CPU cost is substantial (see the [AFE README](esphome/components/esp_afe/README.md) for the exact numbers). Use only when you actually need noise suppression, AGC, VAD, or beamforming; prefer `esp_aec` for plain intercom-only setups.
 
 ---
 
