@@ -202,9 +202,8 @@ time:
 # =============================================================================
 external_components:
   - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+      type: local
+      path: ../../../../esphome/components
     components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
 
 # =============================================================================
