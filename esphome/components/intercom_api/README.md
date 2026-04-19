@@ -106,7 +106,7 @@ intercom_api:
 | `mode` | string | `simple` | Operating mode: `simple` or `full` |
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
-| `processor_id` | ID | - | Reference to audio processor (`esp_aec` or `esp_afe`). Despite the name, accepts any `AudioProcessor` implementation |
+| `processor_id` | ID | - | Reference to an audio processor. **Use `esp_aec` only** when `intercom_api` runs without `i2s_audio_duplex` in front of it (the standalone dual-bus MEMS + amp setup). `esp_afe` is type-compatible but its feed/fetch tasks need the fixed-cadence frames that only `i2s_audio_duplex` produces; pairing `esp_afe` with standalone `intercom_api` will silently fail to process audio. With `i2s_audio_duplex` in the chain both processors are valid. |
 | `aec_reference_delay_ms` | int | 80 | AEC ring buffer pre-fill delay (10-200ms). Tune for your hardware if echo cancellation is poor. |
 
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
@@ -181,7 +181,17 @@ switch:
       id: aec_switch
       name: "Echo Cancellation"
       restore_mode: RESTORE_DEFAULT_ON
+    active:
+      id: intercom_active_switch
+      name: "Intercom Enabled"
+      restore_mode: RESTORE_DEFAULT_ON
 ```
+
+| Switch sub-key | Effect |
+|----------------|--------|
+| `auto_answer` | Auto-accept any incoming call. |
+| `aec` | Toggle the linked audio processor on or off at runtime. |
+| `active` | Master enable for the intercom. When off, the TCP server stops accepting connections and outgoing calls are blocked. Useful as a privacy switch or for night mode. |
 
 ### Number Platform
 
@@ -196,7 +206,7 @@ number:
     mic_gain:
       id: mic_gain
       name: "Mic Gain"
-      # Range: -20 to +30 dB
+      # Range: -20 to +20 dB
 ```
 
 > **Note**: When `i2s_audio_duplex` is also present, `i2s_audio_duplex` owns the `mic_gain` and `speaker_volume` number entities with full dB-scale control and persistence. In that case, `intercom_api`'s number entities serve as **fallback only** for non-duplex setups (e.g., ESP32-S3 Mini with separate I2S buses). A `FINAL_VALIDATE_SCHEMA` at compile time prevents conflicts by detecting when both components try to own the same functionality (dual AEC, dual DC offset).
@@ -360,10 +370,13 @@ Use in `if:` blocks:
 | Condition | True when |
 |-----------|-----------|
 | `is_idle` | State is Idle |
-| `is_ringing` | State is Ringing |
-| `is_calling` | State is Outgoing |
-| `is_in_call` | State is Streaming |
-| `is_incoming` | Has pending incoming call |
+| `is_ringing` | State is Ringing (incoming call, before answer) |
+| `is_calling` | State is Outgoing (waiting for the remote end to pick up) |
+| `is_answering` | State is Answering (call accepted, audio bridge being established) |
+| `is_streaming` | Audio is actively streaming both ways |
+| `is_in_call` | State is Streaming or Answering (true once a call is live) |
+| `is_incoming` | Pending incoming call (Ringing or Answering) |
+| `destination_is` | Currently selected contact name matches the `destination:` argument (Full mode) |
 
 ## Triggers run on the main loop
 
@@ -404,7 +417,7 @@ id(intercom).start();
 id(intercom).stop();
 id(intercom).answer_call();
 id(intercom).set_volume(0.8f);        // 0.0 - 1.0
-id(intercom).set_mic_gain_db(6.0f);   // -20 to +30
+id(intercom).set_mic_gain_db(6.0f);   // -20 to +20
 id(intercom).set_aec_enabled(true);
 id(intercom).set_auto_answer(false);
 ```
@@ -502,8 +515,11 @@ api:
 
 ### "Connection refused" on port 6054
 
-- Check `CONFIG_LWIP_MAX_SOCKETS` is increased (default 10 → 16)
-- Verify no other service uses port 6054
+- Verify no other service is bound to port 6054 on the device.
+- Check that the `active` switch (if you exposed it) is on.
+- Check that the device is on the network and reachable from Home Assistant.
+
+The TCP socket pool is sized automatically: `intercom_api` calls `socket.consume_sockets(N)` at validation time, so ESPHome bumps `CONFIG_LWIP_MAX_SOCKETS` to fit the intercom server plus the rest of the device's network components. You should not need to set `CONFIG_LWIP_MAX_SOCKETS` by hand.
 
 ### Audio glitches
 

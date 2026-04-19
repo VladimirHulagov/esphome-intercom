@@ -164,6 +164,8 @@ speaker:
 | `task_stack_size` | int | 8192 | Audio task stack size in bytes (4096-32768). Increase if you see stack overflow warnings. |
 | `buffers_in_psram` | bool | false | Move non-hot-path audio buffers (AEC mic/ref, processor interleave, multi-channel mic, spk_ref) to PSRAM. `rx_buffer`/`spk_buffer` always stay in internal RAM. Saves ~15-20KB internal heap. Required for `sr_low_cost` AEC mode (512-sample frames). |
 | `audio_stack_in_psram` | bool | false | Place the audio task's own stack in PSRAM. Saves ~8KB of DMA-capable internal RAM at the cost of ~3x slower function return paths. Only enable on boards that need the internal headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS streams from `speaker_media_player` and intercom). The audio task is not CPU-bound (heavy esp-sr work runs in `esp_afe`'s feed task on core 1), so PSRAM stack latency is acceptable here. Requires `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y` (already default on our YAMLs). Leave it `false` on any board that does not hit the "not enough internal RAM" boundary; normal lifecycle is identical to the non-opt-in path. |
+| `aec_reference` | string | `previous_frame` | Mono-mode AEC reference source. `previous_frame` (default) reuses the prior TX frame for echo reference, no buffering, no delay tuning. `ring_buffer` stores TX in a TYPE2-style ring with configurable capacity for better frame alignment on no-codec setups. Ignored when `use_stereo_aec_reference` or `use_tdm_reference` is true. |
+| `aec_reference_buffer_ms` | int | 80 | Capacity of the AEC reference ring buffer in milliseconds (32 to 500). Only used with `aec_reference: ring_buffer`. Larger values absorb more producer/consumer jitter at the cost of latency. |
 
 ### Microphone Options
 
@@ -547,7 +549,36 @@ binary_sensor:
 - **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed`, including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
 - **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally).
-- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure an audio processor (`processor_id` / `aec_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of audio processing and DC offset; `intercom_api` should NOT set `aec_id` or `dc_offset_removal`.
+- **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure an audio processor (`processor_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of audio processing and DC offset; `intercom_api` should NOT set `processor_id` or `dc_offset_removal`.
+
+### Audio task lifecycle
+
+The audio task is an internal FreeRTOS task with three properties worth knowing about, all stable since the audio-core-v2 audit:
+
+- **Lazy creation**. The task is created on the first `i2s_audio_duplex.start` call, not at component setup. Boards that never start the audio path (rare) save ~8 KB of RAM at boot.
+- **Permanent**. Once created, the task lives for the rest of the device's uptime. `i2s_audio_duplex.stop` flips an internal `duplex_running_` flag and stops the I²S peripheral, but does not destroy the task. A subsequent `start` reuses the same TCB and stack.
+- **In-place reconfigure**. When the linked processor's `frame_spec` changes (typical example: `esp_afe` SE toggle flipping `mic_channels` between 1 and 2), the audio task observes the `frame_spec_revision()` bump at the top of its main loop and reinitialises decimator, reference extraction and output buffers in place. Worst-case-sized buffers are pre-allocated once at first start, so the reconfigure path does not call `heap_caps_alloc` and cannot fragment SPIRAM.
+
+This is why mic consumers (MWW, Voice Assistant, intercom) survive an internal stop/start cycle: the task and its consumer registry are intact across reconfigure.
+
+### Mic consumer registry (C++ API)
+
+Components that want to receive processed mic frames register themselves once at setup with an opaque token:
+
+```cpp
+i2s_audio_duplex_->register_mic_consumer(this);   // typically `this` of the consumer component
+// ... runs forever ...
+i2s_audio_duplex_->unregister_mic_consumer(this); // optional, only if the consumer is destroyed
+```
+
+The token is just an identity; the registry tracks live consumers in a `std::vector<void*>` and gates the mic capture (no consumers means no callbacks fired). The registry survives `stop()` and internal reconfigure cycles, so consumers do not need to re-register. Replaces the older `mic_ref_count_` atomic refcount, which lost its count on `stop()` and silently disconnected MWW / VA after every internal reconfigure.
+
+### Mono-mode AEC reference
+
+When neither `use_stereo_aec_reference` nor `use_tdm_reference` is enabled, the AEC reference comes from the speaker output. Two options via `aec_reference:`:
+
+- **`previous_frame`** (default): the audio task uses the prior 32 ms TX frame as the AEC reference. Simple, works on any hardware, AEC adapts to the constant 32 ms latency.
+- **`ring_buffer`**: speaker TX is stored in a TYPE2-style ring buffer with `aec_reference_buffer_ms` of capacity. The mono-reference helper reads from the ring; on starvation it zero-fills (the AEC handles that as a "no echo this frame") rather than reusing stale data. Better frame alignment on no-codec setups (discrete MEMS mic + I²S amp) at the cost of `aec_reference_buffer_ms` of latency.
 
 ### PSRAM and sdkconfig Requirements
 

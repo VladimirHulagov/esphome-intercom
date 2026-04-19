@@ -1,6 +1,8 @@
 # ESP AFE - Full Audio Front-End Pipeline
 
-ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline: **AEC + Beamforming (BSS) + Noise Suppression + VAD + AGC** in a single component, with runtime control switches and diagnostic sensors. Supports single-mic (MR) and dual-mic (MMR) configurations.
+> ⚠ **Important: `esp_afe` requires `i2s_audio_duplex` in front of it.** It is **not** a drop-in alternative to `esp_aec` for `intercom_api` standalone setups (dual-bus MEMS + amp without a codec). The AFE pipeline expects fixed 512-sample 16 kHz frames at a steady cadence, which only `i2s_audio_duplex` produces. If you use `intercom_api` without `i2s_audio_duplex`, set `processor_id:` to an `esp_aec` component, not `esp_afe`. See [docs/reference.md](../../../docs/reference.md#audio-processing-components) for the full topology matrix.
+
+ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline (**AEC + Beamforming (BSS) + Noise Suppression + VAD + AGC**) in a single component, with runtime control switches and diagnostic sensors. Supports single-mic (MR) and dual-mic (MMR) configurations.
 
 ## Overview
 
@@ -18,7 +20,7 @@ ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framewor
 
 > **Note**: When beamforming (SE/BSS) is active, esp-sr replaces NS and AGC with spatial source separation. BSS suppresses directional noise better than NS but does not normalize volume (no AGC). NS and AGC switches have no effect while SE is active.
 
-Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full signal processing pipeline. Both components implement the `AudioProcessor` interface and are drop-in replacements for each other in `i2s_audio_duplex` and `intercom_api`.
+Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full signal processing pipeline. Both components implement the `AudioProcessor` interface, but they are **only** drop-in replacements behind `i2s_audio_duplex`. With standalone `intercom_api` (no duplex driver), use `esp_aec`: the AFE feed/fetch task model needs the steady producer that `i2s_audio_duplex` provides and that the standalone intercom path does not.
 
 ### When to use esp_afe vs esp_aec
 
@@ -239,24 +241,31 @@ sensor:
 
 ### esp_afe.set_mode
 
-Change the AFE type and mode at runtime. The entire AFE pipeline is recreated (~70ms gap).
+Change the AFE type and mode at runtime. The entire AFE pipeline is recreated (~70 ms gap).
 
 ```yaml
 select:
   - platform: template
+    id: afe_mode_select
     name: "AFE Mode"
     options:
       - sr_low_cost
       - sr_high_perf
-      - vc_low_cost
-      - vc_high_perf
+      - voip_low_cost
+      - voip_high_perf
+    initial_option: "sr_low_cost"
+    optimistic: false           # do NOT auto-publish; we publish the live mode below
+    restore_value: false
     set_action:
       - esp_afe.set_mode:
           id: afe_processor
           mode: !lambda 'return x;'
+      - lambda: 'id(afe_mode_select).publish_state(id(afe_processor).get_mode_name());'
 ```
 
-Valid mode strings: `sr_low_cost`, `sr_high_perf`, `vc_low_cost`, `vc_high_perf`.
+Valid mode strings: `sr_low_cost`, `sr_high_perf`, `voip_low_cost`, `voip_high_perf`.
+
+`get_mode_name()` returns the live mode as a string after the reinit. The `optimistic: false` plus the explicit `publish_state()` at the end is the recommended pattern: it stops `template_select::control()` from auto-publishing the user-selected value over a rejected switch (e.g. when `sr_high_perf` cannot allocate the contiguous DMA-capable internal block).
 
 ## Feature Toggle Behavior
 
