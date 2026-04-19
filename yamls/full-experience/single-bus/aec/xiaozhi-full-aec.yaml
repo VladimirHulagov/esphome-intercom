@@ -243,6 +243,9 @@ i2s_audio_duplex:
   # Sample-accurate reference alignment, no ring buffer delay needed.
   # Requires ES8311 register 0x44 bits[6:4]=4 (configured in on_boot via I2C).
   use_stereo_aec_reference: true
+  # Audio frame buffers in PSRAM: sr_low_cost uses 512-sample frames which
+  # pressure the 28KB largest internal block under WiFi/TLS/intercom load.
+  buffers_in_psram: true
   # Audio task on core 1 prio 9 so LWIP (prio 18) and speaker pipeline (prio 1)
   # on core 0 can run during concurrent TLS streams.
   task_core: 1
