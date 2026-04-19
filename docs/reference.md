@@ -92,16 +92,18 @@ Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `inter
 | `filter_length` | int | 4 | Echo tail in frames (4 = 64ms) |
 | `mode` | string | `voip_low_cost` | AEC algorithm mode |
 
-**AEC modes** (ESP-SR library - two completely different engines):
+**AEC modes** (ESP-SR library, two completely different engines):
 
 | Mode | Engine | CPU (Core 0) | RES | MWW on post-AEC | Recommended |
 |------|--------|-------------|-----|-----------------|-------------|
-| `sr_low_cost` | `esp_aec3` (linear) | **~22%** | No | **10/10** | **Yes - for VA + MWW** |
-| `sr_high_perf` | `esp_aec3` (FFT) | ~25% | No | 10/10 | No (DMA memory issues on S3) |
-| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58% | Yes | 2/10 | Only if MWW not needed |
-| `voip_high_perf` | `dios_ssp_aec` | ~64% | Yes | 2/10 | No |
+| `sr_low_cost` | `esp_aec3` (linear) | **~22 %** | No | **10/10** | **Yes — for VA + MWW** |
+| `sr_high_perf` | `esp_aec3` (FFT) | ~25 % | No | 10/10 | Only when DMA-capable internal RAM is available |
+| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58 % | Yes | 2/10 | Only if MWW is not needed |
+| `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | No |
 
-> **Important**: SR modes use a **linear-only** adaptive filter that preserves spectral features for neural wake word detection. VOIP modes add a **residual echo suppressor** (RES) that distorts features, reducing MWW detection from 10/10 to 2/10. Use `sr_low_cost` for VA + MWW setups. SR mode requires `buffers_in_psram: true` on ESP32-S3 (512-sample frames need more memory). See [i2s_audio_duplex README](../esphome/components/i2s_audio_duplex/README.md#aec-cpu-impact) for details.
+CPU figures measured on ESP32-S3 at 240 MHz feeding one 16 kHz mic channel (S3 reference hardware, esp-sr 2.3.1). They scale roughly linearly with the sample rate.
+
+> **Important**: SR modes use a **linear-only** adaptive filter that preserves spectral features for neural wake word detection. VOIP modes add a **residual echo suppressor** (RES) that distorts features, reducing MWW detection from 10/10 to 2/10. Use `sr_low_cost` for VA + MWW setups. SR mode requires `buffers_in_psram: true` on ESP32-S3 (512-sample frames need more memory than the internal heap can usually spare). `sr_high_perf` needs a contiguous DMA-capable internal block at switch time; the component runs a pre-flight heap check and refuses the switch if the block is not available, rather than crashing.
 
 ## esp_afe component
 
