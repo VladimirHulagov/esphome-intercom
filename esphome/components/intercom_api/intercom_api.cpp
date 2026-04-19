@@ -15,15 +15,18 @@
 #include "../audio_processor/ring_buffer_caps.h"
 
 namespace {
-constexpr uint32_t kServerTaskStackWords = 8192 / sizeof(StackType_t);
-constexpr uint32_t kTxTaskStackWords = 12288 / sizeof(StackType_t);
-constexpr uint32_t kSpeakerTaskStackWords = 8192 / sizeof(StackType_t);
 constexpr size_t MIC_CONVERTED_SAMPLES = 512;
 constexpr size_t SPK_REF_SCALED_SAMPLES = 1024;
 }  // namespace
 
 namespace esphome {
 namespace intercom_api {
+
+// Short aliases so the .cpp stays terse (the public constants live on
+// IntercomApi as static constexpr members).
+constexpr auto kServerTaskStackWords = IntercomApi::kServerTaskStackWords;
+constexpr auto kTxTaskStackWords = IntercomApi::kTxTaskStackWords;
+constexpr auto kSpeakerTaskStackWords = IntercomApi::kSpeakerTaskStackWords;
 
 static const char *const TAG = "intercom_api";
 

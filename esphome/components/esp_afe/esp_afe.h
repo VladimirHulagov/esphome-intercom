@@ -32,6 +32,34 @@ using audio_processor::FeatureControl;
 using audio_processor::FrameSpec;
 using audio_processor::ProcessorTelemetry;
 
+/// Full Espressif AFE pipeline wrapper.
+///
+/// Implements AudioProcessor on top of esp-sr's AFE (AEC + NS + VAD +
+/// AGC + optional SE beamforming). The component runs two FreeRTOS tasks:
+///
+///   feed_task   - pulls frames from the input ring, interleaves mic/ref,
+///                 calls afe_data->feed().
+///   fetch_task  - calls afe_data->fetch_with_delay(), pushes processed
+///                 frames into fetch_output_ring_ for consumers to read
+///                 via process().
+///
+/// Runtime reconfiguration (toggling AEC/NS/AGC/VAD/SE, switching SR/VC
+/// mode) must tear the esp-sr instance down and rebuild it. Because
+/// process() is called from the consumer audio task (prio 19) while
+/// config mutations come from the main thread, the two ends coordinate
+/// through a lock-free drain handshake:
+///
+///   1. Config change acquires config_mutex_ and flips drain_request_
+///      to true.
+///   2. process() observes drain_request_ at the top of every frame and
+///      returns a passthrough copy immediately, without touching the
+///      esp-sr handle.
+///   3. Config change waits for process_busy_ to clear, then it is safe
+///      to destroy + rebuild the esp-sr instance.
+///   4. After rebuild, drain_request_ is cleared; process() resumes
+///      normal operation on the next frame.
+///
+/// This avoids blocking the consumer's audio task on any global mutex.
 class EspAfe : public Component, public AudioProcessor {
  public:
   void setup() override;

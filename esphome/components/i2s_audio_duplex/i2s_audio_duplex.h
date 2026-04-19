@@ -355,6 +355,19 @@ class MultiChannelFirDecimator {
   size_t out_size_{0};
 };
 
+/// Full-duplex I2S codec driver.
+///
+/// Extends the upstream i2s_audio pattern with a single shared I2S bus
+/// that carries both mic RX and speaker TX (typical for codec chips
+/// like ES8311 / ES7210). Optionally integrates an AudioProcessor (set
+/// via processor_id) for AEC/NS/AGC/SE on the mic path. The processor
+/// may be EspAec (AEC only) or EspAfe (full pipeline); both are drop-in
+/// AudioProcessor implementations.
+///
+/// Runs a single audio task that pulls I2S RX frames, optionally
+/// decimates with FirDecimator, invokes the processor, and distributes
+/// the result to registered MicDataCallback listeners. Speaker frames
+/// come in via SpeakerOutputCallback and are written to I2S TX.
 class I2SAudioDuplex : public Component {
  public:
   void setup() override;

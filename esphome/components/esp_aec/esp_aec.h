@@ -20,6 +20,15 @@ using audio_processor::FeatureControl;
 using audio_processor::FrameSpec;
 using audio_processor::ProcessorTelemetry;
 
+/// Standalone Espressif AEC wrapper.
+///
+/// Implements AudioProcessor with only the echo canceller enabled
+/// (WebRTC or neural, depending on mode). Lower memory footprint than
+/// EspAfe. Intended for devices that only need echo cancellation for an
+/// intercom TX path without the full AFE pipeline.
+///
+/// Consumers (i2s_audio_duplex, intercom_api) see AEC as just another
+/// AudioProcessor; picking EspAec vs EspAfe is a YAML choice.
 class EspAec : public Component, public AudioProcessor {
  public:
   void setup() override;

@@ -103,8 +103,28 @@ struct ClientInfo {
   std::atomic<bool> streaming{false};
 };
 
+/// TCP-based intercom peer component.
+///
+/// Implements a custom TCP protocol (port 6054) for ESP-to-ESP calls,
+/// complementing voice_assistant and micro_wake_word with bi-directional
+/// audio streaming between devices on the same network. Optionally
+/// integrates an AudioProcessor (set via processor_id) when it owns its
+/// own mic/speaker path; on devices where i2s_audio_duplex owns the
+/// processor, intercom_api stays mic/speaker-passthrough and the
+/// processor side is handled upstream.
+///
+/// Runs up to three FreeRTOS tasks depending on configuration
+/// (server/tx/speaker); see README.md for the task topology and stack
+/// budget per mode.
 class IntercomApi : public Component {
  public:
+  // FreeRTOS task stack sizes (in words). Mirrors esp_afe's convention
+  // of keeping stack footprint explicit at the class level rather than
+  // as magic numbers at xTaskCreate sites.
+  static constexpr uint32_t kServerTaskStackWords = 8192 / sizeof(StackType_t);
+  static constexpr uint32_t kTxTaskStackWords = 12288 / sizeof(StackType_t);
+  static constexpr uint32_t kSpeakerTaskStackWords = 8192 / sizeof(StackType_t);
+
   void setup() override;
   void loop() override;
   void dump_config() override;
