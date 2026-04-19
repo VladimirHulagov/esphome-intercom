@@ -55,6 +55,7 @@ packages:
   core: !include ../../../../packages/va_intercom.yaml
   s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
   audio_mem: !include ../../../../packages/profile/audio_memory.yaml
+  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
 
 # =============================================================================
 # ESPHome Base
@@ -84,29 +85,9 @@ esphome:
       - globals.set:
           id: g_applied_led
           value: "0"
-      # === ES7210 TDM Configuration ===
-      - lambda: |-
-          // 1. Enable ALL ADC clocks (ESPHome driver only enables ADC1+2)
-          uint8_t reg01;
-          if (!id(es7210_adc).read_byte(0x01, &reg01)) {
-            ESP_LOGE("es7210_tdm", "Failed to read reg 0x01, TDM config aborted");
-            return;
-          }
-          reg01 &= ~0x3F;  // Clear bits 0-5: enable ADC1-4 clocks + CP + BCLK
-          if (!id(es7210_adc).write_byte(0x01, reg01) ||
-              !id(es7210_adc).write_byte(0x12, 0x02)) {  // TDM I2S mode
-            ESP_LOGE("es7210_tdm", "Failed to write clock/TDM registers");
-            return;
-          }
-
-          // 2. MIC3 gain = 30dB (Espressif Korvo-2 reference)
-          if (!id(es7210_adc).write_byte(0x45, 0x1A) ||  // MIC3: PGA_ON + 30dB
-              !id(es7210_adc).write_byte(0x46, 0x10)) {   // MIC4: PGA_ON + 0dB (unused)
-            ESP_LOGE("es7210_tdm", "Failed to write MIC gain registers");
-            return;
-          }
-
-          ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, MIC3 gain=30dB", reg01);
+      # ES7210 TDM configuration (shared with waveshare-p4 via
+      # packages/codec/es7210_tdm.yaml).
+      - script.execute: es7210_tdm_init
       # Restore ES8311 volume from saved number entity
       - lambda: |-
           float vol = ${volume_min} + (id(speaker_volume).state / 100.0) * (${volume_max} - ${volume_min});

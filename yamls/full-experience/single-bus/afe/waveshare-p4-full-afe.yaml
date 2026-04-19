@@ -78,6 +78,7 @@ packages:
   p4_base: !include ../../../../packages/platform/esp32p4_base.yaml
   audio_mem: !include ../../../../packages/profile/audio_memory.yaml
   p4_c6: !include ../../../../packages/board/waveshare_p4_c6.yaml
+  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -91,26 +92,9 @@ esphome:
         - output.turn_on: speaker_enable
     - priority: 200
       then:
-        # === ES7210 TDM Configuration ===
-        # Enable all 4 ADC clocks, TDM mode, and set MIC3 gain.
-        # MIC3 is wired to ES8311 DAC output via analog path (AEC reference).
-        # Gain reference: Espressif Korvo-2 AEC example uses GAIN_30DB for MIC3.
-        - lambda: |-
-            // 1. Enable ALL ADC clocks (ESPHome driver only enables ADC1+2)
-            uint8_t reg01;
-            id(es7210_adc).read_byte(0x01, &reg01);
-            reg01 &= ~0x3F;  // Clear bits 0-5: enable ADC1-4 clocks + CP + BCLK
-            id(es7210_adc).write_byte(0x01, reg01);
-
-            // 2. Enable TDM I2S mode: all 4 ADC channels multiplexed on SDOUT1
-            id(es7210_adc).write_byte(0x12, 0x02);
-
-            // 3. MIC3 gain = 30dB (Espressif Korvo-2 reference: GAIN_30DB for AEC ref)
-            //    MIC1/MIC2 keep 24dB from ESPHome driver (MEMS mic preamp)
-            id(es7210_adc).write_byte(0x45, 0x1A);  // MIC3: PGA_ON + 30dB
-            id(es7210_adc).write_byte(0x46, 0x10);  // MIC4: PGA_ON + 0dB (unused, keep tidy)
-
-            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, sdp2=0x02, MIC3 gain=30dB", reg01);
+        # ES7210 TDM configuration (shared with waveshare-s3 via
+        # packages/codec/es7210_tdm.yaml).
+        - script.execute: es7210_tdm_init
         # Restore ES8311 volume and sync AEC reference
         - lambda: |-
             float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
