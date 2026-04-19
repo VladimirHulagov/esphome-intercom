@@ -490,7 +490,13 @@ class I2SAudioDuplex : public Component {
   void deinit_i2s_();
 
   static void audio_task(void *param);
+  // Top-level task entry: outer loop that spawns one audio_session_ per start()/stop()
+  // cycle. Created once in setup(), never destroyed, so subsequent cycles can't trip
+  // a FreeRTOS xTaskCreate race on a lingering TCB.
   void audio_task_();
+  // One audio session: populate ctx, enter the processing loop, and return when
+  // stop() flips duplex_running_ off or the processor's frame_spec changes.
+  void audio_session_();
 
   // Audio task context: groups all buffers, sizes, and per-frame snapshots
   // to avoid long parameter lists in the refactored processing functions.
@@ -613,7 +619,12 @@ class I2SAudioDuplex : public Component {
   mutable std::mutex mic_consumers_mutex_;
   std::atomic<bool> speaker_running_{false};
   std::atomic<bool> speaker_paused_{false};
-  std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
+  // audio_task_shutdown_: terminal exit signal (component destruction).
+  // audio_task_idle_:     true while the task is parked in its outer wait loop
+  //                       (not owning I2S). stop() polls this to know when the
+  //                       task has released the inner processing loop.
+  std::atomic<bool> audio_task_shutdown_{false};
+  std::atomic<bool> audio_task_idle_{true};
   TaskHandle_t audio_task_handle_{nullptr};
 
   // Cross-thread buffer operation request (main thread -> audio task, avoids concurrent ring buffer access)
@@ -672,9 +683,6 @@ class I2SAudioDuplex : public Component {
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};
 
-  // Processor frame_spec changed: audio task exits, component loop restarts it
-  std::atomic<bool> needs_restart_{false};
-
   // Pre-allocated audio task buffers (owned by component, not by ctx).
   // Allocated once on first audio_task_ entry, sized for worst case so the
   // task can re-enter without alloc/free cycles across reconfigures.
@@ -686,10 +694,6 @@ class I2SAudioDuplex : public Component {
   int16_t *prealloc_aec_output_{nullptr};
   int16_t *prealloc_tdm_tx_buffer_{nullptr};
   bool audio_buffers_allocated_{false};
-
-  // Deferred stop cleanup: channel deletion deferred until task exits
-  std::atomic<bool> stop_cleanup_pending_{false};
-  void finish_stop_cleanup_();
 
 };
 

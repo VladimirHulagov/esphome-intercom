@@ -138,6 +138,25 @@ void I2SAudioDuplex::setup() {
     }
   }
 
+  // Spawn the permanent audio task once. It parks in an idle wait loop until
+  // start() flips duplex_running_; subsequent stop()/start() cycles just
+  // toggle that flag. This eliminates the xTaskCreate race that previously
+  // caused "Failed to create audio task" under rapid feature-toggle churn.
+  BaseType_t task_created = xTaskCreatePinnedToCore(
+      audio_task,
+      "i2s_duplex",
+      this->task_stack_size_,
+      this,
+      this->task_priority_,
+      &this->audio_task_handle_,
+      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY
+  );
+  if (task_created != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create audio task");
+    this->mark_failed();
+    return;
+  }
+
   ESP_LOGI(TAG, "I2S Audio Duplex ready (speaker_buf=%u bytes)", (unsigned)this->speaker_buffer_size_);
 }
 
@@ -148,14 +167,8 @@ void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
 }
 
 void I2SAudioDuplex::loop() {
-  // Handle processor frame_spec change: audio task exited, restart with new
-  // allocations. Consumer registration (mic_consumers_) survives stop()+start()
-  // by construction, so no refcount save/restore is needed here.
-  if (this->needs_restart_.exchange(false, std::memory_order_relaxed)) {
-    ESP_LOGD(TAG, "Restarting audio task for frame_spec change");
-    this->stop();
-    this->start();
-  }
+  // Nothing to do here: frame_spec changes are handled inside the permanent
+  // audio task, which restarts its own session without main-thread help.
 }
 
 void I2SAudioDuplex::dump_config() {
@@ -470,47 +483,38 @@ void I2SAudioDuplex::deinit_i2s_() {
   ESP_LOGD(TAG, "I2S deinitialized");
 }
 
-void I2SAudioDuplex::finish_stop_cleanup_() {
-  if (this->tx_handle_) {
-    i2s_del_channel(this->tx_handle_);
-    this->tx_handle_ = nullptr;
-  }
-  if (this->rx_handle_) {
-    i2s_del_channel(this->rx_handle_);
-    this->rx_handle_ = nullptr;
-  }
-  this->stop_cleanup_pending_.store(false, std::memory_order_relaxed);
-  this->audio_task_handle_ = nullptr;
-  ESP_LOGI(TAG, "Duplex audio stopped (cleanup complete)");
-}
-
 void I2SAudioDuplex::start() {
   if (this->duplex_running_.load(std::memory_order_relaxed)) {
-    ESP_LOGW(TAG, "Already running");
     return;
-  }
-
-  // Complete deferred cleanup from previous stop timeout
-  if (this->stop_cleanup_pending_.load(std::memory_order_relaxed)) {
-    if (this->task_exited_.load(std::memory_order_relaxed)) {
-      ESP_LOGW(TAG, "Completing deferred stop cleanup before start");
-      this->finish_stop_cleanup_();
-    } else {
-      ESP_LOGE(TAG, "Previous audio task still stuck, cannot start");
-      this->has_i2s_error_.store(true, std::memory_order_relaxed);
-      return;
-    }
   }
 
   ESP_LOGI(TAG, "Starting duplex audio...");
 
-  if (!this->init_i2s_duplex_()) {
-    ESP_LOGE(TAG, "Failed to initialize I2S");
-    return;
+  // I2S channels are created on first start and reused on subsequent cycles:
+  // stop() only disables them, so here we either init from scratch or just
+  // re-enable. Keeping the channels alive avoids i2s_del_channel/i2s_new_channel
+  // thrash and the associated brief allocation failures under SPIRAM pressure.
+  const bool channels_exist = (this->tx_handle_ != nullptr || this->rx_handle_ != nullptr);
+  if (!channels_exist) {
+    if (!this->init_i2s_duplex_()) {
+      ESP_LOGE(TAG, "Failed to initialize I2S");
+      return;
+    }
+  } else {
+    if (this->tx_handle_) {
+      esp_err_t err = i2s_channel_enable(this->tx_handle_);
+      if (err != ESP_OK) {
+        ESP_LOGW(TAG, "TX channel re-enable failed: %s", esp_err_to_name(err));
+      }
+    }
+    if (this->rx_handle_) {
+      esp_err_t err = i2s_channel_enable(this->rx_handle_);
+      if (err != ESP_OK) {
+        ESP_LOGW(TAG, "RX channel re-enable failed: %s", esp_err_to_name(err));
+      }
+    }
   }
 
-  this->duplex_running_.store(true, std::memory_order_relaxed);
-  this->task_exited_.store(false, std::memory_order_relaxed);
   this->has_i2s_error_.store(false, std::memory_order_relaxed);
   this->speaker_running_.store(this->tx_handle_ != nullptr, std::memory_order_relaxed);
 
@@ -530,25 +534,8 @@ void I2SAudioDuplex::start() {
   }
 #endif
 
-  // Audio task stack MUST stay in internal RAM (real-time, latency-sensitive)
-  BaseType_t task_created = xTaskCreatePinnedToCore(
-      audio_task,
-      "i2s_duplex",
-      this->task_stack_size_,
-      this,
-      this->task_priority_,
-      &this->audio_task_handle_,
-      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY
-  );
-
-  if (task_created != pdPASS) {
-    ESP_LOGE(TAG, "Failed to create audio task");
-    this->duplex_running_.store(false, std::memory_order_relaxed);
-    this->speaker_running_.store(false, std::memory_order_relaxed);
-    this->deinit_i2s_();
-    return;
-  }
-
+  // Wake the permanent audio task (created once in setup()).
+  this->duplex_running_.store(true, std::memory_order_relaxed);
   ESP_LOGI(TAG, "Duplex audio started");
 }
 
@@ -565,7 +552,17 @@ void I2SAudioDuplex::stop() {
   this->speaker_running_.store(false, std::memory_order_relaxed);
   this->duplex_running_.store(false, std::memory_order_relaxed);
 
-  delay(60);
+  // Wait for the task to park itself in its outer idle loop before we touch
+  // I2S channels. The task polls duplex_running_ at the top of each inner
+  // iteration, so this usually resolves in well under 60ms.
+  int wait_count = 0;
+  while (!this->audio_task_idle_.load(std::memory_order_relaxed) && wait_count < 60) {
+    delay(10);
+    wait_count++;
+  }
+  if (!this->audio_task_idle_.load(std::memory_order_relaxed)) {
+    ESP_LOGW(TAG, "Audio task did not park within 600ms; continuing with channel teardown");
+  }
 
   esp_err_t err;
   if (this->tx_handle_) {
@@ -581,23 +578,7 @@ void I2SAudioDuplex::stop() {
     }
   }
 
-  if (this->audio_task_handle_) {
-    int wait_count = 0;
-    while (!this->task_exited_.load(std::memory_order_relaxed) && wait_count < 100) {
-      delay(10);
-      wait_count++;
-    }
-    if (!this->task_exited_.load(std::memory_order_relaxed)) {
-      ESP_LOGE(TAG, "Audio task did not exit within 1s; channels disabled, deletion deferred");
-      this->has_i2s_error_.store(true, std::memory_order_relaxed);
-      this->stop_cleanup_pending_.store(true, std::memory_order_relaxed);
-      this->audio_task_handle_ = nullptr;
-      return;
-    }
-    this->audio_task_handle_ = nullptr;
-  }
-
-  this->finish_stop_cleanup_();
+  ESP_LOGI(TAG, "Duplex audio stopped");
 }
 
 void I2SAudioDuplex::register_mic_consumer(void *token) {
@@ -772,6 +753,22 @@ void I2SAudioDuplex::audio_task(void *param) {
 }
 
 void I2SAudioDuplex::audio_task_() {
+  while (!this->audio_task_shutdown_.load(std::memory_order_relaxed)) {
+    // Park in the outer loop until start() flips duplex_running_ on.
+    this->audio_task_idle_.store(true, std::memory_order_relaxed);
+    while (!this->duplex_running_.load(std::memory_order_relaxed)) {
+      if (this->audio_task_shutdown_.load(std::memory_order_relaxed)) return;
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    this->audio_task_idle_.store(false, std::memory_order_relaxed);
+
+    // Run one audio session. Returns on stop() (duplex_running_ cleared) or on
+    // processor frame_spec change (session restarts in the next outer iter).
+    this->audio_session_();
+  }
+}
+
+void I2SAudioDuplex::audio_session_() {
   AudioTaskCtx ctx{};
 #ifdef USE_DUPLEX_TELEMETRY
   uint32_t t_frame_count = 0;
@@ -850,7 +847,6 @@ void I2SAudioDuplex::audio_task_() {
   auto alloc_fail = [this](const char *what) {
     ESP_LOGE(TAG, "Failed to allocate %s", what);
     this->has_i2s_error_.store(true, std::memory_order_relaxed);
-    this->task_exited_.store(true, std::memory_order_relaxed);
     this->duplex_running_.store(false, std::memory_order_relaxed);
     this->speaker_running_.store(false, std::memory_order_relaxed);
   };
@@ -928,14 +924,15 @@ void I2SAudioDuplex::audio_task_() {
     this->process_tx_path_(ctx);
 
 #ifdef USE_AUDIO_PROCESSOR
-    // Check if processor's frame_spec changed (e.g., SE toggled).
-    // If so, exit the loop for task restart with new allocations.
+    // Frame_spec change (e.g. SE toggled, MR<->MMR switch): exit this session
+    // so the outer audio_task_ wrapper can re-enter audio_session_ with a
+    // fresh ctx. Preallocated buffers are already worst-case sized, so the
+    // restart does not touch the heap.
     if (this->processor_ != nullptr) {
       uint32_t rev = this->processor_->frame_spec_revision();
       if (rev != ctx.processor_spec_revision) {
-        ESP_LOGD(TAG, "Processor frame_spec changed (rev %u -> %u), restarting audio task",
+        ESP_LOGD(TAG, "Processor frame_spec changed (rev %u -> %u), restarting session",
                  (unsigned) ctx.processor_spec_revision, (unsigned) rev);
-        this->needs_restart_.store(true, std::memory_order_relaxed);
         break;
       }
     }
@@ -1008,11 +1005,12 @@ void I2SAudioDuplex::audio_task_() {
     }
   }
 
-  this->task_exited_.store(true, std::memory_order_relaxed);
-
 cleanup:
   // Buffers live on as component-owned preallocations; nothing to free here.
-  ESP_LOGI(TAG, "Audio task stopped");
+  // Returning from audio_session_ hands control back to the outer wrapper,
+  // which either parks the task (stop) or re-enters with fresh ctx
+  // (frame_spec change).
+  ESP_LOGD(TAG, "Audio session ended");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
