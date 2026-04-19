@@ -30,6 +30,7 @@ Options, actions, conditions, entities, services and automation examples for ESP
 | `processor_id` | ID | - | Reference to an `esp_aec` component. Must be `esp_aec`, not `esp_afe`: when `intercom_api` drives its own mic (no `i2s_audio_duplex` in front), the AFE feed/fetch pipeline cannot be fed correctly. Accepts any `AudioProcessor` implementation at the type level, but only `esp_aec` is supported in practice. |
 | `dc_offset_removal` | bool | false | Remove DC offset (for mics like SPH0645) |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
+| `tasks_stack_in_psram` | bool | false | Place the three internal task stacks in PSRAM. Saves ~28 KB internal heap on S3/P4 full-experience builds where AFE/MWW/LVGL compete for it. Requires PSRAM and `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"`. Default false keeps `intercom_api` working on plain ESP32 boards without PSRAM. |
 
 ## Event callbacks
 
