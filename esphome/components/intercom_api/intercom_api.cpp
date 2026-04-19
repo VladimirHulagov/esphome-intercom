@@ -618,7 +618,7 @@ void IntercomApi::set_aec_enabled(bool enabled) {
         this->aec_enabled_ = false;
         return;
       }
-      ESP_LOGI(TAG, "AEC buffers allocated (frame=%d samples, ref_buf=%zu bytes, delay=%ums)",
+      ESP_LOGD(TAG, "AEC buffers allocated (frame=%d samples, ref_buf=%zu bytes, delay=%ums)",
                this->aec_frame_samples_, ref_delay_bytes + RX_BUFFER_SIZE,
                (unsigned) this->aec_ref_delay_ms_);
     }

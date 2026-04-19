@@ -150,7 +150,7 @@ void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
 void I2SAudioDuplex::loop() {
   // Handle processor frame_spec change: audio task exited, restart with new allocations
   if (this->needs_restart_.exchange(false, std::memory_order_relaxed)) {
-    ESP_LOGI(TAG, "Restarting audio task for frame_spec change");
+    ESP_LOGD(TAG, "Restarting audio task for frame_spec change");
     this->stop();
     this->start();
   }
@@ -863,7 +863,7 @@ void I2SAudioDuplex::audio_task_() {
     if (this->processor_ != nullptr) {
       uint32_t rev = this->processor_->frame_spec_revision();
       if (rev != ctx.processor_spec_revision) {
-        ESP_LOGI(TAG, "Processor frame_spec changed (rev %u -> %u), restarting audio task",
+        ESP_LOGD(TAG, "Processor frame_spec changed (rev %u -> %u), restarting audio task",
                  (unsigned) ctx.processor_spec_revision, (unsigned) rev);
         this->needs_restart_.store(true, std::memory_order_relaxed);
         break;

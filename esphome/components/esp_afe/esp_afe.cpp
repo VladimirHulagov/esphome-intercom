@@ -453,7 +453,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     // Release barrier ensures new frame_spec stores happen-before consumers
     // observe the bumped revision via acquire load.
     uint32_t new_rev = this->frame_spec_revision_.fetch_add(1, std::memory_order_release) + 1;
-    ESP_LOGI(TAG, "Frame spec changed: mic_ch=%d->%d, process=%d, fetch=%d (revision %u, audio task will restart)",
+    ESP_LOGD(TAG, "Frame spec changed: mic_ch=%d->%d, process=%d, fetch=%d (revision %u, audio task will restart)",
              old_mic_ch, new_mic_ch, this->process_chunksize_, this->fetch_chunksize_, (unsigned) new_rev);
   }
   this->warmup_remaining_ = 3;
@@ -577,7 +577,7 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   bool allow_frame_change = (&flag == &this->se_enabled_);
   bool old_value = flag;
   flag = enabled;
-  ESP_LOGI(TAG, "Applying %s=%s (rebuild, frame_size_change=%s)",
+  ESP_LOGD(TAG, "Applying %s=%s (rebuild, frame_size_change=%s)",
            name, enabled ? "true" : "false", allow_frame_change ? "allowed" : "locked");
   if (this->recreate_instance_(!allow_frame_change)) {
     return true;
