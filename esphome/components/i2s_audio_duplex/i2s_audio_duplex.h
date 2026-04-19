@@ -573,6 +573,11 @@ class I2SAudioDuplex : public Component {
   void process_tx_path_(AudioTaskCtx &ctx);
   void update_tdm_slot_levels_(const AudioTaskCtx &ctx);
 
+  // Fill ctx.spk_ref_buffer for the mono AEC path (ring buffer or previous
+  // frame, with zero-fill fallback). TDM and stereo paths pre-fill the buffer
+  // during RX deinterleave and must not call this.
+  void fill_mono_aec_reference_(AudioTaskCtx &ctx);
+
   // Pre-allocate audio task working buffers on first entry (worst-case sizing).
   // Buffers persist across internal stop()+start() cycles so the task can
   // re-enter without calling heap_caps_alloc, which fragments SPIRAM over time

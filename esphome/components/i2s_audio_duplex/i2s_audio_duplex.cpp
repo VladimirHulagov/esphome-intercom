@@ -1279,36 +1279,10 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
        (ctx.speaker_running &&
         (ctx.now_ms - this->last_speaker_audio_ms_.load(std::memory_order_relaxed) <= AEC_ACTIVE_TIMEOUT_MS)))) {
 
-    // Mono mode: get AEC reference (direct from TX or ring buffer)
+    // Mono mode: get AEC reference (direct from TX or ring buffer).
     // Reference is post-volume PCM, no additional scaling (Espressif TYPE2 pattern).
     if (!ctx.use_stereo_aec_ref) {
-      bool ref_filled = false;
-
-      if (this->aec_ref_ring_buffer_) {
-        // Ring buffer mode: read one frame, zero-fill if not enough data (TYPE2 timeout pattern)
-        size_t ref_bytes = ctx.bus_frame_size * sizeof(int16_t);
-        size_t avail = this->aec_ref_ring_buffer_->available();
-        if (avail >= ref_bytes) {
-          if (ctx.ratio > 1 && this->direct_aec_ref_ != nullptr) {
-            // Read at bus rate into direct_aec_ref_ (temp), then decimate to output rate
-            this->aec_ref_ring_buffer_->read(this->direct_aec_ref_, ref_bytes, 0);
-            this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
-          } else {
-            // No decimation or no temp buffer: read directly into spk_ref_buffer
-            size_t read_bytes = (ctx.ratio > 1) ? ctx.input_frame_bytes : ref_bytes;
-            this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, read_bytes, 0);
-          }
-          ref_filled = true;
-        }
-      } else if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
-        // Previous frame mode: decimate from bus rate to output rate
-        this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
-        ref_filled = true;
-      }
-
-      if (!ref_filled) {
-        memset(ctx.spk_ref_buffer, 0, ctx.input_frame_bytes);
-      }
+      this->fill_mono_aec_reference_(ctx);
     }
     // Stereo mode: spk_ref_buffer already filled from deinterleave. No extra scaling.
     // TDM mode: spk_ref_buffer filled from TDM deinterleave. No extra scaling.
@@ -1333,6 +1307,33 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
       callback((const uint8_t *) ctx.output_buffer, ctx.current_output_frame_bytes);
     }
   }
+}
+
+void I2SAudioDuplex::fill_mono_aec_reference_(AudioTaskCtx &ctx) {
+  if (this->aec_ref_ring_buffer_) {
+    // Ring buffer mode: read one frame, zero-fill if not enough data (TYPE2 timeout pattern)
+    size_t ref_bytes = ctx.bus_frame_size * sizeof(int16_t);
+    size_t avail = this->aec_ref_ring_buffer_->available();
+    if (avail >= ref_bytes) {
+      if (ctx.ratio > 1 && this->direct_aec_ref_ != nullptr) {
+        // Read at bus rate into direct_aec_ref_ (temp), then decimate to output rate
+        this->aec_ref_ring_buffer_->read(this->direct_aec_ref_, ref_bytes, 0);
+        this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
+      } else {
+        // No decimation or no temp buffer: read directly into spk_ref_buffer
+        size_t read_bytes = (ctx.ratio > 1) ? ctx.input_frame_bytes : ref_bytes;
+        this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, read_bytes, 0);
+      }
+      return;
+    }
+  } else if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
+    // Previous frame mode: decimate from bus rate to output rate
+    this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
+    return;
+  }
+
+  // No reference available: zero-fill (AEC will pass-through without echo cancellation)
+  memset(ctx.spk_ref_buffer, 0, ctx.input_frame_bytes);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
