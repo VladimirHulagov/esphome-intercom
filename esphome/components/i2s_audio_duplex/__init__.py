@@ -59,6 +59,7 @@ CONF_TASK_CORE = "task_core"
 CONF_TASK_STACK_SIZE = "task_stack_size"
 CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
+CONF_AUDIO_STACK_IN_PSRAM = "audio_stack_in_psram"
 CONF_AEC_REFERENCE_MODE = "aec_reference"
 CONF_AEC_REF_BUFFER_MS = "aec_reference_buffer_ms"
 CONF_TELEMETRY = "telemetry"
@@ -218,6 +219,12 @@ CONFIG_SCHEMA = cv.All(
         # Use PSRAM for non-DMA audio buffers (saves ~15KB internal RAM).
         # Requires PSRAM. DMA buffers (I2S RX/TX) always use internal RAM.
         cv.Optional(CONF_BUFFERS_IN_PSRAM, default=False): cv.boolean,
+        # Place the audio task's own stack in PSRAM. Saves ~8KB internal RAM
+        # but increases per-frame latency because every function return has
+        # to traverse PSRAM. Only enable on boards that need the internal
+        # headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS
+        # streams). Requires CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y.
+        cv.Optional(CONF_AUDIO_STACK_IN_PSRAM, default=False): cv.boolean,
         # AEC reference mode for no-codec setups (ignored if stereo/TDM ref is configured):
         #   previous_frame: use the TX frame from the previous cycle (default, ~32ms delay)
         #   ring_buffer: TYPE2-style ring buffer with configurable delay (better alignment)
@@ -370,6 +377,7 @@ async def to_code(config):
     cg.add(var.set_task_core(config[CONF_TASK_CORE]))
     cg.add(var.set_task_stack_size(config[CONF_TASK_STACK_SIZE]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
+    cg.add(var.set_audio_stack_in_psram(config[CONF_AUDIO_STACK_IN_PSRAM]))
 
     # AEC reference mode (only relevant for no-codec setups)
     cg.add(var.set_aec_reference_mode(config[CONF_AEC_REFERENCE_MODE] == "ring_buffer"))

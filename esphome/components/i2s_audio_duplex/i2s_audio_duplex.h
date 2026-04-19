@@ -481,6 +481,7 @@ class I2SAudioDuplex : public Component {
   void set_task_core(int8_t core) { this->task_core_ = core; }
   void set_task_stack_size(uint32_t size) { this->task_stack_size_ = size; }
   void set_buffers_in_psram(bool psram) { this->buffers_in_psram_ = psram; }
+  void set_audio_stack_in_psram(bool psram) { this->audio_stack_in_psram_ = psram; }
   void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
   void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
   void set_telemetry_log_interval_frames(uint16_t frames) { this->telemetry_log_interval_frames_ = frames; }
@@ -678,6 +679,9 @@ class I2SAudioDuplex : public Component {
   int8_t task_core_{0};           // Core 0: canonical Espressif AEC pattern; -1 = unpinned
   uint32_t task_stack_size_{8192};
   bool buffers_in_psram_{false};  // Non-DMA buffers in PSRAM (saves ~15KB internal RAM)
+  bool audio_stack_in_psram_{false};  // Audio task stack in PSRAM (saves ~8KB internal RAM)
+  StackType_t *audio_task_stack_{nullptr};  // Owned when audio_stack_in_psram_ is true
+  StaticTask_t audio_task_tcb_{};            // Static TCB for the permanent audio task
   uint16_t telemetry_log_interval_frames_{128};
 
   // Error propagation: set by audio_task_ on persistent I2S failures

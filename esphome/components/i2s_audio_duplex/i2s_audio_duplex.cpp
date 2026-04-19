@@ -481,19 +481,53 @@ void I2SAudioDuplex::start() {
   // parks it in the outer wait loop, so rapid toggle cycles never race on
   // xTaskCreate.
   if (this->audio_task_handle_ == nullptr) {
-    BaseType_t task_created = xTaskCreatePinnedToCore(
-        audio_task,
-        "i2s_duplex",
-        this->task_stack_size_,
-        this,
-        this->task_priority_,
-        &this->audio_task_handle_,
-        this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY
-    );
-    if (task_created != pdPASS) {
-      ESP_LOGE(TAG, "Failed to create audio task");
-      this->has_i2s_error_.store(true, std::memory_order_relaxed);
-      return;
+    const BaseType_t core = this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY;
+    if (this->audio_stack_in_psram_) {
+      // Allocate the stack in PSRAM and hand it to a statically-created task.
+      // Saves ~8KB of DMA-capable internal RAM at the cost of slower stack
+      // access (PSRAM is ~3x slower). Only use on boards where the internal
+      // headroom is needed for mbedtls/esp-sr/etc.
+      if (this->audio_task_stack_ == nullptr) {
+        RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+        const size_t words = this->task_stack_size_ / sizeof(StackType_t);
+        this->audio_task_stack_ = psram_stack.allocate(words);
+        if (this->audio_task_stack_ == nullptr) {
+          ESP_LOGE(TAG, "Failed to allocate PSRAM audio task stack (%u bytes)",
+                   (unsigned) this->task_stack_size_);
+          this->has_i2s_error_.store(true, std::memory_order_relaxed);
+          return;
+        }
+      }
+      this->audio_task_handle_ = xTaskCreateStaticPinnedToCore(
+          audio_task,
+          "i2s_duplex",
+          this->task_stack_size_ / sizeof(StackType_t),
+          this,
+          this->task_priority_,
+          this->audio_task_stack_,
+          &this->audio_task_tcb_,
+          core
+      );
+      if (this->audio_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio task (static/PSRAM stack)");
+        this->has_i2s_error_.store(true, std::memory_order_relaxed);
+        return;
+      }
+    } else {
+      BaseType_t task_created = xTaskCreatePinnedToCore(
+          audio_task,
+          "i2s_duplex",
+          this->task_stack_size_,
+          this,
+          this->task_priority_,
+          &this->audio_task_handle_,
+          core
+      );
+      if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create audio task");
+        this->has_i2s_error_.store(true, std::memory_order_relaxed);
+        return;
+      }
     }
   }
 

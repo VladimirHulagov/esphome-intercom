@@ -211,6 +211,13 @@ esp_afe:
 
 i2s_audio_duplex:
   id: i2s_duplex
+  # 2-mic BSS + concurrent TLS streams (music + TTS + intercom) exhaust the
+  # ~30KB of internal RAM WS3 has available to user code. Moving the audio
+  # task's own stack to PSRAM recovers ~8KB and is enough headroom to keep
+  # all three streams stable. The task is not CPU-bound (per-frame work
+  # lives in esp_afe's feed_task on core 1), so PSRAM stack latency is
+  # acceptable here.
+  audio_stack_in_psram: true
   i2s_lrclk_pin: GPIO14
   i2s_bclk_pin: GPIO13
   i2s_mclk_pin: GPIO12
