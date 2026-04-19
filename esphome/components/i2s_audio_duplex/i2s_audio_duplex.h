@@ -566,6 +566,12 @@ class I2SAudioDuplex : public Component {
   void process_tx_path_(AudioTaskCtx &ctx);
   void update_tdm_slot_levels_(const AudioTaskCtx &ctx);
 
+  // Pre-allocate audio task working buffers on first entry (worst-case sizing).
+  // Buffers persist across internal stop()+start() cycles so the task can
+  // re-enter without calling heap_caps_alloc, which fragments SPIRAM over time
+  // and causes spurious "Failed to allocate" failures on feature-toggle sequences.
+  bool allocate_audio_buffers_(AudioTaskCtx &ctx);
+
   // Pin configuration
   int lrclk_pin_{-1};
   int bclk_pin_{-1};
@@ -668,6 +674,18 @@ class I2SAudioDuplex : public Component {
 
   // Processor frame_spec changed: audio task exits, component loop restarts it
   std::atomic<bool> needs_restart_{false};
+
+  // Pre-allocated audio task buffers (owned by component, not by ctx).
+  // Allocated once on first audio_task_ entry, sized for worst case so the
+  // task can re-enter without alloc/free cycles across reconfigures.
+  int16_t *prealloc_rx_buffer_{nullptr};
+  int16_t *prealloc_mic_buffer_{nullptr};
+  int16_t *prealloc_processor_mic_buffer_{nullptr};
+  int16_t *prealloc_spk_buffer_{nullptr};
+  int16_t *prealloc_spk_ref_buffer_{nullptr};
+  int16_t *prealloc_aec_output_{nullptr};
+  int16_t *prealloc_tdm_tx_buffer_{nullptr};
+  bool audio_buffers_allocated_{false};
 
   // Deferred stop cleanup: channel deletion deferred until task exits
   std::atomic<bool> stop_cleanup_pending_{false};

@@ -682,6 +682,89 @@ size_t I2SAudioDuplex::play(const uint8_t *data, size_t len, TickType_t ticks_to
   return written;
 }
 
+bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
+  if (this->audio_buffers_allocated_) {
+    return true;
+  }
+
+  static constexpr size_t AEC_ALIGN = 16;
+  const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
+
+  // Worst-case processor mic channels: 2 if dual-mic TDM is available, else 1.
+  // Allocating for 2ch unconditionally when dual-mic is possible lets the task
+  // flip between MR (1 mic) and MMR (2 mic) without reallocating on reconfigure.
+  const uint8_t worst_mic_ch = (this->tdm_second_mic_slot_ >= 0) ? 2 : 1;
+  const size_t worst_processor_input_bytes = ctx.input_frame_bytes * worst_mic_ch;
+
+  this->prealloc_rx_buffer_ = static_cast<int16_t *>(
+      heap_caps_malloc(ctx.rx_frame_bytes, buf_caps));
+
+  if (ctx.mic_separate) {
+    this->prealloc_mic_buffer_ = static_cast<int16_t *>(
+        heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
+  }
+
+  if (worst_mic_ch > 1) {
+    this->prealloc_processor_mic_buffer_ = static_cast<int16_t *>(
+        heap_caps_aligned_alloc(AEC_ALIGN, worst_processor_input_bytes, buf_caps));
+  }
+
+  this->prealloc_spk_buffer_ = static_cast<int16_t *>(
+      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, buf_caps));
+
+  if (ctx.use_stereo_aec_ref || ctx.use_tdm_ref) {
+    this->prealloc_spk_ref_buffer_ = static_cast<int16_t *>(
+        heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
+  }
+
+  if (ctx.use_tdm_ref) {
+    const size_t tdm_tx_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
+    this->prealloc_tdm_tx_buffer_ = static_cast<int16_t *>(
+        heap_caps_malloc(tdm_tx_bytes, buf_caps));
+  }
+
+#ifdef USE_AUDIO_PROCESSOR
+  if (this->processor_ != nullptr && this->processor_->is_initialized()) {
+    if (!this->prealloc_spk_ref_buffer_ && !ctx.use_tdm_ref) {
+      this->prealloc_spk_ref_buffer_ = static_cast<int16_t *>(
+          heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
+    }
+    this->prealloc_aec_output_ = static_cast<int16_t *>(
+        heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
+
+    // AEC reference ring buffer (TYPE2-style, no-codec setups). Also one-shot.
+    if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref &&
+        !this->aec_ref_ring_buffer_) {
+      size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
+      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;
+      this->aec_ref_ring_buffer_ = audio_processor::create_prefer_psram(rb_bytes, "i2s_duplex.aec_ref");
+      if (!this->aec_ref_ring_buffer_) {
+        return false;
+      }
+      ESP_LOGI(TAG, "AEC reference: ring_buffer (%zu bytes, %ums capacity)",
+               rb_bytes, (unsigned)this->aec_ref_buffer_ms_);
+    } else if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref && !this->aec_ref_ring_buffer_) {
+      ESP_LOGI(TAG, "AEC reference: previous_frame");
+    }
+  }
+#endif
+
+  // Validate required allocations
+  if (!this->prealloc_rx_buffer_ || !this->prealloc_spk_buffer_) return false;
+  if (ctx.mic_separate && !this->prealloc_mic_buffer_) return false;
+  if (worst_mic_ch > 1 && !this->prealloc_processor_mic_buffer_) return false;
+  if (ctx.use_tdm_ref && !this->prealloc_tdm_tx_buffer_) return false;
+#ifdef USE_AUDIO_PROCESSOR
+  if (this->processor_ != nullptr && this->processor_->is_initialized()) {
+    if (!this->prealloc_aec_output_) return false;
+    if ((ctx.use_stereo_aec_ref || ctx.use_tdm_ref) && !this->prealloc_spk_ref_buffer_) return false;
+  }
+#endif
+
+  this->audio_buffers_allocated_ = true;
+  return true;
+}
+
 void I2SAudioDuplex::audio_task(void *param) {
   I2SAudioDuplex *self = static_cast<I2SAudioDuplex *>(param);
   self->audio_task_();
@@ -756,44 +839,14 @@ void I2SAudioDuplex::audio_task_() {
     ctx.rx_frame_bytes = ctx.bus_frame_size * ctx.i2s_bps;
   }
 
-  // ── Buffer allocations ──
-  // AEC buffers use 16-byte alignment (ESP-SR may use SIMD internally)
-  static constexpr size_t AEC_ALIGN = 16;
-
-  // I2S driver memcpy's to/from user buffers, so they don't need DMA caps and
-  // honour the yaml buffers_in_psram flag.
-  const uint32_t buf_caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
-  ctx.rx_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.rx_frame_bytes, buf_caps));
-
+  // ── Buffer setup ──
+  // Working buffers are owned by the component and pre-allocated worst-case
+  // on first task entry (see allocate_audio_buffers_). Subsequent restarts
+  // (frame_spec change, feature toggle) reuse the same pointers without any
+  // heap_caps_alloc calls, eliminating SPIRAM fragmentation that previously
+  // caused "Failed to allocate AEC output buffer" after a few reconfigures.
   ctx.mic_separate = (ctx.ratio > 1) || ctx.use_stereo_aec_ref || ctx.use_tdm_ref;
-  ctx.mic_buffer = ctx.mic_separate
-      ? static_cast<int16_t *>(heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps))
-      : ctx.rx_buffer;
-  if (ctx.processor_mic_channels > 1) {
-    // processor_mic_buffer: interleaved dual-mic [m1,m2,m1,m2,...] filled by multi-channel FIR
-    // secondary_mic_buffer eliminated: mic2 lives in processor_mic_buffer[i*2+1]
-    ctx.processor_mic_buffer = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.processor_input_frame_bytes, buf_caps));
-  }
 
-  ctx.spk_buffer = static_cast<int16_t *>(
-      heap_caps_malloc(ctx.bus_frame_size * ctx.num_ch * ctx.i2s_bps, buf_caps));
-
-  if (ctx.use_stereo_aec_ref || ctx.use_tdm_ref) {
-    ctx.spk_ref_buffer = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
-  }
-
-  if (ctx.use_tdm_ref) {
-    ctx.tdm_tx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
-    ctx.tdm_tx_buffer = static_cast<int16_t *>(
-        heap_caps_malloc(ctx.tdm_tx_frame_bytes, buf_caps));
-  }
-
-  // ── Verify critical allocations ──
-  // Clear running flags so start() correctly reports task state after
-  // allocation failure, preventing false "Already running" errors.
   auto alloc_fail = [this](const char *what) {
     ESP_LOGE(TAG, "Failed to allocate %s", what);
     this->has_i2s_error_.store(true, std::memory_order_relaxed);
@@ -815,48 +868,23 @@ void I2SAudioDuplex::audio_task_() {
     goto cleanup;
   }
 
-#ifdef USE_AUDIO_PROCESSOR
-  // Allocate processor-side buffers only when the processor is fully initialized,
-  // not merely attached, to avoid wasting RAM on failed processor initialization.
-  if (this->processor_ != nullptr && this->processor_->is_initialized()) {
-    if (!ctx.spk_ref_buffer && !ctx.use_tdm_ref)
-      ctx.spk_ref_buffer = static_cast<int16_t *>(
-          heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
-    ctx.aec_output = static_cast<int16_t *>(
-        heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
+  if (!this->allocate_audio_buffers_(ctx)) {
+    alloc_fail("audio buffers");
+    goto cleanup;
+  }
 
-    // TYPE2-style AEC reference ring buffer (no-codec setups only).
-    if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
-      size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
-      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;
-      this->aec_ref_ring_buffer_ = audio_processor::create_prefer_psram(rb_bytes, "i2s_duplex.aec_ref");
-      if (!this->aec_ref_ring_buffer_) {
-        alloc_fail("AEC reference ring buffer"); goto cleanup;
-      }
-      ESP_LOGI(TAG, "AEC reference: ring_buffer (%zu bytes, %ums capacity)",
-               rb_bytes, (unsigned)this->aec_ref_buffer_ms_);
-    } else if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
-      ESP_LOGI(TAG, "AEC reference: previous_frame");
-    }
+  ctx.rx_buffer = this->prealloc_rx_buffer_;
+  ctx.mic_buffer = ctx.mic_separate ? this->prealloc_mic_buffer_ : ctx.rx_buffer;
+  if (ctx.processor_mic_channels > 1) {
+    ctx.processor_mic_buffer = this->prealloc_processor_mic_buffer_;
   }
-#endif
-  if (!ctx.rx_buffer || !ctx.spk_buffer || (ctx.mic_separate && !ctx.mic_buffer)) {
-    alloc_fail("audio buffers"); goto cleanup;
+  ctx.spk_buffer = this->prealloc_spk_buffer_;
+  ctx.spk_ref_buffer = this->prealloc_spk_ref_buffer_;
+  ctx.tdm_tx_buffer = this->prealloc_tdm_tx_buffer_;
+  ctx.aec_output = this->prealloc_aec_output_;
+  if (ctx.use_tdm_ref) {
+    ctx.tdm_tx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
   }
-  if (ctx.processor_mic_channels > 1 && !ctx.processor_mic_buffer) {
-    alloc_fail("dual-mic processor buffer"); goto cleanup;
-  }
-  if (ctx.use_tdm_ref && !ctx.tdm_tx_buffer) {
-    alloc_fail("TDM TX buffer"); goto cleanup;
-  }
-#ifdef USE_AUDIO_PROCESSOR
-  if (this->processor_ != nullptr) {
-    if (!ctx.aec_output) { alloc_fail("AEC output buffer"); goto cleanup; }
-    if ((ctx.use_stereo_aec_ref || ctx.use_tdm_ref) && !ctx.spk_ref_buffer) {
-      alloc_fail("AEC reference buffer"); goto cleanup;
-    }
-  }
-#endif
 
 #ifdef USE_DUPLEX_TELEMETRY
   ESP_LOGI(TAG, "Heap after audio init: internal=%u, PSRAM=%u",
@@ -983,13 +1011,7 @@ void I2SAudioDuplex::audio_task_() {
   this->task_exited_.store(true, std::memory_order_relaxed);
 
 cleanup:
-  heap_caps_free(ctx.rx_buffer);
-  if (ctx.mic_separate && ctx.mic_buffer) heap_caps_free(ctx.mic_buffer);
-  if (ctx.processor_mic_buffer) heap_caps_free(ctx.processor_mic_buffer);
-  heap_caps_free(ctx.spk_buffer);
-  if (ctx.spk_ref_buffer) heap_caps_free(ctx.spk_ref_buffer);
-  if (ctx.tdm_tx_buffer) heap_caps_free(ctx.tdm_tx_buffer);
-  if (ctx.aec_output) heap_caps_free(ctx.aec_output);
+  // Buffers live on as component-owned preallocations; nothing to free here.
   ESP_LOGI(TAG, "Audio task stopped");
 }
 
