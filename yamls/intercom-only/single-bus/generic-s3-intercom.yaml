@@ -4,9 +4,9 @@
 # Simple intercom-only config. No media player, no mixer, no VA/MWW.
 # For ESP32 boards where mic and speaker share the SAME I2S bus.
 #
-# Audio pipeline:
-#   MEMS mic -> i2s_audio_duplex (48kHz) -> FIR decimation (16kHz) -> AEC -> intercom TX
-#   Intercom RX (16kHz) -> resampler (48kHz) -> hw_speaker -> amp
+# Audio pipeline (single-bus, intercom only, no mixer):
+#   MEMS mic → i2s_audio_duplex (48kHz) → FIR x3 → esp_aec (AEC SR linear) → mic_main → intercom TX
+#   Intercom RX (16kHz) → resampler → hw_speaker (48kHz) → class-D amp
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM

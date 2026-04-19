@@ -29,7 +29,7 @@
 # Audio pipeline (i2s_audio_duplex at 48kHz, TDM + FIR decimation to 16kHz):
 #
 #   ES7210 TDM [mic1, mic2, ref, nc] → FIR x3 ──┐
-#                                               └── AEC (SR linear) → mic_aec → VA / Intercom TX / MWW
+#                                               └── esp_afe (AEC + SE[BSS] + NS + AGC) → mic_afe → VA / Intercom TX / MWW
 #
 #   Music/radio → media_speaker (resampler) ───────────┐
 #   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311

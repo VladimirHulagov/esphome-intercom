@@ -5,6 +5,15 @@
 # Uses standard i2s_audio (separate I2S buses: SPH0645 mic + MAX98357A speaker).
 # Mixer speaker shares hardware speaker between VA, Media, and Intercom.
 #
+# Audio pipeline (dual-bus, no TDM, software AEC reference via intercom_api):
+#
+#   SPH0645 MEMS (I2S_NUM_0) ──┐
+#                              └── esp_aec (AEC voip_high_perf) → mic_main → VA / Intercom TX / MWW
+#
+#   Music/radio → media_speaker (resampler) ───────────┐
+#   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → MAX98357A (I2S_NUM_1)
+#   Intercom RX → intercom_speaker (resampler) ────────┘
+#
 # HARDWARE:
 #   - Board: ESP32-S3 Mini (4MB Flash, Quad PSRAM)
 #   - Microphone: SPH0645 I2S MEMS (I2S_NUM_0) - has DC offset
