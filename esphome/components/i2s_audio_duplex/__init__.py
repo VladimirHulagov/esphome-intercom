@@ -10,7 +10,6 @@ If output_sample_rate is omitted, no decimation occurs (backward compatible).
 """
 import esphome.codegen as cg
 import esphome.config_validation as cv
-import esphome.final_validate as fv
 from esphome import automation, pins
 from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
 from esphome.components.esp32 import get_esp32_variant

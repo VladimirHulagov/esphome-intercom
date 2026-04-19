@@ -286,15 +286,12 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
   instance->process_chunksize = 0;
   instance->total_channels = 0;
 
-  // No semaphore gating between feed and fetch on any topology: fetch_task
-  // blocks directly on fetch_with_delay, the canonical Espressif pattern.
-  // An earlier 1-mic MR path used a counting semaphore to suppress "Ringbuffer
-  // empty" warnings during idle (feed_chunksize 32ms != fetch_chunksize 16ms).
-  // JTAG audit 2026-04-18 showed that gating turned any transient feed reject
-  // into a permanent self-locking deadlock: first reject -> no signal given ->
-  // fetch_task sleeps -> rb_out never drained -> esp-sr internal back-pressure
-  // keeps rb_in full -> feed keeps rejecting. Letting fetch_task run freely
-  // breaks that loop; startup "ringbuffer empty" warnings are cosmetic.
+  // fetch_task blocks directly on fetch_with_delay (canonical Espressif
+  // pattern) with no semaphore gating from the feed side. Gating the two
+  // sides with a counting semaphore deadlocks on any transient feed
+  // reject: no signal given -> fetch sleeps -> rb_out never drained ->
+  // esp-sr back-pressure keeps rb_in full -> feed keeps rejecting.
+  // Startup "Ringbuffer empty" warnings are cosmetic.
 
   if (!this->start_feed_task_()) {
     ESP_LOGE(TAG, "Installed AFE instance but feed task failed to start");
@@ -1137,12 +1134,13 @@ bool EspAfe::start_fetch_task_() {
   }
 
   if (!this->fetch_output_ring_) {
-    // 4 frames (~128ms @ 16kHz fetch=512 samples) absorbs consumer-side
-    // jitter when process() is preempted by other prio-19 tasks. Sized 2
-    // produced output_ring_drop=274 in JTAG snapshot; 4 brings it to zero
-    // with negligible memory overhead (a few KB on PSRAM).
+    // 4 frames of headroom (~128 ms at 16 kHz / 512-sample fetch) absorb
+    // consumer-side jitter when process() is preempted by higher-priority
+    // tasks. Sizing it at 2 frames let transient drops accumulate; 4 keeps
+    // output_ring_drop at zero with a few KB of PSRAM.
     const size_t frame_bytes = static_cast<size_t>(this->fetch_chunksize_) * sizeof(int16_t);
-    this->fetch_output_ring_ = RingBuffer::create(frame_bytes * 4);
+    this->fetch_output_ring_ = audio_processor::create_prefer_psram(
+        frame_bytes * 4, "esp_afe.fetch_output_ring");
     if (!this->fetch_output_ring_) {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch output ring buffer");
       return false;

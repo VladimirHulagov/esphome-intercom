@@ -401,9 +401,9 @@ void IntercomApi::load_settings_() {
   if (this->settings_pref_.load(&stored) && stored.version == SETTINGS_VERSION) {
     this->suppress_save_ = true;  // Don't save while loading
 
-    // Apply volume only if intercom_api owns the speaker_volume number entity.
-    // When speaker_volume is a template number (Waveshare/P4/Xiaozhi), the template
-    // handles DAC + AEC ref sync via its own restore + on_boot lambda.
+    // Apply volume only when intercom_api owns the speaker_volume number
+    // entity. When it is a template number the template owns DAC + AEC
+    // reference sync via its own restore + on_boot lambda.
     this->volume_ = stored.volume_pct / 100.0f;
     if (this->volume_number_ != nullptr) {
 #ifdef USE_SPEAKER
@@ -1207,10 +1207,11 @@ void IntercomApi::speaker_task_() {
       continue;
     }
 
-    // First audio after becoming active: let main loop initialize mixer+resampler pipeline.
-    // Without this, the mixer task may read from an uninitialized SourceSpeaker ring buffer.
-    // Poll in 10ms intervals (up to 150ms) instead of blocking 300ms sleep.
-    // Typical warmup takes 20-40ms; the cap covers worst-case scenarios.
+    // First audio after becoming active: give the main loop time to
+    // initialize the mixer + resampler pipeline. Reading from an
+    // uninitialized SourceSpeaker ring buffer from the mixer task would
+    // starve it. Poll in 10 ms steps up to 150 ms; typical warmup is
+    // 20-40 ms.
     if (speaker_was_idle) {
       speaker_was_idle = false;
       for (int i = 0; i < 15; i++) {
@@ -1341,7 +1342,9 @@ bool IntercomApi::receive_message_(int socket, MessageHeader &header, uint8_t *b
   // Read header - handle partial reads (non-blocking socket)
   size_t header_read = 0;
   int retry = 0;
-  const int MAX_RETRY = 300;  // 300ms max wait for complete message (50ms was too tight under mixer load)
+  // 300 ms max wait for a complete message. A tighter cap starves
+  // under concurrent mixer/WiFi load on S3.
+  const int MAX_RETRY = 300;
 
   while (header_read < HEADER_SIZE && retry < MAX_RETRY) {
     ssize_t received = recv(socket, buffer + header_read, HEADER_SIZE - header_read, 0);

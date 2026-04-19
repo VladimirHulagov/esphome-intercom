@@ -401,11 +401,9 @@ class I2SAudioDuplex : public Component {
 
   // ES8311 Digital Feedback mode: RX is stereo with L=DAC(ref), R=ADC(mic)
   void set_use_stereo_aec_reference(bool use) { this->use_stereo_aec_ref_ = use; }
-  bool get_use_stereo_aec_reference() const { return this->use_stereo_aec_ref_; }
 
   // Reference channel selection: false=left (default), true=right
   void set_reference_channel_right(bool right) { this->ref_channel_right_ = right; }
-  bool get_reference_channel_right() const { return this->ref_channel_right_; }
 
   // TDM hardware reference: ES7210 in TDM mode with one slot carrying DAC feedback
   void set_use_tdm_reference(bool use) { this->use_tdm_ref_ = use; }
@@ -504,13 +502,15 @@ class I2SAudioDuplex : public Component {
     size_t tdm_tx_frame_bytes{0};
 
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
+    // processor_mic_buffer is interleaved when a secondary mic is active
+    // (layout: [mic1[i], mic2[i]] for i in [0, rx_frames)).
+    // FIR decimation reads rx_buffer with a stride, so no separate
+    // deinterleave buffer is kept.
     int16_t *rx_buffer{nullptr};
     int16_t *mic_buffer{nullptr};
-    // secondary_mic_buffer eliminated: mic2 in processor_mic_buffer[i*2+1]
     int16_t *processor_mic_buffer{nullptr};
     int16_t *spk_buffer{nullptr};
     int16_t *spk_ref_buffer{nullptr};
-    // Deinterleave buffers removed: FIR strided reads rx_buffer directly
     int16_t *tdm_tx_buffer{nullptr};
     int16_t *aec_output{nullptr};
 

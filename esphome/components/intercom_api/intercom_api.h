@@ -199,12 +199,6 @@ class IntercomApi : public Component {
   std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
   std::string get_contacts_csv() const;
 
-  // Internal triggers (TCP lifecycle)
-  Trigger<> *get_connect_trigger() { return &this->connect_trigger_; }
-  Trigger<> *get_disconnect_trigger() { return &this->disconnect_trigger_; }
-  Trigger<> *get_start_trigger() { return &this->start_trigger_; }
-  Trigger<> *get_stop_trigger() { return &this->stop_trigger_; }
-
   // Call state triggers (exposed to YAML)
   Trigger<> *get_ringing_trigger() { return &this->ringing_trigger_; }
   Trigger<> *get_streaming_trigger() { return &this->streaming_trigger_; }

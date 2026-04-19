@@ -10,7 +10,7 @@ from esphome.const import (
     CONF_MODE,
     CONF_DISABLED_BY_DEFAULT,
 )
-from esphome.components import microphone, speaker, switch, text_sensor
+from esphome.components import microphone, speaker, text_sensor
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]

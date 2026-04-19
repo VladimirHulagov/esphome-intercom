@@ -743,8 +743,6 @@ void I2SAudioDuplex::audio_task_() {
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
   }
 
-  // Deinterleave buffers removed: FIR strided reads directly from rx_buffer
-
   if (ctx.use_tdm_ref) {
     ctx.tdm_tx_frame_bytes = ctx.bus_frame_size * ctx.tdm_total_slots * ctx.i2s_bps;
     ctx.tdm_tx_buffer = static_cast<int16_t *>(
@@ -806,11 +804,9 @@ void I2SAudioDuplex::audio_task_() {
   if (ctx.processor_mic_channels > 1 && !ctx.processor_mic_buffer) {
     alloc_fail("dual-mic processor buffer"); goto cleanup;
   }
-  // Stereo decimation buffers removed: FIR strided reads rx_buffer directly
   if (ctx.use_tdm_ref && !ctx.tdm_tx_buffer) {
     alloc_fail("TDM TX buffer"); goto cleanup;
   }
-  // TDM decimation buffers removed: FIR strided reads rx_buffer directly
 #ifdef USE_AUDIO_PROCESSOR
   if (this->processor_ != nullptr) {
     if (!ctx.aec_output) { alloc_fail("AEC output buffer"); goto cleanup; }
@@ -947,11 +943,9 @@ void I2SAudioDuplex::audio_task_() {
 cleanup:
   heap_caps_free(ctx.rx_buffer);
   if (ctx.mic_separate && ctx.mic_buffer) heap_caps_free(ctx.mic_buffer);
-  // secondary_mic_buffer eliminated: mic2 lives in processor_mic_buffer
   if (ctx.processor_mic_buffer) heap_caps_free(ctx.processor_mic_buffer);
   heap_caps_free(ctx.spk_buffer);
   if (ctx.spk_ref_buffer) heap_caps_free(ctx.spk_ref_buffer);
-  // Deinterleave buffers removed (FIR strided reads rx_buffer directly)
   if (ctx.tdm_tx_buffer) heap_caps_free(ctx.tdm_tx_buffer);
   if (ctx.aec_output) heap_caps_free(ctx.aec_output);
   ESP_LOGI(TAG, "Audio task stopped");

@@ -17,6 +17,7 @@
 #include <freertos/task.h>
 
 #include "esphome/core/ring_buffer.h"
+#include "../audio_processor/ring_buffer_caps.h"
 
 #include <atomic>
 #include <memory>
