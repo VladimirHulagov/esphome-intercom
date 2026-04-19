@@ -133,6 +133,10 @@ esp32:
   board: esp32-p4-evboard
   variant: esp32p4
   flash_size: 32MB
+  # 400MHz is the silicon max but ESPHome treats it as experimental: several
+  # boot-loop reports on 2026.1.x (esphome#13425) before the fix set in
+  # 2026.4.0. 360MHz is the known-stable frequency for P4 revs v0.x/v1.x.
+  cpu_frequency: 360MHz
   framework:
     type: esp-idf
     advanced:
@@ -207,7 +211,7 @@ ota:
 
 logger:
   hardware_uart: UART0
-  level: WARN
+  level: INFO
 
 debug:
   update_interval: 60s
@@ -275,11 +279,14 @@ esp_afe:
   aec_enabled: true
   aec_filter_length: 4
   ns_enabled: true
-  vad_enabled: true
+  # MWW covers wake detection; AFE VAD is redundant and its interaction with
+  # the 2-mic BSS/SE path under load has not been verified (the 1-mic stall
+  # audit only covered MR). Keep off until a BSS-specific verification is done.
+  vad_enabled: false
   agc_enabled: true
   se_enabled: true              # Beamforming (dual mic)
   task_core: 1
-  task_priority: 8
+  task_priority: 19
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -296,6 +303,7 @@ i2s_audio_duplex:
   tdm_mic_slots: [0, 2]        # Slot 0 = mic1, slot 2 = mic2
   tdm_ref_slot: 1              # Slot 1 = DAC feedback reference
   buffers_in_psram: true
+  telemetry: true              # Per-stage counters in logs (feed/fetch us, queue depths)
 
 # mic_aec: post-AEC for VA STT, intercom TX, AND MWW
 # SR linear AEC preserves spectral features for neural wake word detection.
