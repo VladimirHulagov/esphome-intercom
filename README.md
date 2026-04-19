@@ -350,44 +350,9 @@ button:
           id: intercom
 ```
 
-#### Direct GPIO Calls (Apartment Intercom)
+#### Apartment intercom panel
 
-Each GPIO button can call a different room, like a condominium intercom panel:
-
-```yaml
-binary_sensor:
-  # Button 1: Call Kitchen
-  - platform: gpio
-    pin:
-      number: GPIO4
-      mode: INPUT_PULLUP
-      inverted: true
-    on_press:
-      - intercom_api.set_contact:
-          id: intercom
-          contact: "Kitchen Intercom"
-      - intercom_api.start:
-          id: intercom
-
-  # Button 2: Call Living Room
-  - platform: gpio
-    pin:
-      number: GPIO5
-      mode: INPUT_PULLUP
-      inverted: true
-    on_press:
-      - intercom_api.set_contact:
-          id: intercom
-          contact: "Living Room Intercom"
-      - intercom_api.start:
-          id: intercom
-```
-
-> ⚠️ **Name matching is exact (case-sensitive).** The `contact` value must match the device name exactly as it appears in the contacts list. There is no fuzzy matching or validation; a typo will silently fail and fire `on_call_failed`.
->
-> Contact names come from the `name:` substitution in each device's YAML. Home Assistant converts the ESPHome name to a display name: `name: kitchen-intercom` → HA device name `Kitchen Intercom` (hyphens become spaces, words capitalized).
->
-> **How to verify the correct name:** check the `sensor.{name}_destination` entity in HA, cycle through contacts, and note the exact string shown for each device.
+For multi-room setups, each GPIO button can call a specific room directly. The full recipe (one button per contact, exact name matching rules, `on_call_failed` handling) lives in the [`intercom_api` README](esphome/components/intercom_api/README.md#example-multi-button-intercom-apartment-doorbell).
 
 ### 3. Lovelace Card
 
