@@ -4,12 +4,39 @@
 
 #include <cstring>
 
+#include "esp_heap_caps.h"
 #include "esphome/core/log.h"
 
 namespace esphome {
 namespace esp_aec {
 
 static const char *const TAG = "esp_aec";
+
+// HIGH_PERF AEC modes (SR_HIGH_PERF, VOIP_HIGH_PERF) rely on FFT cos/sin
+// windows tables that esp-sr allocates from DMA-capable internal RAM via
+// raw calloc. Upstream fails silently on low memory: aec_create returns
+// a non-null but half-initialized handle (log "failed to calloc fft
+// cos/sin windows table"), and the next process() dereferences the NULL
+// table → LoadProhibited in fft_esp_proc. Guard the switch with a
+// largest-free-block threshold; reject mode change early when the
+// contiguous DMA-capable block is too small. Empirically 28 KB is not
+// enough (observed crash), so require at least 40 KB to leave headroom
+// for the transform scratch allocations that follow the table build.
+static constexpr size_t HIGH_PERF_MIN_DMA_BLOCK = 40 * 1024;
+
+static bool is_high_perf_mode_(aec_mode_t m) {
+  return m == AEC_MODE_SR_HIGH_PERF || static_cast<int>(m) == 4;  // 4 = VOIP_HIGH_PERF
+}
+
+static const char *mode_name_(aec_mode_t m) {
+  switch (static_cast<int>(m)) {
+    case AEC_MODE_SR_LOW_COST: return "sr_low_cost";
+    case AEC_MODE_SR_HIGH_PERF: return "sr_high_perf";
+    case 3: return "voip_low_cost";
+    case 4: return "voip_high_perf";
+    default: return "?";
+  }
+}
 
 void EspAec::setup() {
   ESP_LOGI(TAG, "Initializing AEC...");
@@ -121,12 +148,34 @@ bool EspAec::reconfigure(int type, int mode) {
 }
 
 bool EspAec::reinit_(aec_mode_t new_mode) {
-  ESP_LOGI(TAG, "Reinitializing AEC: mode %d -> %d", (int) this->mode_, (int) new_mode);
+  ESP_LOGI(TAG, "Reinitializing AEC: mode %d -> %d (%s -> %s)",
+           (int) this->mode_, (int) new_mode, mode_name_(this->mode_), mode_name_(new_mode));
   // L1 fix: serialize against process() and preserve rollback capability.
   if (this->handle_mutex_ == nullptr) {
     ESP_LOGE(TAG, "reinit_: handle_mutex_ not initialized");
     return false;
   }
+
+  // Pre-flight guard against esp-sr's silent OOM on HIGH_PERF modes.
+  // We must do this BEFORE acquiring the handle mutex / touching the live
+  // instance: a rejected switch leaves the audio task running with the
+  // previous (working) mode, no frame_spec bump, no audio gap.
+  if (is_high_perf_mode_(new_mode)) {
+    size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (largest_internal < HIGH_PERF_MIN_DMA_BLOCK) {
+      ESP_LOGE(TAG,
+               "reinit_: %s needs >=%u bytes contiguous DMA-capable internal RAM "
+               "(largest free block: %u). Rejecting mode change to avoid crash in "
+               "fft_esp_proc. Keeping mode=%s. Free DRAM first "
+               "(e.g. CONFIG_ESP_WIFI_IRAM_OPT=n) to use this mode.",
+               mode_name_(new_mode),
+               (unsigned) HIGH_PERF_MIN_DMA_BLOCK,
+               (unsigned) largest_internal,
+               mode_name_(this->mode_));
+      return false;
+    }
+  }
+
   xSemaphoreTake(this->handle_mutex_, portMAX_DELAY);
   aec_handle_t *old_handle = this->handle_;
   aec_mode_t old_mode = this->mode_;
@@ -134,7 +183,7 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
   // Try to build new handle BEFORE destroying old (rollback if fails).
   aec_handle_t *new_handle = aec_create(this->sample_rate_, this->filter_length_, 1, new_mode);
   if (new_handle == nullptr) {
-    ESP_LOGE(TAG, "Failed to create new AEC instance, keeping old (mode=%d)", (int) old_mode);
+    ESP_LOGE(TAG, "Failed to create new AEC instance, keeping old (mode=%s)", mode_name_(old_mode));
     xSemaphoreGive(this->handle_mutex_);
     return false;
   }
