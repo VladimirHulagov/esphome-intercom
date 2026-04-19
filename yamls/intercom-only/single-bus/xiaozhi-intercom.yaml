@@ -3,9 +3,10 @@
 # ==============================================================================
 #
 # Xiaozhi Ball V3 with ES8311 codec, GC9A01A round display, and WS2812 LED.
-# Intercom-only config using i2s_audio_duplex + esp_aec + C++ display lambdas.
-# Use this for devices that serve purely as intercom endpoints.
-# For VA + MWW + LVGL, see xiaozhi-ball-v3.yaml instead.
+# Intercom-only config using i2s_audio_duplex + esp_aec + ili9xxx C++ lambdas
+# for the display. (Phase D of the audit will migrate the display to the LVGL
+# intercom page shared with xiaozhi-full-aec.yaml.)
+# For the VA + MWW + LVGL full experience, see xiaozhi-full-aec.yaml.
 #
 # HARDWARE:
 #   - Board: ESP32-S3 DevKitC-1 (16MB Flash, Octal PSRAM)

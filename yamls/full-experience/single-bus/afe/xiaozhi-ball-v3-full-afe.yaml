@@ -1,51 +1,28 @@
 # =============================================================================
-# XIAOZHI BALL V3 - VOICE ASSISTANT + INTERCOM (LVGL DISPLAY)
+# XIAOZHI BALL V3 - VOICE ASSISTANT + INTERCOM + WAKE WORD (esp_afe pipeline)
 # =============================================================================
-# Based on: https://github.com/RealDeco/xiaozhi-esphome
-# Original: devices/Spotpear Balls/Ball_v2.yaml (v1.07)
+# Target board: Xiaozhi Ball V3 (ESP32-S3 with GC9A01A 240x240 round display,
+# ES8311 mono codec, CST816 touch, GPIO0 button). Local-development variant
+# of the aec track; switches the mic processor from esp_aec to esp_afe
+# (beamforming + NS + AGC + VAD).
 #
-# Display uses LVGL declarative widgets instead of manual ili9xxx lambdas.
-#
-# Key changes from the original:
-#   - Replaced i2s_audio + audio_dac with i2s_audio_duplex for true full-duplex
-#     single-bus I2S (mic + speaker on same ES8311 bus)
-#   - Added esp_aec (Acoustic Echo Cancellation) with ES8311 stereo L/R digital
-#     feedback for sample-accurate reference alignment
-#   - Added mixer speaker (VA TTS + intercom audio share hw_speaker)
-#   - Added intercom_api component (TCP-based full-duplex intercom, full mode)
-#   - Added dual-mode UI: VA pages + intercom pages with GPIO0 mode switching
-#   - Custom wake word model (hey_trowyayoh) instead of built-in models
-#   - All images, animations, and sounds stored locally (no external downloads)
-#   - Removed battery monitoring, touchscreen, startup/wake sounds
-#   - Removed wake_word_engine_location select (always on-device MWW)
-#   - Removed show_text, show_battery_status switches
-#   - Added backlight auto-off timer with configurable timeout
-#   - LVGL display: declarative page widgets, mood-based replying backgrounds
-#   - Added intercom pages: idle (contact selector), ringing, in-call
-#   - Added intercom controls: call/hangup/next/prev buttons, volume, mic gain
-#
-# Combines voice_assistant + micro_wake_word with intercom_api.
-# Uses i2s_audio_duplex (ES8311) + mixer speaker for concurrent audio.
-# I2S bus at 48kHz (ES8311 native), mic decimated to 16kHz via FIR filter.
-# Wake word ALWAYS active. Mode switching is UI-only (display + buttons).
-#
-# Audio pipeline (i2s_audio_duplex at 48kHz, stereo AEC reference):
+# Audio pipeline (i2s_audio_duplex @ 48 kHz, stereo AEC reference):
 #
 #   I2S RX 48kHz stereo → L=ref R=mic → FIR x3 ──┐
-#                                                └── AEC (SR linear) → mic_afe → VA / Intercom TX / MWW
+#                                                └── esp_afe (BSS + NS + AGC + VAD) → mic_afe → VA / Intercom TX / MWW
 #
 #   Music/radio → media_speaker (resampler) ───────────┐
 #   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311
 #   Intercom RX → intercom_speaker (resampler) ────────┘
 #
-# GPIO0 Button Behavior (page-aware):
-#   VA idle:           Click=start VA | Long press(1-3s)=switch to intercom
-#   VA active:         Click=stop VA
-#   IC idle:           Click=call | Double=next contact | Long=switch to VA
-#   IC ringing in:     Click=answer | Double=decline | Long=switch to VA
-#   IC ringing out:    Click=hangup | Long=switch to VA
-#   IC in call:        Click=hangup | Long=switch to VA
-#   Timer ringing:     Click=stop timer (any page)
+# Single GPIO0 button, page-aware:
+#   VA idle           : click=start VA      | long (1-3s)=switch to intercom
+#   VA active         : click=stop VA
+#   Intercom idle     : click=call          | double=next contact | long=switch to VA
+#   Intercom ring in  : click=answer        | double=decline      | long=switch to VA
+#   Intercom ring out : click=hangup        | long=switch to VA
+#   Intercom in call  : click=hangup        | long=switch to VA
+#   Timer ringing     : click=stop timer (any page)
 # =============================================================================
 
 substitutions:
