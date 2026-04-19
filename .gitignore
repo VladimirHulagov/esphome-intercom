@@ -1,5 +1,6 @@
-# ESPHome build files
+# ESPHome build files (top-level and nested next to device YAMLs)
 /.esphome/
+.esphome/
 
 # Python virtual environment
 /venv/

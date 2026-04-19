@@ -220,3 +220,16 @@ text_sensor:
       - intercom_api.set_contacts:
           id: intercom
           contacts_csv: !lambda 'return x;'
+
+# =============================================================================
+# Networking profile
+# =============================================================================
+# Headroom for intercom_api peer sockets on top of the HA api socket and the
+# stock lwIP system sockets. Drop this override once intercom_api/__init__.py
+# starts reserving quota via socket.consume_sockets() (finding 5.2 in
+# docs/AUDIT_FINDINGS.md).
+esp32:
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "16"

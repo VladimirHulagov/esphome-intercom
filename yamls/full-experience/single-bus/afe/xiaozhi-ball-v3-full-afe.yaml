@@ -65,6 +65,9 @@ substitutions:
 
 packages:
   core: !include ../../../../packages/va_intercom.yaml
+  s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
+  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
+  jtag: !include ../../../../packages/debug/jtag.yaml
 
 # =============================================================================
 # ESP32 BASE CONFIGURATION
@@ -128,34 +131,20 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      # Headroom for intercom_api peer sockets on top of the api socket.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      # esp-sr 2.3.x requires 64KB data cache with 64B line on S3
-      # (ref: esp_process_sdkconfig.c:26-31).
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
-      # Reserve more internal RAM for DMA-capable allocations (I2S/SPI bounce
-      # buffers, WiFi descriptors) when most audio buffers live in PSRAM.
-      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
+      # mbedtls tuning (still inline pending benchmark: Codex flagged that
+      # most of these are not directly exercised by our component paths).
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      # HW AES on S3 needs a DMA-capable chunk buffer (internal RAM only),
-      # which starves under music+call+VA+MWW. Software AES handles TLS FLAC
-      # at negligible cost.
-      CONFIG_MBEDTLS_HARDWARE_AES: "n"
       CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT: "y"
-      # Free ~33KB internal DRAM: SPIRAM_FETCH_INSTRUCTIONS lets the WiFi
-      # IRAM opts move to flash without runtime impact.
+      # HW AES on S3 needs a DMA-capable chunk buffer (internal RAM only),
+      # which starves under music+call+VA+MWW. Software AES handles TLS
+      # FLAC at negligible cost.
+      CONFIG_MBEDTLS_HARDWARE_AES: "n"
+      # Free ~33KB internal DRAM: XIP from PSRAM lets the WiFi IRAM opts
+      # move to flash without runtime impact.
       CONFIG_ESP_WIFI_IRAM_OPT: "n"
       CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"
-      # Current IDF symbol is CONFIG_ESP_PHY_IRAM_OPT (not ESP_WIFI_PHY_IRAM_OPT);
-      # the old spelling was silently ignored.
       CONFIG_ESP_PHY_IRAM_OPT: "n"
-      # JTAG: emit FreeRTOS task table for OpenOCD thread-aware view
-      # (pxCurrentTCBs-based snapshots stay accurate with PSRAM stacks).
-      CONFIG_ESP_DEBUG_OCDAWARE: "y"
 
 psram:
   mode: octal

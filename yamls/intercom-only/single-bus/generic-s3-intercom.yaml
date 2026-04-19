@@ -29,10 +29,8 @@ substitutions:
 # Package: shared intercom state machine
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/intercom_only.yaml
-    ref: audio-core-v2
+  core: !include ../../../packages/intercom_only.yaml
+  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
 
 esphome:
   name: ${name}
@@ -46,16 +44,6 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      # esp-sr 2.3.x (pulled in by esp_aec) requires 64KB data cache with
-      # 64B line on S3 (ref: esp_process_sdkconfig.c:26-31).
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      # Headroom for intercom_api peer sockets on top of the api socket.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      # Execute code and read rodata directly from PSRAM so more internal
-      # RAM remains for DMA-capable allocations (I2S/WiFi).
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
@@ -91,7 +79,7 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
       ref: audio-core-v2
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
 # AEC

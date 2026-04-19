@@ -90,10 +90,9 @@ wifi:
 # ==============================================================================
 external_components:
   - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
-    components: [intercom_api, esp_aec]
+      type: local
+      path: ../../../esphome/components
+    components: [intercom_api, esp_aec, audio_processor]
 
 # ==============================================================================
 # I2S AUDIO BUSES
@@ -162,7 +161,7 @@ intercom_api:
   microphone: mic_component
   speaker: spk_component
   dc_offset_removal: true     # SPH0645 has DC bias that must be removed
-  processor_id: aec_processor       # Links to esp_aec for echo cancellation
+  aec_id: aec_processor             # Links to esp_aec for echo cancellation
   ringing_timeout: 30s        # Auto-decline unanswered calls
 
   # === FSM event callbacks ===

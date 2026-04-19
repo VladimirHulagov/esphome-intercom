@@ -74,10 +74,10 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/va_intercom.yaml
-    ref: audio-core-v2
+  core: !include ../../../../packages/va_intercom.yaml
+  p4_base: !include ../../../../packages/platform/esp32p4_base.yaml
+  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
+  p4_c6: !include ../../../../packages/board/waveshare_p4_c6.yaml
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -138,29 +138,8 @@ esp32:
     advanced:
       enable_idf_experimental_features: true
     sdkconfig_options:
-      # Headroom for intercom_api peer sockets on top of the api socket.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      # esp-sr 2.3.x on P4 wants more than the 128KB default L2 cache
-      # (ref: esp_process_sdkconfig.c:60-65).
-      CONFIG_CACHE_L2_CACHE_256KB: "y"
-      # Execute code and read rodata directly from PSRAM so more internal
-      # RAM remains for DMA-capable allocations (I2S/WiFi).
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
-      # Give long-running SDIO/WiFi setup enough time before the task WDT
-      # trips during early boot.
-      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      # SDIO stability: larger queues prevent overflow during concurrent WiFi
-      # traffic (music streaming + VA API). Default 20 is too small.
-      # Ref: esp-hosted#597.
-      CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE: "50"
-      CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE: "50"
-      # Reserve 64KB internal DRAM for DMA-only allocations (WiFi/SDIO
-      # buffers, I2S bounce buffers). Prevents heap fragmentation from
-      # starving SDIO copy_payload alloc.
-      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
 
 psram:
   mode: hex

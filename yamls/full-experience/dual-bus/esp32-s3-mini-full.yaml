@@ -38,10 +38,7 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/va_intercom.yaml
-    ref: audio-core-v2
+  core: !include ../../../packages/va_intercom.yaml
 
 # =============================================================================
 # ESPHome Base
@@ -62,8 +59,6 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      # Headroom for intercom_api peer sockets on top of the api socket.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
       # esp-sr 2.3.x (pulled in by esp_aec and micro_wake_word) requires
       # 64KB data cache with 64B line on S3
       # (ref: esp_process_sdkconfig.c:26-31).
@@ -102,10 +97,9 @@ wifi:
 # =============================================================================
 external_components:
   - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
-    components: [intercom_api, esp_aec]
+      type: local
+      path: ../../../esphome/components
+    components: [intercom_api, esp_aec, audio_processor]
 
 # =============================================================================
 # I2S AUDIO BUSES
@@ -218,7 +212,7 @@ esp_aec:
 micro_wake_word:
   microphone: mic_component
   models:
-    - model: "wakewords/hey_trowyayoh.json"
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
 
@@ -238,7 +232,7 @@ intercom_api:
   microphone: mic_component
   speaker: intercom_speaker
   dc_offset_removal: true
-  processor_id: aec_processor
+  aec_id: aec_processor
   ringing_timeout: 30s
 
 # =============================================================================
