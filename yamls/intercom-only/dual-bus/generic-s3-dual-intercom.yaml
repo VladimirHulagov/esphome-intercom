@@ -4,7 +4,10 @@
 # Uses intercom_api with AEC for full-duplex echo-cancelled calls.
 # Speaker direct (no mixer, no resamplers). Same proven path as s3-mini.
 #
-# WIP: ringtone not yet implemented (requires mixer or speaker sharing fix)
+# Limitation: the incoming-call ringtone is not played on this YAML yet.
+# The speaker path is plugged directly into intercom_api RX to keep the
+# latency budget tight; playing a ringtone would require a mixer in front
+# of the speaker, which is the full-experience architecture.
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM

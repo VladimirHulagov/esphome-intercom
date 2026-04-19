@@ -182,8 +182,10 @@ preferences:
 # =============================================================================
 # CONNECTIVITY
 # =============================================================================
-# WiFi via ESP32-C6 co-processor (SDIO)
-# Known stability issues: see https://github.com/esphome/esphome/issues/10956
+# WiFi via ESP32-C6 co-processor (SDIO).
+# Upstream tracks stability work for esp32_hosted on P4 in
+# https://github.com/esphome/esphome/issues/10956 — keep an eye on that
+# issue when bumping ESPHome.
 esp32_hosted:
   variant: ESP32C6
   reset_pin: GPIO54
