@@ -1,4 +1,4 @@
-# ESPHome Intercom — full-duplex voice, AEC and wake word on ESP32
+# ESPHome Intercom: full-duplex voice, AEC and wake word on ESP32
 
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3%20%7C%20ESP32--P4-blue)](#hardware-support)
 [![ESPHome](https://img.shields.io/badge/ESPHome-2026.4-%23008cd0)](https://esphome.io)
@@ -32,10 +32,10 @@ Full-duplex intercom, Voice Assistant and Micro Wake Word running side-by-side o
 - [Operating Modes](#operating-modes)
   - [Simple Mode](#simple-mode-browser--esp)
   - [Full Mode](#full-mode-esp--esp)
-- [Reference](#reference) — intercom_api, esp_aec, esp_afe, entities, HA services, automations ([docs/reference.md](docs/reference.md))
+- [Reference](#reference): intercom_api, esp_aec, esp_afe, entities, HA services, automations ([docs/reference.md](docs/reference.md))
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
-- [Audio components](#audio-components) — i2s_audio_duplex, esp_aec, esp_afe
+- [Audio components](#audio-components): i2s_audio_duplex, esp_aec, esp_afe
 - [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
 - [Troubleshooting](#troubleshooting) ([docs/troubleshooting.md](docs/troubleshooting.md))
 - [Deep dives and architecture](docs/)
@@ -618,7 +618,7 @@ Full-duplex I2S driver that lets mic and speaker share one I2S bus (ES8311, ES83
 
 Standalone ESP-SR echo cancellation (~80 KB internal RAM). Four modes (`sr_low_cost` recommended for VA+MWW, `voip_*` for pure VoIP). See the mode table in [docs/reference.md](docs/reference.md#esp_aec-component) before changing defaults.
 
-### [`esp_afe`](esphome/components/esp_afe/README.md) — experimental
+### [`esp_afe`](esphome/components/esp_afe/README.md) (experimental)
 
 Full ESP-SR audio front-end: AEC + NS + VAD + AGC, optionally BSS beamforming with dual mics. Runtime toggles for every feature, diagnostic sensors (input volume, output RMS, voice presence), and mode switching in Home Assistant. Memory and CPU cost is substantial (see the [AFE README](esphome/components/esp_afe/README.md) for the exact numbers). Use only when you actually need noise suppression, AGC, VAD, or beamforming; prefer `esp_aec` for plain intercom-only setups.
 

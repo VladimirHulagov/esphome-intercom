@@ -48,7 +48,7 @@ i2s_audio_duplex:
 | `FeatureControl feature_control(AudioFeature)` | `AEC` is `RESTART_REQUIRED`; others `NOT_SUPPORTED`. |
 | `bool set_feature(AudioFeature, bool enabled)` | Toggle AEC (rebuilds the handle). |
 | `ProcessorTelemetry telemetry() const` | Frame count + ring-buffer free percent. |
-| `bool reconfigure(int type, int mode)` | Switch AEC mode. `type` is unused (reserved for forward compatibility) and `mode` maps to the underlying esp-sr modes: `1` = `sr_low_cost`, `2` = `sr_high_perf`, `3` = `voip_low_cost`, `4` = `voip_high_perf`. Prefer the YAML `mode:` string or the `AEC Mode` select entity in Home Assistant — both wrap this numeric API. |
+| `bool reconfigure(int type, int mode)` | Switch AEC mode. `type` is unused (reserved for forward compatibility) and `mode` maps to the underlying esp-sr modes: `1` = `sr_low_cost`, `2` = `sr_high_perf`, `3` = `voip_low_cost`, `4` = `voip_high_perf`. Prefer the YAML `mode:` string or the `AEC Mode` select entity in Home Assistant (both wrap this numeric API). |
 | `bool reinit_by_name(const std::string &name)` | Same as `reconfigure()` but takes the mode name directly (`"sr_low_cost"` etc.). Recommended entry point for lambdas. |
 | `std::string get_mode_name() const` | Current mode as a string. Read this after a `reconfigure()` / `reinit_by_name()` to confirm the switch was accepted (it may be rejected, for example, if `sr_high_perf` cannot allocate DMA). |
 

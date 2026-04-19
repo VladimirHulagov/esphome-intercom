@@ -96,7 +96,7 @@ Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `inter
 
 | Mode | Engine | CPU (Core 0) | RES | MWW on post-AEC | Recommended |
 |------|--------|-------------|-----|-----------------|-------------|
-| `sr_low_cost` | `esp_aec3` (linear) | **~22 %** | No | **10/10** | **Yes — for VA + MWW** |
+| `sr_low_cost` | `esp_aec3` (linear) | **~22 %** | No | **10/10** | **Yes, for VA + MWW** |
 | `sr_high_perf` | `esp_aec3` (FFT) | ~25 % | No | 10/10 | Only when DMA-capable internal RAM is available |
 | `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58 % | Yes | 2/10 | Only if MWW is not needed |
 | `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | No |

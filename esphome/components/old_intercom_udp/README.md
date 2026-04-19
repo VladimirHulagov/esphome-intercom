@@ -1,4 +1,4 @@
-# Intercom Audio (UDP) — legacy
+# Intercom Audio (UDP, legacy)
 
 > ⚠ **Deprecated.** This is the original UDP-based streaming component. New deployments should use [`intercom_api`](../intercom_api/README.md) (TCP, call state machine, Home Assistant integration, PBX-style routing). `old_intercom_udp` is kept only for backward compatibility with firmwares already in the field and will be removed in a future release.
 

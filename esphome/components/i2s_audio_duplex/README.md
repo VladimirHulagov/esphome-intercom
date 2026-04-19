@@ -163,7 +163,7 @@ speaker:
 | `task_core` | int | 0 | Core affinity: 0 or 1 for pinned, -1 for unpinned. Default 0 follows Espressif AEC pattern. |
 | `task_stack_size` | int | 8192 | Audio task stack size in bytes (4096-32768). Increase if you see stack overflow warnings. |
 | `buffers_in_psram` | bool | false | Move non-hot-path audio buffers (AEC mic/ref, processor interleave, multi-channel mic, spk_ref) to PSRAM. `rx_buffer`/`spk_buffer` always stay in internal RAM. Saves ~15-20KB internal heap. Required for `sr_low_cost` AEC mode (512-sample frames). |
-| `audio_stack_in_psram` | bool | false | Place the audio task's own stack in PSRAM. Saves ~8KB of DMA-capable internal RAM at the cost of ~3x slower function return paths. Only enable on boards that need the internal headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS streams from `speaker_media_player` and intercom). The audio task is not CPU-bound (heavy esp-sr work runs in `esp_afe`'s feed task on core 1), so PSRAM stack latency is acceptable here. Requires `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y` (already default on our YAMLs). Leave it `false` on any board that does not hit the "not enough internal RAM" boundary — normal lifecycle is identical to the non-opt-in path. |
+| `audio_stack_in_psram` | bool | false | Place the audio task's own stack in PSRAM. Saves ~8KB of DMA-capable internal RAM at the cost of ~3x slower function return paths. Only enable on boards that need the internal headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS streams from `speaker_media_player` and intercom). The audio task is not CPU-bound (heavy esp-sr work runs in `esp_afe`'s feed task on core 1), so PSRAM stack latency is acceptable here. Requires `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y` (already default on our YAMLs). Leave it `false` on any board that does not hit the "not enough internal RAM" boundary; normal lifecycle is identical to the non-opt-in path. |
 
 ### Microphone Options
 
@@ -526,13 +526,13 @@ binary_sensor:
 
 | Current Page | Single Click | Double Click | Long Press |
 |---|---|---|---|
-| VA idle | Start voice assistant | — | Switch to intercom |
-| VA active | Stop voice assistant | — | — |
+| VA idle | Start voice assistant | n/a | Switch to intercom |
+| VA active | Stop voice assistant | n/a | n/a |
 | IC idle | Call selected contact | Next contact | Switch to VA |
 | IC ringing in | Answer call | Decline call | Switch to VA |
-| IC ringing out | Hangup | — | Switch to VA |
-| IC in call | Hangup | — | Switch to VA |
-| Timer ringing | Stop timer (any page) | — | — |
+| IC ringing out | Hangup | n/a | Switch to VA |
+| IC in call | Hangup | n/a | Switch to VA |
+| Timer ringing | Stop timer (any page) | n/a | n/a |
 
 > **Note**: Wake word detection is ALWAYS active regardless of the current mode. Mode switching only affects the display and button behavior.
 

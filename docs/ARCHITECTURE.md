@@ -59,9 +59,9 @@ All audio components share three conventions:
 | `intercom_srv` | `intercom_api` | 1 | 5 | PSRAM static | TCP accept/read/write |
 | `intercom_tx` | `intercom_api` | 0 | 5 | PSRAM static | Mic capture → AEC → network (AEC-own mode) |
 | `intercom_spk` | `intercom_api` | 0 | 4 | PSRAM static | Speaker playback + AEC reference |
-| WiFi / lwIP / TCP-IP | ESP-IDF | 0/1 | 18/23 | — | System |
-| MWW inference | `micro_wake_word` | 1 | 1 | — | TFLite inference |
-| LVGL | `display` | 1 | 1 | — | UI render |
+| WiFi / lwIP / TCP-IP | ESP-IDF | 0/1 | 18/23 | n/a | System |
+| MWW inference | `micro_wake_word` | 1 | 1 | n/a | TFLite inference |
+| LVGL | `display` | 1 | 1 | n/a | UI render |
 
 Why the priority choices:
 - **I²S at 19** is between lwIP (18) and WiFi (23): high enough that network can't starve audio, low enough that WiFi stays responsive.
@@ -76,7 +76,7 @@ The 2-mic `feed_task` runs as a dedicated task at priority 5 (not inline in the 
 
 ---
 
-## 3. Data flow — S3 full AFE (MMR: 2-mic BSS + AEC + NS + AGC + VAD)
+## 3. Data flow for the S3 full AFE (MMR: 2-mic BSS + AEC + NS + AGC + VAD)
 
 One frame = 32 ms = 512 samples @ 16 kHz per channel.
 
@@ -250,7 +250,7 @@ Reconfigure (e.g. 2-mic → 1-mic when beamforming toggles off) does not destroy
 
 `esp_afe` supports `aec_enabled=false`, `se_enabled=false`, `ns_enabled=false`, `agc_enabled=false`. With all four off, the esp-sr instance has nothing to do and `process()` short-circuits to a memcpy of the input frame.
 
-Why it exists: symmetric config surface. Users can disable any subset, including all. A `dump_config` that reports "all features disabled — component is a passthrough" is less surprising than one that errors out.
+Why it exists: symmetric config surface. Users can disable any subset, including all. A `dump_config` that reports "all features disabled, component is a passthrough" is less surprising than one that errors out.
 
 Why it stays: it costs nothing (a single `if` on the hot path), has no runtime risk, and is exercised during reconfigure transitions (brief windows where a user has toggled all features off before re-enabling one). Removing it would force consumers to drop the processor entirely in this edge case, which they can't easily do at runtime.
 
@@ -313,7 +313,7 @@ Questions a fresh designer would ask, and the current answer.
 
 ## 10. Related reading
 
-- [`../README.md`](../README.md) — project overview and quick-start
-- [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) — which YAML preset to pick
-- [`reference.md`](reference.md) — full option / action / service reference
+- [`../README.md`](../README.md): project overview and quick-start
+- [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md): which YAML preset to pick
+- [`reference.md`](reference.md): full option, action and service reference
 - Per-component READMEs live alongside each component in [`../esphome/components/`](../esphome/components/)

@@ -72,12 +72,12 @@ already live next to the public YAMLs (e.g. `waveshare-s3-full-afe-local.yaml`).
 The YAMLs ship sdkconfig defaults sized for the common case. Board-specific
 overrides that the defaults do not cover:
 
-- `CONFIG_MBEDTLS_HARDWARE_AES: "n"` — see above, waveshare-s3 only.
-- `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"` — required if you set
+- `CONFIG_MBEDTLS_HARDWARE_AES: "n"` (see above, waveshare-s3 only).
+- `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"`, required if you set
   `i2s_audio_duplex.audio_stack_in_psram: true`. Already on in our
   YAMLs.
 - `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC` + `CONFIG_MBEDTLS_DYNAMIC_BUFFER`
-   — keep TLS allocations out of internal RAM. Already on in all
+  keep TLS allocations out of internal RAM. Already on in all
   full-experience YAMLs that do HTTPS streaming.
 
 ## Pointers
