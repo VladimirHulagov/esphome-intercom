@@ -103,7 +103,9 @@ void I2SAudioDuplex::setup() {
     }
     this->mic_decimator_.init(this->decimation_ratio_);
     this->play_ref_decimator_.init(this->decimation_ratio_);
-    // rx_decimator_ init deferred to audio_task_ where channel count is known
+    // rx_decimator_ is lazily initialized inside audio_session_ once the
+    // processor has reported its frame_spec and we know how many channels
+    // the RX stream carries (mono / stereo-AEC / TDM-with-or-without-second-mic).
     ESP_LOGI(TAG, "Multi-rate: bus=%uHz, output=%uHz, ratio=%u",
              (unsigned)this->sample_rate_, (unsigned)this->output_sample_rate_,
              (unsigned)this->decimation_ratio_);
