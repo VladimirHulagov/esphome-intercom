@@ -114,6 +114,13 @@ esp32:
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
       CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
+      # Hardware AES requires contiguous internal DMA-capable memory for its
+      # scratch area. With BSS beamforming active plus two concurrent TLS
+      # streams (music + TTS) the internal heap fragments below the size the
+      # hw crypto wants, so we fall back to software AES which uses regular
+      # heap (happily PSRAM). Software AES on S3 @ 240MHz tops out around
+      # 1.5 MB/s, ~50x headroom over what the audio streams need.
+      CONFIG_MBEDTLS_HARDWARE_AES: "n"
       # Move WiFi/lwip buffers to PSRAM: recovers ~40-80KB internal RAM
       # during streaming; octal PSRAM @ 80MHz sustains WiFi throughput.
       # Keep inline because this YAML does NOT set
