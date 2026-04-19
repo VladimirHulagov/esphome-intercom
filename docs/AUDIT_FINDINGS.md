@@ -35,8 +35,8 @@ Severity scale:
 
 | # | Sev | Finding | Evidence | Action | Phase |
 |--:|:--:|---|---|---|:--:|
-| 1.1 | High | `xiaozhi-ball-v3-full-aec-local.yaml` tracked in git but is a local dev variant with relative paths | `yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec-local.yaml` | `git rm --cached` + add `*-local.yaml` to `.gitignore` | B |
-| 1.2 | High | Fake `secrets.yaml` files committed (3 files × 3 lines, build artifacts) | `yamls/**/secrets.yaml` | `git rm --cached` + add `secrets.yaml` to `.gitignore` | B |
+| 1.1 | — | ~~local YAML variants tracked in git~~ — verified: `*-local.yaml` already gitignored and untracked. No action needed. | — | RESOLVED (pre-existing) | — |
+| 1.2 | — | ~~Fake `secrets.yaml` committed~~ — verified: `secrets.yaml` already gitignored globally and per-dir; zero matches in `git ls-files`. No action needed. | — | RESOLVED (pre-existing) | — |
 | 1.3 | High | Dev-diary comments across YAMLs ("like old announcement behavior", session dates) | `xiaozhi-full-aec.yaml:397`, scattered | Strip session/date references, keep only timeless rationale | B |
 | 1.4 | High | `test` variable name in LVGL text wrapping lambda — unclear intent, likely leftover | `xiaozhi-full-aec.yaml:1749-1757, 1805-1813` | Rename to semantic name or inline | B |
 | 1.5 | Medium | `generic-s3-full.yaml` not renamed to `-aec` suffix unlike its peers | `yamls/full-experience/single-bus/aec/generic-s3-full.yaml` | Decide: rename for consistency or document why it stays | B |
