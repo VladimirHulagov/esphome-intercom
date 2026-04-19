@@ -365,6 +365,22 @@ Use in `if:` blocks:
 | `is_in_call` | State is Streaming |
 | `is_incoming` | Has pending incoming call |
 
+## Triggers run on the main loop
+
+All `on_ringing`, `on_outgoing_call`, `on_answered`, `on_streaming`, `on_idle`, `on_hangup` and `on_call_failed` triggers fire from the ESPHome main loop, not from the TCP server task. Internally the component calls `Component::defer()` to hand the trigger off to the scheduler, so a lambda or action sequence attached to a trigger can safely touch any ESPHome entity, including LVGL widgets, text sensors, switches and media players, without the main-loop-only constraints that FreeRTOS tasks would hit.
+
+Concretely this means you can write:
+
+```yaml
+on_ringing:
+  - lvgl.label.update:
+      id: status_label
+      text: "Incoming call"
+  - light.turn_on: status_led
+```
+
+and the trigger will run in a context where those calls are valid, even though the call state transition itself was detected on the network task.
+
 ## Lambda API
 
 Access component methods from lambdas:

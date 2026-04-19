@@ -1,8 +1,8 @@
-# Intercom Audio (UDP)
+# Intercom Audio (UDP) — legacy
 
-> **Note:** This is the original UDP-based audio streaming component. For most use cases, the newer `intercom_api` (TCP-based, with call state machine, HA integration, and PBX routing) is recommended instead.
+> ⚠ **Deprecated.** This is the original UDP-based streaming component. New deployments should use [`intercom_api`](../intercom_api/README.md) (TCP, call state machine, Home Assistant integration, PBX-style routing). `old_intercom_udp` is kept only for backward compatibility with firmwares already in the field and will be removed in a future release.
 
-Simple UDP audio streaming between ESP32 devices. No server required, no HA dependency. Point two ESPs at each other and talk.
+Simple UDP audio streaming between two ESP32 devices. No server required, no Home Assistant dependency. Point two ESPs at each other and talk.
 
 ## Installation
 

@@ -34,4 +34,8 @@ yamls/
 ## Audio processor: esp_aec vs esp_afe
 
 - **esp_aec**: Lightweight echo cancellation only (~40 KB). Recommended for intercom-only and single-mic setups.
-- **esp_afe**: Full Espressif AFE pipeline (AEC + NS + VAD + AGC + optional beamforming). Experimental, significant RAM cost. See the [AFE section](../README.md#audio-front-end-afe) in the main README.
+- **esp_afe**: Full Espressif AFE pipeline (AEC + NS + VAD + AGC + optional beamforming). Experimental, significant RAM cost. See the [esp_afe component README](../esphome/components/esp_afe/README.md) for details.
+
+## Not sure which one to pick?
+
+See [../docs/DEPLOYMENT_GUIDE.md](../docs/DEPLOYMENT_GUIDE.md) for a decision tree that maps hardware and requirements to the right preset.
