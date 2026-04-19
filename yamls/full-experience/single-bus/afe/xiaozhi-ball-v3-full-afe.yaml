@@ -162,10 +162,10 @@ logger:
   level: DEBUG
   logs:
     intercom_api: INFO
-    i2s_duplex: DEBUG
-    esp_afe: DEBUG
-    micro_wake_word: DEBUG
-    voice_assistant: DEBUG
+    i2s_duplex: INFO
+    esp_afe: INFO
+    micro_wake_word: INFO
+    voice_assistant: INFO
     component: INFO
     wifi: INFO
     api: INFO
