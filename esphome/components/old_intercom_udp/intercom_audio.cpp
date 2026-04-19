@@ -33,7 +33,6 @@ static const size_t FRAME_SAMPLES = 256;  // 16ms @ 16kHz
 static const size_t FRAME_BYTES = FRAME_SAMPLES * sizeof(int16_t);
 static const size_t RX_MAX_SAMPLES = 512;  // Max samples per UDP packet
 static const size_t RX_MAX_BYTES = RX_MAX_SAMPLES * sizeof(int16_t);
-static constexpr uint32_t AUDIO_TASK_STACK_WORDS = 8192 / sizeof(StackType_t);
 
 void IntercomAudio::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Intercom Audio...");
@@ -117,21 +116,21 @@ void IntercomAudio::setup() {
 #endif
 
   // Create audio task ONCE - runs forever, controlled by streaming_ flag.
-  // Stack: 8KB in PSRAM (saves internal RAM; this task is not IRAM-sensitive).
-  RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
-  this->audio_task_stack_ = psram_stack.allocate(AUDIO_TASK_STACK_WORDS);
-  if (this->audio_task_stack_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to allocate audio task stack");
-    this->mark_failed();
-    return;
-  }
-  this->audio_task_handle_ = xTaskCreateStaticPinnedToCore(
-      audio_task, "intercom_audio", AUDIO_TASK_STACK_WORDS, this, 5,
-      this->audio_task_stack_, &this->audio_task_tcb_, 0);
-  if (this->audio_task_handle_ == nullptr) {
+  // Stack: 8KB on the internal heap (FreeRTOS dynamic task). Keeps the
+  // legacy component compatible with plain ESP32 boards without PSRAM,
+  // which is the whole point of old_intercom_udp (baby monitor, two-room
+  // direct UDP link without Home Assistant).
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      audio_task,
+      "intercom_audio",
+      8192,
+      this,
+      5,
+      &this->audio_task_handle_,
+      0  // Core 0
+  );
+  if (ok != pdPASS) {
     ESP_LOGE(TAG, "Failed to create audio task");
-    psram_stack.deallocate(this->audio_task_stack_, AUDIO_TASK_STACK_WORDS);
-    this->audio_task_stack_ = nullptr;
     this->mark_failed();
     return;
   }
