@@ -138,25 +138,11 @@ void I2SAudioDuplex::setup() {
     }
   }
 
-  // Spawn the permanent audio task once. It parks in an idle wait loop until
-  // start() flips duplex_running_; subsequent stop()/start() cycles just
-  // toggle that flag. This eliminates the xTaskCreate race that previously
-  // caused "Failed to create audio task" under rapid feature-toggle churn.
-  BaseType_t task_created = xTaskCreatePinnedToCore(
-      audio_task,
-      "i2s_duplex",
-      this->task_stack_size_,
-      this,
-      this->task_priority_,
-      &this->audio_task_handle_,
-      this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY
-  );
-  if (task_created != pdPASS) {
-    ESP_LOGE(TAG, "Failed to create audio task");
-    this->mark_failed();
-    return;
-  }
-
+  // Audio task is created lazily on the first start() and kept alive for the
+  // rest of the component's lifetime. Creating it here would hold ~8KB of
+  // internal RAM from boot even on boards where the audio path has not been
+  // exercised yet, which is enough to push waveshare-s3 below the threshold
+  // that the esp-sr BSS init + HTTPS TLS streaming need.
   ESP_LOGI(TAG, "I2S Audio Duplex ready (speaker_buf=%u bytes)", (unsigned)this->speaker_buffer_size_);
 }
 
@@ -489,6 +475,27 @@ void I2SAudioDuplex::start() {
   }
 
   ESP_LOGI(TAG, "Starting duplex audio...");
+
+  // Lazy, one-shot audio task creation. After the first successful start we
+  // keep the task alive for the rest of the component's lifetime; stop() just
+  // parks it in the outer wait loop, so rapid toggle cycles never race on
+  // xTaskCreate.
+  if (this->audio_task_handle_ == nullptr) {
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        audio_task,
+        "i2s_duplex",
+        this->task_stack_size_,
+        this,
+        this->task_priority_,
+        &this->audio_task_handle_,
+        this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY
+    );
+    if (task_created != pdPASS) {
+      ESP_LOGE(TAG, "Failed to create audio task");
+      this->has_i2s_error_.store(true, std::memory_order_relaxed);
+      return;
+    }
+  }
 
   // I2S channels are created on first start and reused on subsequent cycles:
   // stop() only disables them, so here we either init from scratch or just
