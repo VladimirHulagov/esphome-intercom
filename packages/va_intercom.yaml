@@ -257,19 +257,32 @@ script:
     mode: restart
     then:
       - lambda: |-
+          // Central UI reducer. Priority order:
+          //   mute states > wake-word > VA (listening/thinking/responding)
+          //   > intercom call > VA error > media playback > idle.
+          // VA responding sits above intercom so concurrent TTS always shows
+          // blue even while a call is active; when TTS ends the evaluator
+          // falls back to the underlying call (green) or music (blue).
+          // Media playback target covers both STATE_PLAYING and
+          // STATE_ANNOUNCING so the LED stays blue when music pauses for a
+          // TTS announcement instead of flashing to off and back.
+          using S = media_player::MediaPlayerState;
+          auto mp_state = id(speaker_media_player).state;
+          bool media_active = (mp_state == S::MEDIA_PLAYER_STATE_PLAYING ||
+                               mp_state == S::MEDIA_PLAYER_STATE_ANNOUNCING);
           int target = 0;
           if (id(mute).state && id(speaker_mute).state) target = 1;
           else if (id(mute).state) target = 2;
           else if (id(speaker_mute).state) target = 3;
           else if (id(g_mww_recent) || id(g_barge_in_pending)) target = 4;
-          else if (id(g_va_state) == 1) target = 5;
-          else if (id(g_va_state) == 2) target = 6;
-          else if (id(g_va_state) == 3) target = 7;
+          else if (id(g_va_state) == 1) target = 5;     // VA listening
+          else if (id(g_va_state) == 2) target = 6;     // VA thinking
+          else if (id(g_va_state) == 3) target = 7;     // VA responding (TTS)
           else if (id(intercom).is_ringing()) target = 8;
           else if (id(intercom).is_outgoing()) target = 9;
           else if (id(intercom).is_streaming()) target = 10;
-          else if (id(g_va_state) == 4) target = 11;
-          else if (id(speaker_media_player).state == media_player::MEDIA_PLAYER_STATE_PLAYING) target = 12;
+          else if (id(g_va_state) == 4) target = 11;    // VA error
+          else if (media_active) target = 12;           // Music / announcement
           id(g_applied_led) = target;
       - script.execute: update_led
       - script.execute: ui_state_changed
