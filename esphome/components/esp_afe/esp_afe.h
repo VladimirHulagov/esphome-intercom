@@ -210,8 +210,11 @@ class EspAfe : public Component, public AudioProcessor {
   std::atomic<bool> feed_task_running_{false};
   // 1-mic feeds WebRTC NS/AGC inline (~8KB stack on WebRtcNs_ProcessCore);
   // dual-mic BSS runs in the esp-sr worker so feed_task only enqueues frames.
+  // 12KB covers the worst-case feed path (single-mic MR: AEC + WebRTC NS).
+  // MMR (2-mic with BSS) could run on 6KB, but the pipeline can switch to
+  // MR at runtime (SE off) without the stack being reallocated, so the
+  // feed task is always sized for the MR worst case.
   static constexpr uint32_t kFeedTaskStackWordsSingleMic = 12288 / sizeof(StackType_t);
-  static constexpr uint32_t kFeedTaskStackWordsDualMic = 6144 / sizeof(StackType_t);
 
   static void feed_task_trampoline(void *arg);
   void feed_task_loop_();

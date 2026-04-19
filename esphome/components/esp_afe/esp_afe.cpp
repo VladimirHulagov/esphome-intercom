@@ -1017,8 +1017,13 @@ bool EspAfe::start_feed_task_() {
              (unsigned) ring_size, (unsigned) frame_bytes);
   }
 
-  const uint32_t stack_words = (this->mic_num_ <= 1) ? kFeedTaskStackWordsSingleMic
-                                                     : kFeedTaskStackWordsDualMic;
+  // Always size the feed stack for the widest pipeline (single-mic MR, which
+  // runs AEC + WebRTC NS inside the feed task). A 2-mic YAML that later
+  // turns SE off drops esp-sr into MR mode even with mic_num_=2, and the
+  // smaller "DualMic" stack overflows the MR code path. Paying ~6KB of
+  // internal RAM in the MMR case is cheaper than reallocating the stack on
+  // every reconfigure.
+  const uint32_t stack_words = kFeedTaskStackWordsSingleMic;
   if (this->feed_task_stack_ == nullptr) {
     RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
     this->feed_task_stack_ = stack_alloc.allocate(stack_words);
@@ -1107,8 +1112,14 @@ void EspAfe::fetch_task_loop_() {
 
     // Telemetry from the frame the worker just handed us.
     this->ringbuf_free_pct_.store(result->ringbuff_free_pct, std::memory_order_relaxed);
-    this->voice_present_.store(this->vad_enabled_ && result->vad_state == VAD_SPEECH,
-                               std::memory_order_relaxed);
+    const bool new_voice = this->vad_enabled_ && result->vad_state == VAD_SPEECH;
+    const bool prev_voice = this->voice_present_.exchange(new_voice, std::memory_order_relaxed);
+    if (new_voice != prev_voice) {
+      // Diagnostic INFO (demote to DEBUG once VAD investigation closed).
+      ESP_LOGI(TAG, "VAD transition: %s -> %s (vad_enabled=%s, raw_state=%d)",
+               prev_voice ? "speech" : "silence", new_voice ? "speech" : "silence",
+               this->vad_enabled_ ? "y" : "n", static_cast<int>(result->vad_state));
+    }
 
     if (this->fetch_output_ring_) {
       const size_t want = static_cast<size_t>(result->data_size);
