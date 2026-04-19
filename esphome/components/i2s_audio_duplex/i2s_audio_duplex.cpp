@@ -148,11 +148,19 @@ void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
 }
 
 void I2SAudioDuplex::loop() {
-  // Handle processor frame_spec change: audio task exited, restart with new allocations
+  // Handle processor frame_spec change: audio task exited, restart with new allocations.
+  // stop() zeroes mic_ref_count_, which gates raw_mic_callbacks_ (MWW) and
+  // mic_callbacks_ (VA / intercom TX) in process_aec_and_callbacks_. Consumers call
+  // start_mic() once at setup and never re-register, so snapshot and restore the
+  // count across the restart to keep the mic path alive.
   if (this->needs_restart_.exchange(false, std::memory_order_relaxed)) {
     ESP_LOGD(TAG, "Restarting audio task for frame_spec change");
+    int saved_mic_refs = this->mic_ref_count_.load(std::memory_order_relaxed);
     this->stop();
     this->start();
+    if (saved_mic_refs > 0) {
+      this->mic_ref_count_.store(saved_mic_refs, std::memory_order_relaxed);
+    }
   }
 }
 
