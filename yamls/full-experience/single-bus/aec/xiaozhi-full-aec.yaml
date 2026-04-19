@@ -1647,8 +1647,14 @@ select:
       - "voip_low_cost"
       - "voip_high_perf"
     initial_option: "sr_low_cost"
+    # Optimistic select auto-updates state to the requested option, but
+    # the switch may be rejected (VA/intercom active, HIGH_PERF pre-flight
+    # DRAM guard, or init in progress). Every set_action path ends with
+    # select.template.publish overriding the optimistic state with the
+    # actual live mode from the esp_aec component, so HA never shows a
+    # mode the device never committed to.
     optimistic: true
-    restore_value: true
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -1682,6 +1688,15 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - select.template.publish:
+          id: aec_mode_select
+          state: !lambda 'return id(aec_processor).get_mode_name();'
+
+    # Publish actual mode once at boot so HA starts in sync with the device.
+    lambda: |-
+      if (id(init_in_progress)) return {};
+      return id(aec_processor).get_mode_name();
 
 # =============================================================================
 # TEXT SENSORS

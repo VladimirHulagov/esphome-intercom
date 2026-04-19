@@ -54,6 +54,15 @@ class EspAec : public Component, public AudioProcessor {
   }
 
   aec_mode_t get_mode() const { return this->mode_; }
+  std::string get_mode_name() const {
+    switch (static_cast<int>(this->mode_)) {
+      case AEC_MODE_SR_LOW_COST: return "sr_low_cost";
+      case AEC_MODE_SR_HIGH_PERF: return "sr_high_perf";
+      case 3: return "voip_low_cost";
+      case 4: return "voip_high_perf";
+      default: return "sr_low_cost";
+    }
+  }
 
   ~EspAec() override;
 
