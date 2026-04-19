@@ -12,8 +12,8 @@ static const char *const TAG = "i2s_duplex.mic";
 void I2SAudioDuplexMicrophone::setup() {
   ESP_LOGCONFIG(TAG, "Setting up I2S Audio Duplex Microphone...");
 
-  // Create counting semaphore for reference counting multiple listeners
-  // Initialized to MAX_LISTENERS (all available) - taking decrements, giving increments
+  // Counting semaphore for listener refcounting (take to decrement, give
+  // to increment). Initial count == max count == MAX_LISTENERS.
   this->active_listeners_semaphore_ = xSemaphoreCreateCounting(MAX_LISTENERS, MAX_LISTENERS);
   if (this->active_listeners_semaphore_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create semaphore");
@@ -21,10 +21,12 @@ void I2SAudioDuplexMicrophone::setup() {
     return;
   }
 
-  // Event group for synchronizing start/stop transitions
+  // Event group to sync start/stop transitions.
   this->event_group_ = xEventGroupCreate();
   if (this->event_group_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create event group");
+    vSemaphoreDelete(this->active_listeners_semaphore_);
+    this->active_listeners_semaphore_ = nullptr;
     this->mark_failed();
     return;
   }

@@ -103,36 +103,51 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _consume_intercom_sockets(config):
+    """Reserve lwIP sockets for intercom_api at validation time.
+
+    The component opens one TCP listening socket (incoming peer calls) plus
+    up to three concurrent TCP client sockets (outgoing peer calls). Mirrors
+    the upstream api component pattern so ESPHome can size
+    CONFIG_LWIP_MAX_SOCKETS automatically instead of forcing a YAML override.
+    """
+    from esphome.components import socket
+
+    socket.consume_sockets(3, "intercom_api")(config)
+    socket.consume_sockets(1, "intercom_api", socket.SocketType.TCP_LISTEN)(config)
+    return config
+
+
 def _final_validate(config):
-    """Cross-component validation: warn about conflicts with i2s_audio_duplex."""
+    """Cross-component validation + socket reservation."""
     from esphome.core import CORE
     full_config = CORE.config or {}
 
     # Check if i2s_audio_duplex is also configured
     duplex_configs = full_config.get("i2s_audio_duplex", [])
-    if not duplex_configs:
-        return config
 
-    # If duplex exists, check for AEC conflict
-    if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
-        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
-            if isinstance(duplex, dict) and duplex.get("processor_id") is not None:
-                raise cv.Invalid(
-                    "Both intercom_api.processor_id and i2s_audio_duplex.processor_id are configured. "
-                    "This causes a race condition on the audio processor. "
-                    "Use the processor on only ONE component (i2s_audio_duplex recommended)."
-                )
+    if duplex_configs:
+        # If duplex exists, check for processor conflict
+        if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
+            for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+                if isinstance(duplex, dict) and duplex.get("processor_id") is not None:
+                    raise cv.Invalid(
+                        "Both intercom_api.processor_id and i2s_audio_duplex.processor_id are configured. "
+                        "This causes a race condition on the audio processor. "
+                        "Use the processor on only ONE component (i2s_audio_duplex recommended)."
+                    )
 
-    # Warn about DC offset double-filtering
-    if config.get(CONF_DC_OFFSET_REMOVAL, False):
-        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
-            if isinstance(duplex, dict) and duplex.get("correct_dc_offset", False):
-                raise cv.Invalid(
-                    "Both intercom_api.dc_offset_removal and i2s_audio_duplex.correct_dc_offset are enabled. "
-                    "Double DC-block filtering causes instability. "
-                    "Use correct_dc_offset on i2s_audio_duplex only."
-                )
+        # Warn about DC offset double-filtering
+        if config.get(CONF_DC_OFFSET_REMOVAL, False):
+            for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+                if isinstance(duplex, dict) and duplex.get("correct_dc_offset", False):
+                    raise cv.Invalid(
+                        "Both intercom_api.dc_offset_removal and i2s_audio_duplex.correct_dc_offset are enabled. "
+                        "Double DC-block filtering causes instability. "
+                        "Use correct_dc_offset on i2s_audio_duplex only."
+                    )
 
+    _consume_intercom_sockets(config)
     return config
 
 
