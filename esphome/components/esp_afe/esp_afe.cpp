@@ -1020,28 +1020,24 @@ bool EspAfe::start_feed_task_() {
   // Always size the feed stack for the widest pipeline (single-mic MR, which
   // runs AEC + WebRTC NS inside the feed task). A 2-mic YAML that later
   // turns SE off drops esp-sr into MR mode even with mic_num_=2, and the
-  // smaller "DualMic" stack overflows the MR code path. Paying ~6KB of
-  // internal RAM in the MMR case is cheaper than reallocating the stack on
-  // every reconfigure.
+  // smaller "DualMic" stack overflows the MR code path.
+  //
+  // Dynamic task creation (not static): a static TCB reused across
+  // stop/start gets its xStateListItem re-initialised while the prior task
+  // may still be referenced by FreeRTOS' termination list on the target
+  // core, corrupting the ready list inside prvAddNewTaskToReadyList. The
+  // heap cost is ~16 KB internal RAM churn per reconfigure.
   const uint32_t stack_words = kFeedTaskStackWordsSingleMic;
-  if (this->feed_task_stack_ == nullptr) {
-    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
-    this->feed_task_stack_ = stack_alloc.allocate(stack_words);
-    if (this->feed_task_stack_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to allocate AFE feed task stack");
-      return false;
-    }
-  }
 
   this->feed_task_running_.store(true, std::memory_order_release);
-  this->feed_task_handle_ = xTaskCreateStaticPinnedToCore(
+  BaseType_t rc = xTaskCreatePinnedToCore(
       &EspAfe::feed_task_trampoline, "afe_feed", stack_words, this,
-      kFeedTaskPriority,
-      this->feed_task_stack_, &this->feed_task_tcb_,
+      kFeedTaskPriority, &this->feed_task_handle_,
       this->task_core_ >= 0 ? this->task_core_ : tskNO_AFFINITY);
-  if (this->feed_task_handle_ == nullptr) {
+  if (rc != pdPASS || this->feed_task_handle_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create AFE feed task");
     this->feed_task_running_.store(false, std::memory_order_release);
+    this->feed_task_handle_ = nullptr;
     this->feed_input_ring_ = nullptr;
     heap_caps_free(this->feed_input_ring_storage_);
     this->feed_input_ring_storage_ = nullptr;
@@ -1067,7 +1063,6 @@ void EspAfe::stop_feed_task_() {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   this->feed_task_handle_ = nullptr;
-  vTaskDelay(pdMS_TO_TICKS(30));
   this->feed_input_ring_ = nullptr;
   if (this->feed_input_ring_storage_ != nullptr) {
     heap_caps_free(this->feed_input_ring_storage_);
@@ -1115,10 +1110,9 @@ void EspAfe::fetch_task_loop_() {
     const bool new_voice = this->vad_enabled_ && result->vad_state == VAD_SPEECH;
     const bool prev_voice = this->voice_present_.exchange(new_voice, std::memory_order_relaxed);
     if (new_voice != prev_voice) {
-      // Diagnostic INFO (demote to DEBUG once VAD investigation closed).
-      ESP_LOGI(TAG, "VAD transition: %s -> %s (vad_enabled=%s, raw_state=%d)",
+      ESP_LOGD(TAG, "VAD transition: %s -> %s (raw_state=%d)",
                prev_voice ? "speech" : "silence", new_voice ? "speech" : "silence",
-               this->vad_enabled_ ? "y" : "n", static_cast<int>(result->vad_state));
+               static_cast<int>(result->vad_state));
     }
 
     if (this->fetch_output_ring_) {
@@ -1158,27 +1152,19 @@ bool EspAfe::start_fetch_task_() {
     }
   }
 
-  if (this->fetch_task_stack_ == nullptr) {
-    RAMAllocator<StackType_t> stack_alloc(RAMAllocator<StackType_t>::ALLOC_INTERNAL);
-    this->fetch_task_stack_ = stack_alloc.allocate(kFetchTaskStackWords);
-    if (this->fetch_task_stack_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to allocate AFE fetch task stack");
-      return false;
-    }
-  }
-
   const int fetch_priority = this->task_priority_ > 1 ? this->task_priority_ - 1 : 1;
   const int fetch_core = (this->task_core_ >= 0) ? this->task_core_ : tskNO_AFFINITY;
 
+  // Dynamic task creation: see feed task rationale for why static TCB reuse
+  // was unsafe across reconfigure.
   this->fetch_task_running_.store(true, std::memory_order_release);
-  this->fetch_task_handle_ = xTaskCreateStaticPinnedToCore(
+  BaseType_t rc = xTaskCreatePinnedToCore(
       &EspAfe::fetch_task_trampoline, "afe_fetch", kFetchTaskStackWords, this,
-      fetch_priority,
-      this->fetch_task_stack_, &this->fetch_task_tcb_,
-      fetch_core);
-  if (this->fetch_task_handle_ == nullptr) {
+      fetch_priority, &this->fetch_task_handle_, fetch_core);
+  if (rc != pdPASS || this->fetch_task_handle_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create AFE fetch task");
     this->fetch_task_running_.store(false, std::memory_order_release);
+    this->fetch_task_handle_ = nullptr;
     return false;
   }
   ESP_LOGI(TAG, "AFE fetch task started (core=%d, priority=%d)",
@@ -1199,12 +1185,6 @@ void EspAfe::stop_fetch_task_() {
     vTaskDelay(pdMS_TO_TICKS(10));
   }
   this->fetch_task_handle_ = nullptr;
-  // Give FreeRTOS IDLE time to reclaim the deleted TCB before it is reused
-  // by the next xTaskCreateStatic call.
-  vTaskDelay(pdMS_TO_TICKS(30));
-  // Do NOT zero fetch_task_tcb_ manually — FreeRTOS may still be holding
-  // back-links into the struct. xTaskCreateStaticPinnedToCore will
-  // reinitialize the fields it cares about.
   this->fetch_output_ring_.reset();
 }
 

@@ -205,8 +205,6 @@ class EspAfe : public Component, public AudioProcessor {
   uint8_t *feed_input_ring_storage_{nullptr};
   StaticRingbuffer_t *feed_input_ring_struct_{nullptr};
   TaskHandle_t feed_task_handle_{nullptr};
-  StaticTask_t feed_task_tcb_{};
-  StackType_t *feed_task_stack_{nullptr};
   std::atomic<bool> feed_task_running_{false};
   // 1-mic feeds WebRTC NS/AGC inline (~8KB stack on WebRtcNs_ProcessCore);
   // dual-mic BSS runs in the esp-sr worker so feed_task only enqueues frames.
@@ -224,8 +222,6 @@ class EspAfe : public Component, public AudioProcessor {
   // Fetch bridge: fetch task writes, process() reads non-blocking
   std::unique_ptr<RingBuffer> fetch_output_ring_;
   TaskHandle_t fetch_task_handle_{nullptr};
-  StaticTask_t fetch_task_tcb_{};
-  StackType_t *fetch_task_stack_{nullptr};
   std::atomic<bool> fetch_task_running_{false};
   static constexpr uint32_t kFetchTaskStackWords = 4096 / sizeof(StackType_t);
 
