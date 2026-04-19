@@ -135,6 +135,13 @@ ota:
 
 logger:
   level: INFO
+  logs:
+    # Sensors already publish their state to HA. Muting the S-level publish
+    # log keeps the console readable when diagnosing audio-pipeline issues.
+    sensor: WARN
+    text_sensor: WARN
+    binary_sensor: WARN
+    switch: WARN
 
 wifi:
   ssid: !secret wifi_ssid
