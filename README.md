@@ -1,5 +1,11 @@
-# ESPHome Intercom
-From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, intercom, and ready-to-flash configs for tested ESP32 hardware.
+# ESPHome Intercom — full-duplex voice, AEC and wake word on ESP32
+
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3%20%7C%20ESP32--P4-blue)](#hardware-support)
+[![ESPHome](https://img.shields.io/badge/ESPHome-2026.4-%23008cd0)](https://esphome.io)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-native-blue)](https://www.home-assistant.io)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+Full-duplex intercom, Voice Assistant and Micro Wake Word running side-by-side on a single ESP32-S3 or ESP32-P4: shared microphone, shared speaker, ESP-SR echo cancellation, optional dual-mic beamforming, audio mixer with ducking, and a Lovelace card that doubles as a phone keypad. From a one-ESP doorbell to a PBX-like multi-device intercom over Home Assistant, with ready-to-flash YAML configs for the hardware that has actually been tested.
 
 ![Dashboard Preview](docs/images/dashboard.png)
 
@@ -29,10 +35,10 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 - [Reference](#reference) — intercom_api, esp_aec, esp_afe, entities, HA services, automations ([docs/reference.md](docs/reference.md))
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
-- [i2s_audio_duplex](#i2s_audio_duplex)
-- [Audio Front-End (AFE)](#audio-front-end-afe)
+- [Audio components](#audio-components) — i2s_audio_duplex, esp_aec, esp_afe
 - [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
-- [Troubleshooting](#troubleshooting)
+- [Troubleshooting](#troubleshooting) ([docs/troubleshooting.md](docs/troubleshooting.md))
+- [Deep dives and architecture](docs/)
 - [License](#license)
 
 ---
