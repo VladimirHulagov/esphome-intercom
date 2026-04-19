@@ -159,26 +159,12 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
   logs:
-    intercom_api: INFO
-    i2s_duplex: INFO
-    esp_afe: INFO
-    micro_wake_word: INFO
-    voice_assistant: INFO
-    component: INFO
-    wifi: INFO
-    api: INFO
-    ota: INFO
-    mdns: INFO
-    sensor: INFO
-    switch: INFO
-    light: INFO
-    display: INFO
-    image: INFO
-    spi: INFO
-    i2c: INFO
-    esp32: INFO
+    sensor: WARN
+    text_sensor: WARN
+    binary_sensor: WARN
+    switch: WARN
 
 network:
   enable_high_performance: true
