@@ -142,6 +142,7 @@ class IntercomApi : public Component {
 #endif
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
+  void set_tasks_stack_in_psram(bool enabled) { this->tasks_stack_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
 
 #ifdef USE_AUDIO_PROCESSOR
@@ -343,7 +344,13 @@ class IntercomApi : public Component {
   uint8_t *audio_tx_buffer_{nullptr}; // Used by tx_task for audio (no mutex needed)
   SemaphoreHandle_t send_mutex_{nullptr};  // Protects tx_buffer_ during send
 
-  // Task handles and static-task storage. Stacks live in PSRAM (see setup()).
+  // Task handles and static-task storage.
+  // When tasks_stack_in_psram_ is true (default false), the stacks are
+  // allocated from PSRAM via xTaskCreateStaticPinnedToCore: saves ~28 KB
+  // of internal heap on S3/P4 boards that already have heavy AFE/MWW/LVGL
+  // pressure. When false, the tasks are created with the standard dynamic
+  // xTaskCreatePinnedToCore (stack on the internal heap), which is the
+  // only option on plain ESP32 boards without PSRAM.
   TaskHandle_t server_task_handle_{nullptr};
   TaskHandle_t tx_task_handle_{nullptr};
   TaskHandle_t speaker_task_handle_{nullptr};
@@ -353,6 +360,7 @@ class IntercomApi : public Component {
   StackType_t *server_task_stack_{nullptr};
   StackType_t *tx_task_stack_{nullptr};
   StackType_t *speaker_task_stack_{nullptr};
+  bool tasks_stack_in_psram_{false};
 
   // Speaker single-owner: only speaker_task_ touches speaker hardware
   // This prevents race conditions between play() and stop()

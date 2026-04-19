@@ -189,6 +189,7 @@ output:
 #   - text_sensor: contacts (count) [full mode only]
 
 intercom_api:
+  tasks_stack_in_psram: true   # save ~28KB internal heap on S3/P4 by placing task stacks in PSRAM
   id: intercom
   mode: full              # full = ESP↔ESP calls with contacts, simple = browser only
   microphone: mic_component

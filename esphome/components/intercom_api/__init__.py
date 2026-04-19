@@ -18,6 +18,7 @@ AUTO_LOAD = ["switch", "number", "text_sensor"]
 
 CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
+CONF_TASKS_STACK_IN_PSRAM = "tasks_stack_in_psram"
 
 CONF_PROCESSOR_ID = "processor_id"
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
@@ -82,6 +83,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SPEAKER): cv.use_id(speaker.Speaker),
         # DC offset removal for mics with significant DC bias (e.g., SPH0645)
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
+        # Place the server / tx / speaker task stacks in PSRAM (saves ~28KB
+        # internal heap on S3/P4 builds where AFE/MWW/LVGL compete for it).
+        # Default false: standard dynamic tasks with internal-heap stacks,
+        # required on plain ESP32 boards without PSRAM. Set true on full-
+        # experience S3/P4/Xiaozhi builds.
+        cv.Optional(CONF_TASKS_STACK_IN_PSRAM, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
         cv.Optional(CONF_PROCESSOR_ID): _processor_schema,
         # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
@@ -173,6 +180,7 @@ async def to_code(config):
         cg.add(var.set_speaker(spk))
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
+    cg.add(var.set_tasks_stack_in_psram(config[CONF_TASKS_STACK_IN_PSRAM]))
 
     # Set device name (for full mode: exclude self from contacts list)
     from esphome.core import CORE

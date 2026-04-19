@@ -48,18 +48,23 @@ void IntercomApi::setup() {
       vTaskDelete(this->server_task_handle_);
       this->server_task_handle_ = nullptr;
     }
-    RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
-    if (this->speaker_task_stack_ != nullptr) {
-      psram_stack.deallocate(this->speaker_task_stack_, kSpeakerTaskStackWords);
-      this->speaker_task_stack_ = nullptr;
-    }
-    if (this->tx_task_stack_ != nullptr) {
-      psram_stack.deallocate(this->tx_task_stack_, kTxTaskStackWords);
-      this->tx_task_stack_ = nullptr;
-    }
-    if (this->server_task_stack_ != nullptr) {
-      psram_stack.deallocate(this->server_task_stack_, kServerTaskStackWords);
-      this->server_task_stack_ = nullptr;
+    // Static-task stacks are only allocated when tasks_stack_in_psram_ is
+    // true. In dynamic mode the stack pointers stay null and FreeRTOS
+    // releases the heap-resident stack as part of vTaskDelete above.
+    if (this->tasks_stack_in_psram_) {
+      RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+      if (this->speaker_task_stack_ != nullptr) {
+        psram_stack.deallocate(this->speaker_task_stack_, kSpeakerTaskStackWords);
+        this->speaker_task_stack_ = nullptr;
+      }
+      if (this->tx_task_stack_ != nullptr) {
+        psram_stack.deallocate(this->tx_task_stack_, kTxTaskStackWords);
+        this->tx_task_stack_ = nullptr;
+      }
+      if (this->server_task_stack_ != nullptr) {
+        psram_stack.deallocate(this->server_task_stack_, kServerTaskStackWords);
+        this->server_task_stack_ = nullptr;
+      }
     }
     RAMAllocator<int16_t> psram_i16;
     RAMAllocator<uint8_t> psram_u8;
@@ -219,23 +224,47 @@ void IntercomApi::setup() {
   this->aec_enabled_ = false;
 #endif
 
-  // Task stacks allocated from PSRAM to preserve internal RAM.
+  // Two task creation paths:
+  //  - Static (tasks_stack_in_psram_=true): stack allocated from PSRAM,
+  //    saves ~28 KB of internal heap. Requires a board with PSRAM and
+  //    CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y. Recommended for
+  //    full-experience S3/P4 builds where every KB of internal RAM
+  //    competes with BSS, MWW and LVGL.
+  //  - Dynamic (tasks_stack_in_psram_=false, default): standard
+  //    xTaskCreatePinnedToCore with stack on the internal heap. Costs
+  //    ~28 KB of internal RAM total (8+12+8 KB across the three tasks)
+  //    but is the only option on plain ESP32 boards without PSRAM.
   RAMAllocator<StackType_t> psram_stack(RAMAllocator<StackType_t>::ALLOC_EXTERNAL);
+
+  auto create_task = [this, &psram_stack](TaskFunction_t fn, const char *name, uint32_t stack_words,
+                                           UBaseType_t prio, BaseType_t core, TaskHandle_t *handle_out,
+                                           StaticTask_t *tcb_out, StackType_t **stack_out) -> bool {
+    if (this->tasks_stack_in_psram_) {
+      *stack_out = psram_stack.allocate(stack_words);
+      if (*stack_out == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate PSRAM stack for %s", name);
+        return false;
+      }
+      *handle_out = xTaskCreateStaticPinnedToCore(fn, name, stack_words, this, prio,
+                                                   *stack_out, tcb_out, core);
+    } else {
+      BaseType_t ok = xTaskCreatePinnedToCore(fn, name, stack_words * sizeof(StackType_t),
+                                               this, prio, handle_out, core);
+      if (ok != pdPASS) {
+        *handle_out = nullptr;
+      }
+    }
+    if (*handle_out == nullptr) {
+      ESP_LOGE(TAG, "Failed to create %s task", name);
+      return false;
+    }
+    return true;
+  };
 
   // Server task (Core 1): TCP connections, receive path, plus TX/speaker when
   // no dedicated intercom processor is configured.
-  this->server_task_stack_ = psram_stack.allocate(kServerTaskStackWords);
-  if (this->server_task_stack_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to allocate server task stack");
-    cleanup_partial();
-    this->mark_failed();
-    return;
-  }
-  this->server_task_handle_ = xTaskCreateStaticPinnedToCore(
-      IntercomApi::server_task, "intercom_srv", kServerTaskStackWords, this, 5,
-      this->server_task_stack_, &this->server_task_tcb_, 1);
-  if (this->server_task_handle_ == nullptr) {
-    ESP_LOGE(TAG, "Failed to create server task");
+  if (!create_task(IntercomApi::server_task, "intercom_srv", kServerTaskStackWords, 5, 1,
+                   &this->server_task_handle_, &this->server_task_tcb_, &this->server_task_stack_)) {
     cleanup_partial();
     this->mark_failed();
     return;
@@ -243,36 +272,16 @@ void IntercomApi::setup() {
 
   if (use_intercom_aec) {
     // TX task (Core 0): mic capture and AEC processing when intercom drives its own AEC.
-    this->tx_task_stack_ = psram_stack.allocate(kTxTaskStackWords);
-    if (this->tx_task_stack_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to allocate TX task stack");
-      cleanup_partial();
-      this->mark_failed();
-      return;
-    }
-    this->tx_task_handle_ = xTaskCreateStaticPinnedToCore(
-        IntercomApi::tx_task, "intercom_tx", kTxTaskStackWords, this, 5,
-        this->tx_task_stack_, &this->tx_task_tcb_, 0);
-    if (this->tx_task_handle_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to create TX task");
+    if (!create_task(IntercomApi::tx_task, "intercom_tx", kTxTaskStackWords, 5, 0,
+                     &this->tx_task_handle_, &this->tx_task_tcb_, &this->tx_task_stack_)) {
       cleanup_partial();
       this->mark_failed();
       return;
     }
 
     // Speaker task (Core 0): playback and AEC reference feed.
-    this->speaker_task_stack_ = psram_stack.allocate(kSpeakerTaskStackWords);
-    if (this->speaker_task_stack_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to allocate speaker task stack");
-      cleanup_partial();
-      this->mark_failed();
-      return;
-    }
-    this->speaker_task_handle_ = xTaskCreateStaticPinnedToCore(
-        IntercomApi::speaker_task, "intercom_spk", kSpeakerTaskStackWords, this, 4,
-        this->speaker_task_stack_, &this->speaker_task_tcb_, 0);
-    if (this->speaker_task_handle_ == nullptr) {
-      ESP_LOGE(TAG, "Failed to create speaker task");
+    if (!create_task(IntercomApi::speaker_task, "intercom_spk", kSpeakerTaskStackWords, 4, 0,
+                     &this->speaker_task_handle_, &this->speaker_task_tcb_, &this->speaker_task_stack_)) {
       cleanup_partial();
       this->mark_failed();
       return;

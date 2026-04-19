@@ -293,6 +293,7 @@ voice_assistant:
 # Intercom API: Hardware config (callbacks from package)
 # =============================================================================
 intercom_api:
+  tasks_stack_in_psram: true   # save ~28KB internal heap on S3/P4 by placing task stacks in PSRAM
   mode: full
   microphone: mic_main
   speaker: intercom_speaker
