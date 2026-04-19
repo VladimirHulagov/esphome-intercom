@@ -124,6 +124,16 @@ class EspAfe : public Component, public AudioProcessor {
   bool is_ns_enabled() const { return this->ns_enabled_; }
   bool is_vad_enabled() const { return this->vad_enabled_; }
   bool is_agc_enabled() const { return this->agc_enabled_; }
+  // Current mode string ("sr_low_cost", "sr_high_perf", "voip_low_cost",
+  // "voip_high_perf"). Used by UI templates to publish the actual live mode
+  // after a set_action so optimistic selects don't drift from reality.
+  std::string get_mode_name() const {
+    // afe_type_: 0 = SR, 1 = VC;  afe_mode_: 0 = LOW_COST, 1 = HIGH_PERF.
+    if (this->afe_type_ == 0) {
+      return this->afe_mode_ == 1 ? "sr_high_perf" : "sr_low_cost";
+    }
+    return this->afe_mode_ == 1 ? "voip_high_perf" : "voip_low_cost";
+  }
   bool is_voice_present() const { return this->voice_present_.load(std::memory_order_relaxed); }
   float get_input_volume_dbfs() const { return this->input_volume_dbfs_.load(std::memory_order_relaxed); }
   float get_output_rms_dbfs() const { return this->output_rms_dbfs_.load(std::memory_order_relaxed); }

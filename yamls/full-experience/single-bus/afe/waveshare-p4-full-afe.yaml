@@ -2506,7 +2506,9 @@ select:
       - "sr_low_cost"
       - "sr_high_perf"
     initial_option: "sr_low_cost"
-    restore_value: true
+    # Non-optimistic: see waveshare-s3-full-afe.yaml for rationale.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -2540,6 +2542,8 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(afe_processor).get_mode_name());
 
 # =============================================================================
 # TEXT SENSORS

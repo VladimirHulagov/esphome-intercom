@@ -572,7 +572,12 @@ select:
       - "sr_low_cost"
       - "sr_high_perf"
     initial_option: "sr_low_cost"
-    restore_value: true
+    # Non-optimistic: template_select::control runs the set_action first
+    # and only auto-publishes `index` when optimistic=true, overwriting
+    # whatever we published. With optimistic=false, the final lambda
+    # publish_state drives HA state from the live esp_afe mode.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -606,6 +611,8 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(afe_processor).get_mode_name());
 
 # =============================================================================
 # WS2812 RGB LED Ring (7 LEDs)
