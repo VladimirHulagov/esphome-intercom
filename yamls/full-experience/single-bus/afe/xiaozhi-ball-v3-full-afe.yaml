@@ -26,8 +26,8 @@
 # =============================================================================
 
 substitutions:
-  name: xiaozhi-ball-v3
-  friendly_name: Palletta
+  name: xiaozhi-ball
+  friendly_name: Xiaozhi ball
   mic_id: mic_afe
 
   # ---- Local mode: paths relative to this yaml location (4 levels deep in yamls/full-experience/single-bus/aec/) ----
