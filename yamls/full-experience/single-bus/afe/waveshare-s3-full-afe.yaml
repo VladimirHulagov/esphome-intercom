@@ -509,7 +509,7 @@ switch:
       icon: mdi:phone-in-talk
       restore_mode: RESTORE_DEFAULT_OFF
 
-  # AFE switches (runtime toggle per modulo)
+  # AFE runtime toggles (per-feature enable/disable, trigger esp-sr reinit).
   - platform: esp_afe
     esp_afe_id: afe_processor
     aec:

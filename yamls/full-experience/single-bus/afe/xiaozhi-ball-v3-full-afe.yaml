@@ -1439,18 +1439,6 @@ sensor:
     entity_category: diagnostic
     lambda: 'return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024.0f;'
 
-  # AFE diagnostic sensors (test only). Updates every 500ms, generates a lot of
-  # HA recorder writes. Disable when not actively debugging to avoid bloating
-  # the HA database. Compare input vs output to verify AEC/NS/AGC effect.
-  #- platform: esp_afe
-  #  esp_afe_id: afe_processor
-  #  input_volume:
-  #    name: "AFE Input Volume"
-  #    update_interval: 500ms
-  #  output_rms:
-  #    name: "AFE Output RMS"
-  #    update_interval: 500ms
-
 # =============================================================================
 # BINARY SENSORS
 # =============================================================================
@@ -1880,16 +1868,16 @@ text_sensor:
               line.reserve(chord_w / avg_char_w);
               while (word_idx < words.size()) {
                 const auto &word = words[word_idx];
-                std::string test = line.empty() ? word : (line + ' ' + word);
-                if ((int)(test.length() * avg_char_w) > chord_w) {
+                std::string candidate = line.empty() ? word : (line + ' ' + word);
+                if ((int)(candidate.length() * avg_char_w) > chord_w) {
                   lv_point_t size;
-                  lv_text_get_size(&size, test.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  lv_text_get_size(&size, candidate.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
                   if (size.x > chord_w) {
                     if (word_idx == sw) { line = word; word_idx++; }
                     break;
                   }
                 }
-                line = test;
+                line = candidate;
                 word_idx++;
               }
               if (word_idx > sw) lv_label_set_text(lines[row], line.c_str());
@@ -1937,16 +1925,16 @@ text_sensor:
               line.reserve(chord_w / avg_char_w);
               while (word_idx < words.size()) {
                 const auto &word = words[word_idx];
-                std::string test = line.empty() ? word : (line + ' ' + word);
-                if ((int)(test.length() * avg_char_w) > chord_w) {
+                std::string candidate = line.empty() ? word : (line + ' ' + word);
+                if ((int)(candidate.length() * avg_char_w) > chord_w) {
                   lv_point_t size;
-                  lv_text_get_size(&size, test.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  lv_text_get_size(&size, candidate.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
                   if (size.x > chord_w) {
                     if (word_idx == start_word) { line = word; word_idx++; }
                     break;
                   }
                 }
-                line = test;
+                line = candidate;
                 word_idx++;
               }
               if (word_idx > start_word) {

@@ -1753,15 +1753,16 @@ text_sensor:
               line.reserve(chord_w / avg_char_w);
               while (word_idx < words.size()) {
                 const auto &word = words[word_idx];
-                std::string test = line.empty() ? word : (line + ' ' + word);
-                if ((int)(test.length() * avg_char_w) > chord_w) {
-                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
-                  if (w > chord_w) {
+                std::string candidate = line.empty() ? word : (line + ' ' + word);
+                if ((int)(candidate.length() * avg_char_w) > chord_w) {
+                  lv_point_t size;
+                  lv_text_get_size(&size, candidate.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  if (size.x > chord_w) {
                     if (word_idx == sw) { line = word; word_idx++; }
                     break;
                   }
                 }
-                line = test;
+                line = candidate;
                 word_idx++;
               }
               if (word_idx > sw) lv_label_set_text(lines[row], line.c_str());
@@ -1809,15 +1810,16 @@ text_sensor:
               line.reserve(chord_w / avg_char_w);
               while (word_idx < words.size()) {
                 const auto &word = words[word_idx];
-                std::string test = line.empty() ? word : (line + ' ' + word);
-                if ((int)(test.length() * avg_char_w) > chord_w) {
-                  lv_coord_t w = lv_txt_get_width(test.c_str(), test.length(), font, 0, LV_TEXT_FLAG_NONE);
-                  if (w > chord_w) {
+                std::string candidate = line.empty() ? word : (line + ' ' + word);
+                if ((int)(candidate.length() * avg_char_w) > chord_w) {
+                  lv_point_t size;
+                  lv_text_get_size(&size, candidate.c_str(), font, 0, 0, INT32_MAX, LV_TEXT_FLAG_NONE);
+                  if (size.x > chord_w) {
                     if (word_idx == start_word) { line = word; word_idx++; }
                     break;
                   }
                 }
-                line = test;
+                line = candidate;
                 word_idx++;
               }
               if (word_idx > start_word) {
