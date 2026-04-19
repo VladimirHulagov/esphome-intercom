@@ -5,7 +5,9 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-native-blue)](https://www.home-assistant.io)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-This repo provides full-duplex intercom and Voice Assistant running side-by-side on a single ESP32-S3 or ESP32-P4: shared microphone, shared speaker, ESP-SR echo cancellation, optional dual-mic beamforming, audio mixer with ducking, and a Lovelace card. From a one-ESP full-duplex doorbell to a PBX-like multi-device intercom over Home Assistant, with ready-to-flash YAML configs for the hardware that has actually been tested.
+From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom over Home Assistant, all the way to a complete Voice Assistant setup with wake word detection, echo cancellation and an LVGL touchscreen UI. Each tier is a standalone configuration, and ready-to-flash YAML files are provided for the ESP32-S3 and ESP32-P4 hardware that has actually been tested.
+
+Under the hood: full-duplex I²S on a single bus, ESP-SR echo cancellation, optional dual-mic beamforming, audio mixer with ducking, native Home Assistant integration and a Lovelace card.
 
 ![Dashboard Preview](docs/images/dashboard.png)
 
