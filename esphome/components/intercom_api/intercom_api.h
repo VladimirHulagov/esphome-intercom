@@ -219,7 +219,7 @@ class IntercomApi : public Component {
   const char *get_call_state_str() const { return call_state_to_str(this->call_state_.load(std::memory_order_acquire)); }
 
  protected:
-  // Returns true when intercom_api has its own AEC (aec_id configured on intercom_api component)
+  // Returns true when intercom_api has its own AEC (processor_id configured on intercom_api component)
   // When false, speaker_task and tx_task are eliminated to save ~34KB internal RAM
   bool has_intercom_processor_() const {
 #ifdef USE_AUDIO_PROCESSOR

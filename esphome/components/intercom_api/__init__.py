@@ -19,7 +19,7 @@ AUTO_LOAD = ["switch", "number", "text_sensor"]
 CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 
-CONF_AEC_ID = "aec_id"
+CONF_PROCESSOR_ID = "processor_id"
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_ON_RINGING = "on_ringing"
@@ -83,7 +83,7 @@ CONFIG_SCHEMA = cv.Schema(
         # DC offset removal for mics with significant DC bias (e.g., SPH0645)
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
-        cv.Optional(CONF_AEC_ID): _processor_schema,
+        cv.Optional(CONF_PROCESSOR_ID): _processor_schema,
         # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
         cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
         # Ringing timeout: auto-decline call if not answered within this time
@@ -114,11 +114,11 @@ def _final_validate(config):
         return config
 
     # If duplex exists, check for AEC conflict
-    if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
+    if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
         for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
             if isinstance(duplex, dict) and duplex.get("processor_id") is not None:
                 raise cv.Invalid(
-                    "Both intercom_api.aec_id and i2s_audio_duplex.processor_id are configured. "
+                    "Both intercom_api.processor_id and i2s_audio_duplex.processor_id are configured. "
                     "This causes a race condition on the audio processor. "
                     "Use the processor on only ONE component (i2s_audio_duplex recommended)."
                 )
@@ -163,8 +163,8 @@ async def to_code(config):
     from esphome.core import CORE
     cg.add(var.set_device_name(CORE.friendly_name or CORE.name))
 
-    if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
-        aec = await cg.get_variable(config[CONF_AEC_ID])
+    if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
+        aec = await cg.get_variable(config[CONF_PROCESSOR_ID])
         cg.add(var.set_aec(aec))
         cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
         cg.add_define("USE_AUDIO_PROCESSOR")

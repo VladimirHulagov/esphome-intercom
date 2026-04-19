@@ -161,7 +161,7 @@ intercom_api:
   microphone: mic_component
   speaker: spk_component
   dc_offset_removal: true     # SPH0645 has DC bias that must be removed
-  aec_id: aec_processor             # Links to esp_aec for echo cancellation
+  processor_id: aec_processor       # Links to esp_aec for echo cancellation
   ringing_timeout: 30s        # Auto-decline unanswered calls
 
   # === FSM event callbacks ===
