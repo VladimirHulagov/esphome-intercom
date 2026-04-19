@@ -22,4 +22,4 @@ Each ESPHome component ships its own README with the full option list, YAML snip
 - [`esp_afe`](../esphome/components/esp_afe/README.md), the full Espressif AFE pipeline (AEC + NS + VAD + AGC, optional dual-mic beamforming).
 - [`audio_processor`](../esphome/components/audio_processor/README.md), the abstract processor interface that `esp_aec` and `esp_afe` implement.
 - [`mdns_discovery`](../esphome/components/mdns_discovery/README.md), mDNS peer discovery for full-mode intercom.
-- [`old_intercom_udp`](../esphome/components/old_intercom_udp/README.md), the deprecated UDP-based predecessor kept for backward compatibility.
+- [`old_intercom_udp`](../esphome/components/old_intercom_udp/README.md), the UDP-based predecessor of `intercom_api`. Kept for special cases where a server-less, HA-less, point-to-point UDP audio link is preferable to the TCP server (baby monitor, two-room direct link, mesh-only setups). Use `intercom_api` for everything else.
