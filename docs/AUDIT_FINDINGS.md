@@ -160,3 +160,42 @@ Severity scale:
 - **1.5 (generic-s3-full.yaml not renamed)**: confirm with user whether to rename for consistency.
 - **1.6 (generic-s3-dual-intercom WIP ringtone)**: either fix or drop from public shipping list.
 - **5.2 (socket quota)**: once implemented, reassess whether `CONFIG_LWIP_MAX_SOCKETS=16` override is still needed.
+
+---
+
+## Round-2 status (2026-04-19)
+
+Round 1 closed 14 commits (phases A–E largely applied). Round 2 is a
+targeted follow-up on `audio-core-v2-audit` that addresses the patterns
+the round-1 scope explicitly left alone. Plan:
+`~/.claude/plans/ticklish-skipping-puddle.md`. Deliverables already on disk:
+[`LIBRARY_ALTERNATIVES.md`](LIBRARY_ALTERNATIVES.md),
+[`PATTERN_AUDIT.md`](PATTERN_AUDIT.md), [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+### Closed in round 2
+
+| # | Status | Notes |
+|---|---|---|
+| **P2 surgical** (mic_ref_count lost across restart) | CLOSED | Commit `05ac62f`. Save/restore around internal restart. Validated on WS3. Structural follow-up P2a in Phase 2. |
+| **P7 surgical** (static TCB reuse corruption) | CLOSED | Commit `94e553c`. Feed/fetch tasks use dynamic `xTaskCreatePinnedToCore`. Validated on WS3 under rapid toggle stress. Structural follow-up P7/P3 in Phase 2b. |
+| **4.1 VAD state log demote** | PARTIAL | One `ESP_LOGI` in `esp_afe.cpp` VAD transition demoted to `LOGD` as part of `94e553c`. Remaining log sites queued in Phase 3. |
+
+### Open — queued for round-2 Phase 2 (structural refactor)
+
+| # | Target | Phase |
+|---|---|:--:|
+| P2 structural (refcount → consumer registry) | `i2s_audio_duplex` | 2a |
+| P3/P7 structural (task-alive + paused flag) | `esp_afe` | 2b |
+| P4 (AEC ref four-path → polymorphic) | `i2s_audio_duplex` | 2c |
+| P5 (all-features-disabled) | documentation, `esp_afe` | 2d (done in `ARCHITECTURE.md` §7) |
+| P1 (drain protocol class-level doc) | `esp_afe.h` | 2e |
+| P6 (FIR lazy-init rename) | `i2s_audio_duplex` | 2f |
+| 4.1/4.2/4.3 (log systematic pass + dump_config) | all components | 3 |
+| 9.* (professional READMEs + DEPLOYMENT_GUIDE) | docs | 4 |
+
+### Open — deferred past round 2
+
+- **Protobuf wire format** (LIBRARY_ALTERNATIVES §5): no breaking-change budget.
+- **S2 / S4 YAML examples** (8.1, 8.2): user scope decision — skipped.
+- **FIR migration to `dsps_fird_s16_aes3`**: design pending
+  (`project_fir_migration_design.md`), not applied.

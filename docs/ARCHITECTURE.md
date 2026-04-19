@@ -1,0 +1,414 @@
+# Architecture — audio-core-v2
+
+Target audience: a contributor who has never seen this repo. Goal: explain how
+the audio stack is decomposed, which task owns which buffer, and where the
+non-obvious decisions live — so a new reader can orient in one sitting without
+reading every `.cpp`.
+
+Reference hardware for this document: Waveshare ESP32-S3 Touch LCD 2.1B
+(ES8311 speaker codec + ES7210 TDM 2-mic ADC). P4 and Xiaozhi follow the same
+layout with minor transport differences noted inline.
+
+---
+
+## 1. Component map
+
+```
+                          ┌────────────────────┐
+                          │ ESPHome core        │
+                          │ (WiFi, API, logger) │
+                          └──────────┬──────────┘
+                                     │
+          ┌──────────────────────────┴──────────────────────────┐
+          │                                                     │
+          ▼                                                     ▼
+ ┌─────────────────┐   raw mic frames     ┌───────────────────────────────┐
+ │ i2s_audio_duplex│ ───────────────────▶ │ audio_processor               │
+ │ (transport)     │   (via callbacks)    │ (abstract pipeline interface) │
+ └────────┬────────┘                      └──────────┬────────────────────┘
+          │                                          │
+          │ speaker PCM                              │ implementations:
+          ▼                                          │   • esp_afe (full AFE)
+     ES8311 DAC                                      │   • esp_aec (AEC only)
+                                                     │   • passthrough
+                                                     ▼
+                                       ┌──────────────────────────────┐
+                                       │ Consumers (register at setup)│
+                                       │  • intercom_api (TX)         │
+                                       │  • micro_wake_word (MWW)     │
+                                       │  • voice_assistant (VA)      │
+                                       └──────────────────────────────┘
+```
+
+Ownership rules:
+- `i2s_audio_duplex` owns the I²S peripheral, DMA buffers and the audio task.
+  It knows nothing about AEC/BSS; it just moves frames.
+- `audio_processor` is the contract. It takes an interleaved mic frame and
+  returns an interleaved mic frame, optionally with VAD/beamforming metadata.
+- `esp_afe` / `esp_aec` are `audio_processor` implementations wrapping
+  Espressif's esp-sr library. They own their worker tasks.
+- Consumers register with `i2s_audio_duplex` to receive processed mic frames.
+  They never talk to the processor directly.
+
+---
+
+## 2. Threading model
+
+All our components share three conventions:
+
+1. **Realtime I/O on Core 0**, inference and UI on Core 1.
+2. **Hot path priority ≥ 19**, heavy worker priority ≤ 5, so BSS/AEC
+   saturation can never starve I²S.
+3. **No allocation in the audio task** after `setup()`. Buffers pre-sized
+   for worst case (2-mic MR), sub-slices used at runtime.
+
+| Task | Component | Core | Priority | Stack | Role |
+|------|-----------|:---:|:-------:|:-----:|------|
+| `i2s_audio_task` | `i2s_audio_duplex` | 0 | 19 | 8 KB PSRAM | I²S read/write, decimation, callbacks |
+| `afe_feed` | `esp_afe` | 1 | 5 | 12 KB | Pops frames, calls `afe_handle_->feed()` |
+| `afe_fetch` | `esp_afe` | 1 | 7 (`task_priority_ − 1`) | 4 KB | Blocks on `fetch_with_delay()`, writes ring |
+| `intercom_srv` | `intercom_api` | 1 | 5 | PSRAM static | TCP accept/read/write |
+| `intercom_tx` | `intercom_api` | 0 | 5 | PSRAM static | Mic capture → AEC → network (AEC-own mode) |
+| `intercom_spk` | `intercom_api` | 0 | 4 | PSRAM static | Speaker playback + AEC reference |
+| WiFi / lwIP / TCP-IP | ESP-IDF | 0/1 | 18/23 | — | System |
+| MWW inference | `micro_wake_word` | 1 | 1 | — | TFLite inference |
+| LVGL | `display` | 1 | 1 | — | UI render |
+
+Why the priority choices:
+- **I²S at 19** is between lwIP (18) and WiFi (23): high enough that network
+  can't starve audio, low enough that WiFi stays responsive.
+- **feed_task at 5** matches the esp-skainet reference. BSS worker at equal
+  priority runs on the same core with round-robin; feed() can block on the
+  esp-sr internal ring without affecting the realtime path.
+- **speaker/MWW/LVGL at 1** is the ESPHome convention for non-realtime work
+  that can tolerate starvation under I/O pressure.
+
+Core affinity:
+- Core 0 is the canonical Espressif AEC core (voice pipeline + ES7210 DMA).
+- Core 1 is reserved for inference (MWW), UI (LVGL) and the AFE workers.
+  BSS dual-mic workers share core 1 with MWW; priority gap keeps them
+  cooperative.
+
+See `project_session_2026_04_18.md` memory for the JTAG evidence that
+drove the 2-mic `feed_task` to a dedicated task at prio 5 (was failing as
+inline caller).
+
+---
+
+## 3. Data flow — S3 full AFE (MMR: 2-mic BSS + AEC + NS + AGC + VAD)
+
+One frame = 32 ms = 512 samples @ 16 kHz per channel.
+
+```
+  ES7210 (2 mic + ref TDM) ─DMA─▶ i2s_audio_task (core 0, prio 19)
+                                    │
+                                    │ decimate 48k→16k (FIR esp-dsp)
+                                    │ build interleaved frame
+                                    │ raw_mic_callback (intercom_tx_passthrough,
+                                    │                   diagnostics)
+                                    ▼
+                            audio_processor->process(frame)
+                              = esp_afe::process()
+                                    │
+                                    │ assemble full feed frame (mic L, mic R,
+                                    │                            reference)
+                                    │ push NOSPLIT into feed_input_ring_
+                                    │ (non-blocking, atomic)
+                                    ▼
+                            afe_feed task (core 1, prio 5)
+                                    │
+                                    │ pop frame
+                                    │ afe_handle_->feed()   ← BSS worker fires
+                                    │                         here, may block
+                                    ▼
+                            [esp-sr internal ring, owned by esp-sr]
+                                    │
+                                    ▼
+                            afe_fetch task (core 1, prio 7)
+                                    │
+                                    │ afe_fetch_with_delay()  ← returns
+                                    │                           processed mic +
+                                    │                           VAD state
+                                    │ push into fetch_output_ring_
+                                    ▼
+                            audio_processor->process() return
+                              (reads fetch_output_ring_ non-blocking)
+                                    ▼
+                          i2s_audio_task emits mic_callback(frame)
+                                    │
+                       ┌────────────┼────────────┬──────────────┐
+                       ▼            ▼            ▼              ▼
+                 intercom_api    MWW        voice_assistant    (user cbs)
+                 TX (if no      inference  start/stream
+                  own AEC)
+```
+
+Timing budget per 32 ms frame:
+- I²S DMA fill: 32 ms (hardware)
+- Decimation + NOSPLIT push: < 1 ms (core 0)
+- feed() BSS + AEC: 5–12 ms (core 1, async)
+- fetch() + ring write: 1–2 ms (core 1, async)
+
+End-to-end latency from mic to consumer: ~96 ms (three 32 ms frame periods,
+two in esp-sr internal buffering).
+
+MR (1-mic) path: same diagram, `total_channels_=2` (mic + ref) instead of 3,
+feed stack still sized for MR worst case (WebRTC NS inline → 12 KB).
+
+---
+
+## 4. `audio_processor` contract
+
+This is the only interface consumers see. Its stability is what lets
+esp_afe / esp_aec / passthrough be hot-swappable.
+
+```cpp
+class AudioProcessor {
+ public:
+  // Stable identity: sample rate, mic channels, frame size.
+  virtual FrameSpec frame_spec() const = 0;
+
+  // Monotonic counter. Increments whenever frame_spec() changes
+  // (e.g. SE on↔off flips mic_channels between 2 and 1). Consumers
+  // that cache buffer sizes observe this and reallocate.
+  virtual uint32_t frame_spec_revision() const = 0;
+
+  // Feed one frame in, get one frame out. In-place safe.
+  // Must not block; returns false if the processor is paused.
+  virtual bool process(const int16_t *in, int16_t *out) = 0;
+
+  // Optional: VAD state, beamforming direction, etc.
+  virtual ProcessorState state() const { return {}; }
+};
+```
+
+Invariants the processor promises:
+1. `frame_spec()` is stable between `frame_spec_revision()` bumps.
+2. `process()` is call-from-any-task safe but is **not** concurrent-safe.
+   `i2s_audio_duplex` serialises all calls from its audio task.
+3. Output frame shape always matches `frame_spec()` after the bump has been
+   observed.
+
+Invariants the caller must respect:
+1. Observe `frame_spec_revision()` before reading `frame_spec()` each cycle.
+2. Never call `process()` concurrently from multiple tasks.
+3. If frame_spec changes, internal buffers (decimator ratio, ref extraction,
+   ring-buffer sizes) must be recomputed before next call.
+
+See `i2s_audio_duplex.cpp` `audio_task_()` revision-observer loop and the
+in-flight Phase 2b work that will let that loop re-init in-place instead of
+self-destructing the task.
+
+---
+
+## 5. Drain protocol (config change without stopping the task)
+
+AEC toggle, SE toggle, NS toggle: all change the esp-sr instance shape
+without tearing down `i2s_audio_duplex`. Implementation is a lock-free
+three-state handshake between `process()` (hot path) and
+`set_aec_enabled_runtime_()` / `recreate_instance_()` (config path).
+
+The three atomics:
+
+```
+process_active_  : set by process() on entry, cleared on exit
+drain_requested_ : set by config task to request quiesce
+config_epoch_    : bumped on each successful swap
+```
+
+Sequence, config task side:
+```
+  drain_requested_ = true
+  wait until process_active_ == 0 (spin with yield, bounded)
+  take config_mutex_
+  free old esp-sr instance
+  create new esp-sr instance
+  bump config_epoch_
+  release config_mutex_
+  drain_requested_ = false
+```
+
+Sequence, process() side:
+```
+  if (drain_requested_) return paused-output
+  process_active_ = true
+  … do work …
+  process_active_ = false
+```
+
+Why atomics, not a mutex on the hot path: asymmetric cost. The hot path runs
+at 31 Hz; the config path at most once per second during user toggles. A
+mutex would pay lock/unlock on every frame; atomics pay only under a flag
+that is normally false.
+
+Full context: `docs/LIBRARY_ALTERNATIVES.md` section 6, `docs/PATTERN_AUDIT.md`
+P1. Phase 2e adds a class-level block comment to `esp_afe.h` so this protocol
+is documented in code, not just here.
+
+---
+
+## 6. Notable design decisions (the non-obvious ones)
+
+### 6.1 Why `i2s_audio_duplex` owns the audio task, not `audio_processor`
+
+Historical: the processor was originally inside the transport. Splitting it
+out made MMR→MR reconfigure possible and let intercom-only builds drop the
+AFE pipeline entirely. Downside: the transport has to observe
+`frame_spec_revision()` which feels inverted.
+
+Alternative considered: move the task into the processor, let the transport
+be a pure DMA pump. Rejected because: the transport has hardware knowledge
+(TDM vs stereo, decimation ratio, reference channel placement) that the
+processor does not want to know, and two of the four use cases
+(intercom-only, intercom+AEC) don't have an AFE-style processor at all.
+
+### 6.2 Why the consumer list in `i2s_audio_duplex`, not the processor
+
+Consumers want raw mic frames (diagnostics, intercom passthrough) *and*
+processed frames (MWW, VA). The transport is the only component that sees
+both. Putting the consumer list in the processor would force the transport
+to re-plumb raw callbacks separately.
+
+### 6.3 Why esp-sr lives behind `audio_processor` and not used directly
+
+Three reasons: (a) the passthrough and esp_aec implementations don't need
+esp-sr, (b) frame_spec_revision is a narrower contract than esp-sr's runtime
+reconfigure API, (c) unit-testable shape: the contract can be mocked without
+bringing up DMA.
+
+### 6.4 Why static-allocation PSRAM stacks in `intercom_api`
+
+PSRAM stacks on S3/P4 are the ESPHome-blessed pattern for large TCP
+server tasks where stack peak is known. Internal RAM stays free for BSS
+worker and MWW inference. See `intercom_api/intercom_api.h:120+` for the
+sizing rationale in comments.
+
+### 6.5 Why dynamic tasks in `esp_afe` (as of commit `94e553c`)
+
+Static TCBs were re-used across stop/start. Under a rapid burst of
+reconfigure events, FreeRTOS IDLE on core 1 did not clean the previous task
+before the static TCB was re-initialised, corrupting the ready list and
+crashing in `prvAddNewTaskToReadyList`. Dynamic `xTaskCreatePinnedToCore`
+pays a ~16 KB heap churn per reconfigure; on a 260 KB internal heap this is
+acceptable. Phase 2b makes this debt unnecessary by keeping the task alive
+across config changes (paused flag + esp-sr instance swap under mutex).
+
+### 6.6 Why `mic_ref_count_` exists (and why it's about to be replaced)
+
+Consumers register once at setup. The refcount approach mirrored ESPHome's
+`start_mic` / `stop_mic` convention and allowed nesting. The bug:
+`stop()` zeroes it, `start()` does not restore; a frame_spec change leaves
+consumers disconnected forever. Surgical fix (commit `05ac62f`) saves and
+restores. Structural fix (Phase 2a) replaces the counter with an opaque
+token registry that survives `stop()` by construction.
+
+---
+
+## 7. The "all features disabled" fast path (P5 from PATTERN_AUDIT)
+
+`esp_afe` supports `aec_enabled=false`, `se_enabled=false`, `ns_enabled=false`,
+`agc_enabled=false`. With all four off, the esp-sr instance has nothing to
+do and `process()` short-circuits to a memcpy.
+
+Why it exists: symmetric config surface. Users can disable any subset,
+including all. A `dump_config` that says "all disabled — component is a
+memcpy" is less surprising than one that errors out.
+
+Why we keep it: it costs nothing (a single `if` on the hot path), has no
+runtime risk, and is exercised during reconfigure transitions (brief windows
+where a user has toggled all features off before re-enabling one). Removing
+it would force consumers to drop the processor entirely in this edge case,
+which they can't easily do at runtime.
+
+Verdict: keep, documented here and in `dump_config` output.
+
+---
+
+## 8. If rebuilt today
+
+Questions a fresh designer would ask, and our current answer.
+
+### 8.1 Should `audio_processor` own its task?
+
+**Current**: no, transport owns the single audio task, processor exposes
+`process()` synchronously and runs its own async workers internally.
+
+**Alternative**: processor owns a task, transport posts frames to a queue.
+Cleaner separation.
+
+**Why we didn't**: the intercom-only build has no processor task to own
+anything. Two of four use cases would have an empty abstraction.
+
+**Would revisit if**: a new use case emerges where processor is always
+present and transport is pluggable. Not today.
+
+### 8.2 Should we use Protobuf for the intercom wire format?
+
+**Current**: hand-packed struct (4-byte header + PCM).
+
+**Alternative**: Protobuf with HA native integration.
+
+**Why we didn't**: see `LIBRARY_ALTERNATIVES.md` §5 — no client today
+justifies the breakage. Deferred until HA integration is a real
+requirement.
+
+### 8.3 Should the drain protocol be a FreeRTOS EventGroup?
+
+**Current**: three atomics.
+
+**Alternative**: `xEventGroupWaitBits` / `xEventGroupSetBits`.
+
+**Why we didn't**: atomics are lock-free on the hot path; EventGroup is not.
+EventGroup gives a blocking wait on the config side for free, which atomics
+simulate with a bounded spin. For asymmetric workloads (31 Hz hot path,
+~1 Hz config) the atomic implementation wins. See `LIBRARY_ALTERNATIVES.md`
+§6.
+
+### 8.4 Should we have a test matrix of real YAMLs for S2 / S4?
+
+**Current**: S1 (intercom only) and S3 (full AFE) have YAMLs in
+`yamls/full-experience/`. S2 (intercom+AEC standalone) and S4 (duplex
+standalone) are verified only by code review.
+
+**Why we didn't** in round 2: user scope decision — not worth the
+maintenance surface for configurations that aren't on any shipping device.
+
+**Would revisit if**: a user asks for one of those configs, or we hit a
+reconfigure bug that only those paths would catch.
+
+### 8.5 Should the reference-channel extraction be a separate class?
+
+**Current**: inline in `i2s_audio_duplex::process_aec_and_callbacks_` with
+four code paths (TDM slot, stereo L, ring buffer, previous frame).
+
+**Alternative**: `AecReferenceSource` polymorphic hierarchy, one class per
+path.
+
+**Why we're changing it**: Phase 2c does exactly this. The four paths have
+diverged enough that inline conditionals obscure intent; vtable cost
+(~20 ns/frame) is trivial against the AEC processing cost.
+
+---
+
+## 9. Where to look for what
+
+| Question | File |
+|---|---|
+| How is a mic frame delivered to consumers? | `i2s_audio_duplex.cpp` `audio_task_()` |
+| How does the AFE pipeline swap config without glitches? | `esp_afe.cpp` `recreate_instance_()` + drain protocol |
+| Where is the TCP wire format defined? | `intercom_api/intercom_protocol.h` |
+| How is PSRAM vs internal RAM placement decided? | `audio_processor/ring_buffer_caps.h` |
+| Where do I add a new consumer? | Call `i2s_audio_duplex::register_mic_consumer()` (post Phase 2a) or `start_mic()` (current) |
+| How do I add a new processor implementation? | Subclass `audio_processor.h` `AudioProcessor`, ship as new component |
+| What gets stripped at `logger.level: INFO`? | `LOGV` and `LOGD` — see Phase 3 strip verification |
+
+---
+
+## 10. Related docs
+
+- [`LIBRARY_ALTERNATIVES.md`](LIBRARY_ALTERNATIVES.md) — library substitution
+  report, 7 areas, all KEEP verdicts with evidence.
+- [`PATTERN_AUDIT.md`](PATTERN_AUDIT.md) — P1–P7 pattern verdicts, debt
+  tracking against round-2 phases.
+- [`AUDIT_FINDINGS.md`](AUDIT_FINDINGS.md) — round-1 finding triage, living
+  document with closed / open / deferred status.
