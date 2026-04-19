@@ -131,7 +131,7 @@ void I2SAudioDuplexMicrophone::loop() {
         break;
       }
       ESP_LOGD(TAG, "Microphone started");
-      this->parent_->start_mic();
+      this->parent_->register_mic_consumer(this);
       this->state_ = microphone::STATE_RUNNING;
       if (this->event_group_ != nullptr) {
         xEventGroupSetBits(this->event_group_, EVENT_STARTED);
@@ -143,7 +143,7 @@ void I2SAudioDuplexMicrophone::loop() {
 
     case microphone::STATE_STOPPING:
       ESP_LOGD(TAG, "Microphone stopped");
-      this->parent_->stop_mic();
+      this->parent_->unregister_mic_consumer(this);
       this->state_ = microphone::STATE_STOPPED;
       if (this->event_group_ != nullptr) {
         xEventGroupSetBits(this->event_group_, EVENT_STOPPED);

@@ -148,19 +148,13 @@ void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
 }
 
 void I2SAudioDuplex::loop() {
-  // Handle processor frame_spec change: audio task exited, restart with new allocations.
-  // stop() zeroes mic_ref_count_, which gates raw_mic_callbacks_ (MWW) and
-  // mic_callbacks_ (VA / intercom TX) in process_aec_and_callbacks_. Consumers call
-  // start_mic() once at setup and never re-register, so snapshot and restore the
-  // count across the restart to keep the mic path alive.
+  // Handle processor frame_spec change: audio task exited, restart with new
+  // allocations. Consumer registration (mic_consumers_) survives stop()+start()
+  // by construction, so no refcount save/restore is needed here.
   if (this->needs_restart_.exchange(false, std::memory_order_relaxed)) {
     ESP_LOGD(TAG, "Restarting audio task for frame_spec change");
-    int saved_mic_refs = this->mic_ref_count_.load(std::memory_order_relaxed);
     this->stop();
     this->start();
-    if (saved_mic_refs > 0) {
-      this->mic_ref_count_.store(saved_mic_refs, std::memory_order_relaxed);
-    }
   }
 }
 
@@ -565,7 +559,9 @@ void I2SAudioDuplex::stop() {
 
   ESP_LOGI(TAG, "Stopping duplex audio...");
 
-  this->mic_ref_count_.store(0, std::memory_order_relaxed);
+  // Note: mic_consumers_ deliberately NOT cleared here. Consumers stay
+  // registered across stop()/start() so the mic path is reconnected
+  // automatically after an internal restart (frame_spec change).
   this->speaker_running_.store(false, std::memory_order_relaxed);
   this->duplex_running_.store(false, std::memory_order_relaxed);
 
@@ -604,17 +600,55 @@ void I2SAudioDuplex::stop() {
   this->finish_stop_cleanup_();
 }
 
-void I2SAudioDuplex::start_mic() {
-  if (!this->duplex_running_.load(std::memory_order_relaxed)) {
+void I2SAudioDuplex::register_mic_consumer(void *token) {
+  bool needs_start = false;
+  size_t count_after = 0;
+  bool first_consumer = false;
+  {
+    std::lock_guard<std::mutex> lock(this->mic_consumers_mutex_);
+    auto it = std::find(this->mic_consumers_.begin(), this->mic_consumers_.end(), token);
+    if (it != this->mic_consumers_.end()) {
+      return;
+    }
+    first_consumer = this->mic_consumers_.empty();
+    this->mic_consumers_.push_back(token);
+    count_after = this->mic_consumers_.size();
+    this->has_mic_consumers_.store(true, std::memory_order_relaxed);
+    needs_start = !this->duplex_running_.load(std::memory_order_relaxed);
+  }
+  if (first_consumer) {
+    ESP_LOGI(TAG, "Mic consumer registered (token=%p) — mic path active (consumers=%zu)",
+             token, count_after);
+  } else {
+    ESP_LOGD(TAG, "Mic consumer registered (token=%p, consumers=%zu)", token, count_after);
+  }
+  if (needs_start) {
     this->start();
   }
-  this->mic_ref_count_.fetch_add(1, std::memory_order_relaxed);
 }
 
-void I2SAudioDuplex::stop_mic() {
-  int prev = this->mic_ref_count_.fetch_sub(1, std::memory_order_relaxed);
-  if (prev <= 1) {
-    this->mic_ref_count_.store(0, std::memory_order_relaxed);
+void I2SAudioDuplex::unregister_mic_consumer(void *token) {
+  size_t count_after = 0;
+  bool removed = false;
+  bool last_consumer_gone = false;
+  {
+    std::lock_guard<std::mutex> lock(this->mic_consumers_mutex_);
+    auto it = std::find(this->mic_consumers_.begin(), this->mic_consumers_.end(), token);
+    if (it != this->mic_consumers_.end()) {
+      this->mic_consumers_.erase(it);
+      removed = true;
+    }
+    count_after = this->mic_consumers_.size();
+    last_consumer_gone = removed && this->mic_consumers_.empty();
+    this->has_mic_consumers_.store(!this->mic_consumers_.empty(), std::memory_order_relaxed);
+  }
+  if (!removed) {
+    return;
+  }
+  if (last_consumer_gone) {
+    ESP_LOGI(TAG, "Last mic consumer removed (token=%p) — mic path idle", token);
+  } else {
+    ESP_LOGD(TAG, "Mic consumer unregistered (token=%p, consumers=%zu)", token, count_after);
   }
 }
 
@@ -851,7 +885,7 @@ void I2SAudioDuplex::audio_task_() {
     ctx.speaker_volume = this->speaker_volume_.load(std::memory_order_relaxed);
     ctx.speaker_running = this->speaker_running_.load(std::memory_order_relaxed);
     ctx.speaker_paused = this->speaker_paused_.load(std::memory_order_relaxed);
-    ctx.mic_running = this->mic_ref_count_.load(std::memory_order_relaxed) > 0;
+    ctx.mic_running = this->has_mic_consumers_.load(std::memory_order_relaxed);
 
     this->process_rx_path_(ctx);
 

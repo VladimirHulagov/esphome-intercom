@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <vector>
 
 #include "../audio_processor/audio_processor.h"
@@ -435,9 +436,15 @@ class I2SAudioDuplex : public Component {
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
   void add_raw_mic_data_callback(MicDataCallback callback) { this->raw_mic_callbacks_.push_back(callback); }
-  void start_mic();
-  void stop_mic();
-  bool is_mic_running() const { return this->mic_ref_count_.load(std::memory_order_relaxed) > 0; }
+
+  // Consumer registry: each consumer (a microphone wrapper, intercom TX path,
+  // etc.) registers an opaque token. The audio task gates mic callbacks on
+  // has_mic_consumers_. Registration survives an internal stop()+start()
+  // sequence (e.g. frame_spec change), so consumers stay connected across
+  // reconfigure without having to re-register. Idempotent per token.
+  void register_mic_consumer(void *token);
+  void unregister_mic_consumer(void *token);
+  bool is_mic_running() const { return this->has_mic_consumers_.load(std::memory_order_relaxed); }
 
   // Speaker interface: data arrives at bus rate (from mixer/resampler)
   size_t play(const uint8_t *data, size_t len, TickType_t ticks_to_wait = portMAX_DELAY);
@@ -592,7 +599,12 @@ class I2SAudioDuplex : public Component {
 
   // State
   std::atomic<bool> duplex_running_{false};
-  std::atomic<int> mic_ref_count_{0};  // Reference-counted mic (multiple microphone instances)
+  // Cached presence flag read by audio_task_ on the hot path; kept in sync
+  // with mic_consumers_ (below) under mic_consumers_mutex_ on register/unregister.
+  std::atomic<bool> has_mic_consumers_{false};
+  // Opaque consumer tokens; registration survives stop()+start() by construction.
+  std::vector<void *> mic_consumers_;
+  mutable std::mutex mic_consumers_mutex_;
   std::atomic<bool> speaker_running_{false};
   std::atomic<bool> speaker_paused_{false};
   std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
