@@ -26,6 +26,12 @@
 namespace esphome {
 namespace esp_afe {
 
+using audio_processor::AudioFeature;
+using audio_processor::AudioProcessor;
+using audio_processor::FeatureControl;
+using audio_processor::FrameSpec;
+using audio_processor::ProcessorTelemetry;
+
 class EspAfe : public Component, public AudioProcessor {
  public:
   void setup() override;

@@ -30,7 +30,7 @@ def _validate_feature_config(config):
     return config
 
 
-AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
 esp_afe_ns = cg.esphome_ns.namespace("esp_afe")
 EspAfe = esp_afe_ns.class_("EspAfe", cg.Component, AudioProcessor)

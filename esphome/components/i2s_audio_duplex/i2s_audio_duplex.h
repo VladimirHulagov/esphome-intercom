@@ -23,13 +23,13 @@
 #include <functional>
 #include <vector>
 
-// Forward declare audio processor interface
-namespace esphome {
-class AudioProcessor;
-}  // namespace esphome
+#include "../audio_processor/audio_processor.h"
 
 namespace esphome {
 namespace i2s_audio_duplex {
+
+using audio_processor::AudioProcessor;
+using audio_processor::ProcessorTelemetry;
 
 // Maximum listener count for microphone/speaker reference counting
 static constexpr UBaseType_t MAX_LISTENERS = 16;

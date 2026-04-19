@@ -64,7 +64,7 @@ IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondit
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
 IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
 
-AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
 def _processor_schema(value):
     """Validate processor_id: accepts any AudioProcessor (EspAec or EspAfe)."""

@@ -22,7 +22,7 @@ def _validate_esp32_variant(config):
             )
     return config
 
-AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
 esp_aec_ns = cg.esphome_ns.namespace("esp_aec")
 EspAec = esp_aec_ns.class_("EspAec", cg.Component, AudioProcessor)

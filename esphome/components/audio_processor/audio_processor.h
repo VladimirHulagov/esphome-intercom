@@ -3,6 +3,7 @@
 #include <cstddef>
 
 namespace esphome {
+namespace audio_processor {
 
 /// Audio processing features that can be queried and toggled.
 enum class AudioFeature : uint8_t {
@@ -102,4 +103,5 @@ class AudioProcessor {
   virtual uint32_t frame_spec_revision() const { return 0; }
 };
 
+}  // namespace audio_processor
 }  // namespace esphome

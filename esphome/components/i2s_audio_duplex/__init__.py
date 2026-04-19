@@ -71,7 +71,7 @@ StopAction = i2s_audio_duplex_ns.class_("StopAction", automation.Action)
 
 # AudioProcessor abstract interface (defined in audio_processor/audio_processor.h)
 # Both esp_aec::EspAec and future esp_afe::EspAfe inherit from this.
-AudioProcessor = cg.esphome_ns.class_("AudioProcessor")
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
 # I2S port count per SoC variant (from SOC_I2S_NUM in soc_caps.h)
 I2S_PORTS = {

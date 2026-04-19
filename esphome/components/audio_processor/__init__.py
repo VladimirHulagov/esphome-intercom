@@ -6,5 +6,5 @@ import esphome.codegen as cg
 
 CODEOWNERS = ["@n-IA-hane"]
 
-audio_processor_ns = cg.esphome_ns
+audio_processor_ns = cg.esphome_ns.namespace("audio_processor")
 AudioProcessor = audio_processor_ns.class_("AudioProcessor")

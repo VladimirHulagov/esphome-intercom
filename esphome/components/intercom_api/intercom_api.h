@@ -38,6 +38,8 @@
 namespace esphome {
 namespace intercom_api {
 
+using audio_processor::AudioProcessor;
+
 // TCP connection state (low-level)
 enum class ConnectionState : uint8_t {
   DISCONNECTED,
