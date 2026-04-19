@@ -918,18 +918,19 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | YAML | Microphone | Speaker | I2S Mode | AEC | Features |
-|--------|------|------------|---------|----------|-----|----------|
-| **Generic S3 (dual bus)** | `generic-s3-dual-intercom.yaml` | Any I2S MEMS | Any I2S amp | Dual bus | Ring buffer (intercom_api) | Intercom only |
-| **Generic S3 (single bus)** | `generic-s3-duplex-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom only |
-| **Generic S3 (single bus, VA)** | `generic-s3-duplex-va-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom + Media Player + mixer |
-| **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
-| **Xiaozhi Ball V3 (intercom)** | `xiaozhi-ball-v3-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | Intercom only |
-| **Waveshare S3-Audio** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
-| **Waveshare S3-Audio (AFE)** | `waveshare-s3-audio-afe-test.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | AFE SR (AEC+NS+AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
-| **Waveshare P4-Touch** | `waveshare-p4-touch-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
-| **ESP32-S3 Mini** | `esp32-s3-mini-va-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | VA + MWW + Intercom |
-| **ESP32-S3 Mini (intercom)** | `esp32-s3-mini-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | Intercom only |
+| Device | YAML | Microphone | Speaker | I2S Mode | Audio pipeline | Features |
+|--------|------|------------|---------|----------|----------------|----------|
+| **Xiaozhi Ball V3 (AEC)** | [`xiaozhi-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-full-aec.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | VA + MWW + Intercom + LVGL |
+| **Xiaozhi Ball V3 (AFE)** | [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | ES8311 | ES8311 | Single bus | `esp_afe` (AEC + NS + AGC + VAD) | VA + MWW + Intercom + LVGL |
+| **Xiaozhi Ball V3 (intercom)** | [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | Intercom only |
+| **Waveshare S3-Audio (AEC)** | [`waveshare-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-s3-full-aec.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_aec` (SR, MIC3 ref) | VA + MWW + Intercom + LED |
+| **Waveshare S3-Audio (AFE)** | [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
+| **Waveshare P4-Touch (AEC)** | [`waveshare-p4-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-p4-full-aec.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_aec` (SR, MIC3 ref) | VA + MWW + Intercom + LVGL touch |
+| **Waveshare P4-Touch (AFE)** | [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LVGL touch |
+| **ESP32-S3 Mini** | [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
+| **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
+| **Generic S3 (intercom)** | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (direct TX reference) | Intercom only |
+| **Generic S3 (dual bus)** | [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Any I2S MEMS | Any I2S amp | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -1170,7 +1171,7 @@ micro_wake_word:
 
 ### LVGL Display
 
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-va-intercom.yaml` and `waveshare-p4-touch-va-intercom.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-full-aec.yaml` and `waveshare-p4-full-aec.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -1268,26 +1269,33 @@ See [examples/dashboard.yaml](examples/dashboard.yaml) for a complete Lovelace d
 
 ## Example YAML Files
 
-Working configs tested on real hardware, organized by use case:
+Working configs tested on real hardware, organized by use case. Not sure which one to pick? See the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for a decision tree.
 
-### Full Experience (VA + MWW + Intercom + AFE)
+### Full Experience with `esp_aec` (VA + MWW + Intercom, lighter)
 
 | File | Device | Audio |
 |------|--------|-------|
-| [`xiaozhi-full.yaml`](yamls/full-experience/single-bus/xiaozhi-full.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC, AFE (NS+VAD+AGC) |
-| [`waveshare-s3-full.yaml`](yamls/full-experience/single-bus/waveshare-s3-full.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + beamforming |
-| [`waveshare-p4-full.yaml`](yamls/full-experience/single-bus/waveshare-p4-full.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + beamforming, LVGL touch |
-| [`generic-s3-full.yaml`](yamls/full-experience/single-bus/generic-s3-full.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, AFE (NS+VAD+AGC), no display |
-| [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, AEC only, LED feedback |
+| [`xiaozhi-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-full-aec.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC |
+| [`waveshare-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-s3-full-aec.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, MIC3 reference |
+| [`waveshare-p4-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-p4-full-aec.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, MIC3 reference, LVGL touch |
+| [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+
+### Full Experience with `esp_afe` (VA + MWW + Intercom + NS/AGC/VAD, heavier)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, AFE (AEC + NS + AGC + VAD) |
+| [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + BSS beamforming |
+| [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + BSS beamforming, LVGL touch |
 
 ### Intercom Only (no VA, no MWW)
 
 | File | Device | Audio |
 |------|--------|-------|
-| [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, AEC, intercom display |
-| [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, AEC |
-| [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, AEC, LED feedback |
-| [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, AEC |
+| [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, `esp_aec`, intercom display |
+| [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, `esp_aec` |
+| [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+| [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, ring-buffer reference |
 
 ---
 
