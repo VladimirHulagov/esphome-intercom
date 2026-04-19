@@ -37,7 +37,7 @@ Common symptoms and fixes when setting up ESPHome Intercom.
 
 ## Echo or feedback
 
-1. Enable AEC: create an audio processor (`esp_aec` or `esp_afe`) and link with `aec_id` (intercom_api) or `processor_id` (i2s_audio_duplex)
+1. Enable AEC: create an audio processor and link it via `processor_id`. With `i2s_audio_duplex`, both `esp_aec` and `esp_afe` are supported. With `intercom_api` alone (no duplex in front), use `esp_aec` only.
 2. Ensure AEC switch is ON in Home Assistant
 3. Reduce speaker volume
 4. Increase physical distance between mic and speaker

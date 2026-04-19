@@ -27,7 +27,7 @@ Options, actions, conditions, entities, services and automation examples for ESP
 | `mode` | string | `simple` | `simple` (browser only) or `full` (ESP↔ESP) |
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
-| `aec_id` | ID | - | Reference to audio processor (`esp_aec` or `esp_afe`). Accepts any `AudioProcessor` implementation |
+| `processor_id` | ID | - | Reference to an `esp_aec` component. Must be `esp_aec`, not `esp_afe`: when `intercom_api` drives its own mic (no `i2s_audio_duplex` in front), the AFE feed/fetch pipeline cannot be fed correctly. Accepts any `AudioProcessor` implementation at the type level, but only `esp_aec` is supported in practice. |
 | `dc_offset_removal` | bool | false | Remove DC offset (for mics like SPH0645) |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
 
@@ -81,7 +81,7 @@ Two audio processing components are available, both implementing the `AudioProce
   - **Dual-mic (MMR)**: AEC + Beamforming/BSS (~120 KB internal RAM). Spatial voice isolation using 2 microphones
   - Runtime toggle switches, diagnostic sensors, and mode switching in Home Assistant
 
-Both are drop-in replacements: `i2s_audio_duplex` uses `processor_id` and `intercom_api` uses `aec_id` to reference either one.
+They are drop-in replacements **only behind `i2s_audio_duplex`**, which feeds the processor with the fixed 512-sample 16 kHz frames that `esp_afe` requires. When `intercom_api` talks to the processor directly (no `i2s_audio_duplex`, typical of dual-bus MEMS + I2S amp setups), use `esp_aec` only. The AFE pipeline needs a stable producer task that `intercom_api`'s standalone mic path does not provide.
 
 ## esp_aec component
 
