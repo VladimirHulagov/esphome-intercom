@@ -26,8 +26,8 @@
 # =============================================================================
 
 substitutions:
-  name: xiaozhi-ball
-  friendly_name: Xiaozhi ball
+  name: xiaozhi-full-afe
+  friendly_name: Xiaozhi Full AFE
   mic_id: mic_afe
 
   # ---- Local mode: paths relative to this yaml location (4 levels deep in yamls/full-experience/single-bus/aec/) ----
@@ -572,7 +572,7 @@ script:
               led->turn_on().set_rgb(0.0f, 1.0f, 0.0f).set_brightness(0.7f).set_effect("Slow Pulse").perform();
               break;
             case 6:  // VA Thinking: orange fast pulse
-              led->turn_on().set_rgb(1.0f, 0.55f, 0.0f).set_brightness(0.7f).set_effect("Fast Pulse").perform();
+              led->turn_on().set_rgb(1.0f, 1.0f, 0.0f).set_brightness(0.7f).set_effect("Fast Pulse").perform();
               break;
             case 7:  // VA Speaking: blue solid
               led->turn_on().set_rgb(0.0f, 0.0f, 1.0f).set_brightness(1.0f).set_effect("None").perform();

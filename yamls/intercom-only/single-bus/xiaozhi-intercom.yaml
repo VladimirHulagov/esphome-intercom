@@ -19,8 +19,8 @@
 # ==============================================================================
 
 substitutions:
-  name: xiaozhi-ball
-  friendly_name: Xiaozhi ball
+  name: xiaozhi-intercom
+  friendly_name: Xiaozhi Intercom
 
 packages:
   es8311_stereo_ref: !include ../../../packages/codec/es8311_stereo_ref.yaml

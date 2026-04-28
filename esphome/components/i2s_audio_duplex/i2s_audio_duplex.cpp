@@ -73,7 +73,6 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 
 // Audio parameters
 static const size_t DMA_BUFFER_COUNT = 8;
-static const size_t DMA_BUFFER_SIZE = 512;
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
 // Base buffer scaled by decimation_ratio_. At ratio=3 this provides ~256ms capacity,
 // sufficient for stability while avoiding excessive latency from large playback backlogs.
@@ -267,7 +266,12 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
   }
 #endif
   uint32_t max_bytes_per_frame = std::max(tx_bytes_per_frame, rx_bytes_per_frame);
-  uint32_t dma_frame_num = DMA_BUFFER_SIZE;  // 512 default
+  // dma_frame_num scales with sample_rate so each DMA descriptor holds ~10 ms
+  // of audio at any rate. A hard-coded sample count would yield 256 ms total
+  // DMA latency at 16 kHz vs 85 ms at 48 kHz with the same constant, exceeding
+  // the AEC filter tail at low sample rates. esp-skainet boards use the same
+  // ~10 ms/descriptor pattern (e.g. 160 frames/desc at 16 kHz).
+  uint32_t dma_frame_num = std::max<uint32_t>(64, (this->sample_rate_ * 10) / 1000);
   if (max_bytes_per_frame > 0) {
     uint32_t max_frames = 4092 / max_bytes_per_frame;
     if (dma_frame_num > max_frames) {
@@ -702,7 +706,6 @@ size_t I2SAudioDuplex::play(const uint8_t *data, size_t len, TickType_t ticks_to
   if (written > 0) {
     this->last_speaker_audio_ms_.store(millis(), std::memory_order_relaxed);
   }
-
   return written;
 }
 
@@ -1346,7 +1349,10 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
   if (ctx.speaker_running) {
     ctx.speaker_got = this->speaker_buffer_->read((void *) ctx.spk_buffer, ctx.bus_frame_bytes, 0);
     size_t got = ctx.speaker_got;
-    ctx.speaker_underrun = (got == 0 && !ctx.speaker_paused);
+    // Treat partial frames as underrun too (the frame is padded with zero below
+    // and must not be used as AEC reference, otherwise the AEC adaptive filter
+    // sees a half-real / half-silent signal and fails to correlate with the mic).
+    ctx.speaker_underrun = (got < ctx.bus_frame_bytes && !ctx.speaker_paused);
 
     if (ctx.speaker_paused) {
       memset(ctx.spk_buffer, 0, ctx.bus_frame_bytes);
@@ -1388,9 +1394,16 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
       }
     }
   } else if (this->direct_aec_ref_ != nullptr && ctx.processor_enabled) {
-    // Previous frame mode: save for next iteration
-    memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
-    this->direct_aec_ref_valid_ = ctx.speaker_running && !ctx.speaker_paused;
+    // Previous frame mode: save for next iteration ONLY if the frame is
+    // complete. A short-read frame is zero-padded above (process_tx_path_),
+    // and feeding zero-padded TX as AEC reference contaminates the adaptive
+    // filter (mix of real audio + silence does not correlate with the mic).
+    // On a short read we keep the last good direct_aec_ref_ instead.
+    if (ctx.speaker_running && !ctx.speaker_paused &&
+        ctx.speaker_got == ctx.bus_frame_bytes) {
+      memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
+      this->direct_aec_ref_valid_ = true;
+    }
   }
 #endif
 

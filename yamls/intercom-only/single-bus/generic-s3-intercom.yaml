@@ -4,22 +4,18 @@
 # Simple intercom-only config. No media player, no mixer, no VA/MWW.
 # For ESP32 boards where mic and speaker share the SAME I2S bus.
 #
-# AEC defaults validated for single-bus MEMS+amp (intercom-only, no MWW):
-#   esp_aec.mode: voip_high_perf      (non-linear residual echo for human ears)
-#   esp_aec.filter_length: 8          (~128 ms tail at voip 16 ms/frame).
-#                                     With voip modes the per-frame size is
-#                                     half of sr modes, so 8 taps is the
-#                                     equivalent of sr_*'s "filter_length=4"
-#                                     in real milliseconds of echo coverage.
-#                                     Required to absorb a normal living-room
-#                                     reverb (200-400 ms decay).
-#   aec_reference: previous_frame     (default, ~32 ms, no extra ring buffer)
-# Use aec_reference: ring_buffer (with aec_reference_buffer_ms) only if the
-# previous-frame mode shows residual echo on a specific room/hardware combo.
-#
-# Audio pipeline (single-bus, intercom only, no mixer):
-#   MEMS mic → i2s_audio_duplex (48kHz) → FIR x3 → esp_aec (AEC voip_high_perf) → mic_main → intercom TX
+# Audio pipeline:
+#   MEMS mic → i2s_audio_duplex (48kHz) → FIR x3 → esp_aec → mic_main → intercom TX
 #   Intercom RX (16kHz) → resampler → hw_speaker (48kHz) → class-D amp
+#
+# AEC defaults validated for single-bus MEMS+amp (intercom-only, no MWW):
+#   mode: voip_high_perf            residual echo suppressor for human ears
+#   filter_length: 8                ~128 ms tail at voip 16 ms/frame
+#   aec_reference: previous_frame   default, ~16 ms latency, no extra buffer
+#
+# 48kHz bus + FIR decimation is required on no-codec MEMS+amp setups; 16kHz
+# native gives significantly worse AEC. Codec devices with hardware digital
+# loopback (ES8311 stereo / ES7210 TDM) can run at 16kHz native instead.
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
@@ -35,8 +31,8 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3-duplex
-  friendly_name: Generic Esp32-s3 Duplex
+  name: generic-intercom
+  friendly_name: Generic Intercom
 
 # =============================================================================
 # Package: shared intercom state machine

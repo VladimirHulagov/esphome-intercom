@@ -43,8 +43,8 @@
 # =============================================================================
 
 substitutions:
-  name: waveshare-p4-touch
-  friendly_name: Waveshare P4 Touch
+  name: waveshare-p4-full-afe
+  friendly_name: Waveshare P4 Full AFE
   mic_id: mic_aec
 
   # ---- Remote mode (for users, just download and flash) ----

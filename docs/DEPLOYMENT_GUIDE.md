@@ -45,6 +45,7 @@ Follow the first branch that matches your hardware and intent.
 | Xiaozhi intercom-only | ESP32-S3 | 1 | intercom + single | `intercom-only/single-bus/xiaozhi-intercom.yaml` |
 | Generic S3 speaker + MEMS | ESP32-S3 | 1 | intercom + dual | `intercom-only/dual-bus/generic-s3-dual-intercom.yaml` |
 | Generic S3 single-bus MEMS+amp | ESP32-S3 | 1 | intercom + duplex | `intercom-only/single-bus/generic-s3-intercom.yaml` |
+| Generic S3 single-bus MEMS+amp + VA/MWW | ESP32-S3 | 1 | full + aec (SR low-cost) | `full-experience/single-bus/aec/generic-s3-full-aec.yaml` |
 
 ### AEC engine standard: VOIP for intercom-only, SR for full-experience
 

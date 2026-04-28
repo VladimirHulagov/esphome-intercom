@@ -28,8 +28,8 @@
 # =============================================================================
 
 substitutions:
-  name: waveshare-s3-audio
-  friendly_name: Waveshare S3 Audio
+  name: waveshare-s3-full-aec
+  friendly_name: Waveshare S3 Full AEC
 
   # ---- Remote mode (for users, just download and flash) ----
   # Switch to raw/main/ once audio-core-v2 is merged.
@@ -626,7 +626,7 @@ script:
               led->turn_on().set_rgb(1.0f, 0.0f, 0.0f).set_brightness(0.7f).set_effect("Spin").perform();
               break;
             case 6:  // VA Thinking: yellow spin
-              led->turn_on().set_rgb(1.0f, 0.55f, 0.0f).set_brightness(0.7f).set_effect("Spin").perform();
+              led->turn_on().set_rgb(1.0f, 1.0f, 0.0f).set_brightness(0.7f).set_effect("Spin").perform();
               break;
             case 7:  // VA Speaking: blue solid
               led->turn_on().set_rgb(0.3f, 0.3f, 0.7f).set_brightness(0.6f).set_effect("None").perform();

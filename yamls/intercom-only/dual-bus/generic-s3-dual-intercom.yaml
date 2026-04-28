@@ -23,8 +23,8 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3
-  friendly_name: Generic Esp32-s3
+  name: generic-dual-intercom
+  friendly_name: Generic Dual Intercom
 
 # =============================================================================
 # Package: shared intercom state machine
