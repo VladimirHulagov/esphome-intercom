@@ -172,14 +172,21 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Intercom-only standard: stay inside the dios_ssp_aec engine. The two
+    # VOIP modes share the same engine, so a runtime switch never triggers
+    # an esp_aec3 FFT alloc and avoids the silent calloc-fail bug observed
+    # at filter_length>4 on cross-engine transitions. SR modes are not
+    # offered here because no MWW is present in this configuration.
     options:
-      - "sr_low_cost"
-      - "sr_high_perf"
       - "voip_low_cost"
       - "voip_high_perf"
     initial_option: "voip_high_perf"
-    optimistic: true
-    restore_value: true
+    # Non-optimistic: HA reflects the live component mode, not the value the
+    # user clicked. If the switch is rejected (e.g. internal RAM fragmented)
+    # or the component falls back to the previous mode, the select shows the
+    # actual mode rather than a fictitious one.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -196,6 +203,9 @@ select:
             - esp_aec.set_mode:
                 id: aec_processor
                 mode: !lambda 'return x;'
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());
 
 # =============================================================================
 # Numbers

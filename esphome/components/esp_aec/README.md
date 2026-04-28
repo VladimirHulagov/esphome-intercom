@@ -62,8 +62,8 @@ i2s_audio_duplex:
 |--------|------|---------|-------------|
 | `id` | ID | required | Component identifier referenced by `i2s_audio_duplex.processor_id` or `intercom_api.processor_id`. |
 | `sample_rate` | int | 16000 | Must match the sample rate of the consumer. esp-sr's AEC only accepts 16 kHz frames; the upstream component is expected to decimate from the I²S bus rate when needed. |
-| `filter_length` | int | 4 | AEC tail length in 16 ms frames. 4 frames cover ~64 ms of echo. Range 1 to 8. Longer filters absorb more reverberant rooms at higher CPU cost. |
-| `mode` | string | `voip_low_cost` | AEC algorithm. See the table below. For VA + MWW use `sr_low_cost`. For intercom-only without MWW, `voip_low_cost` is acceptable. |
+| `filter_length` | int | 4 | AEC tail length in frames. Frame size depends on `mode`: **32 ms in SR modes, 16 ms in VOIP modes**. Range 1 to 8. Use **4** with SR modes (full-experience with MWW, ~128 ms tail), **8** with VOIP modes (intercom-only, ~128 ms tail). Higher values exit the esp-sr tested range and can trigger silent calloc failures on cross-engine switches. |
+| `mode` | string | `voip_low_cost` | AEC algorithm. Pick the engine to match the use case: **VOIP modes** for intercom-only (residual echo suppressor for human ears), **SR modes** for full-experience with MWW (linear-only, preserves spectral features). Public YAMLs in this repo restrict the runtime select to a single engine per tier — see "Runtime mode switching" below. |
 | `buffers_in_psram` | bool | inherited | Place the AEC working buffers in PSRAM. Defaults to whatever `i2s_audio_duplex.buffers_in_psram` is set to when the duplex component is the consumer. Required on ESP32-S3 in `sr_low_cost` mode (512-sample frames need more memory than internal RAM can usually spare). |
 
 ## AEC modes
@@ -74,8 +74,8 @@ esp-sr ships two completely different AEC engines:
 |------|--------|--------------------------------------|-----|-----------------|-------------|
 | `sr_low_cost` | `esp_aec3` linear | **~22 %** | No | **10/10** | Default for VA + MWW setups |
 | `sr_high_perf` | `esp_aec3` FFT | ~25 % | No | 10/10 | Only when contiguous DMA-capable internal RAM is available |
-| `voip_low_cost` | `dios_ssp_aec` Speex | ~58 % | Yes | 2/10 | Intercom-only without MWW |
-| `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | Rarely; pick `voip_low_cost` first |
+| `voip_low_cost` | `dios_ssp_aec` Speex | ~58 % | Yes | 2/10 | Intercom-only, mild echo, low CPU budget |
+| `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | **Default for intercom-only** (with `filter_length: 8` for 128 ms tail) |
 
 Why `sr_*` is recommended for VA + MWW: the SR engines use a linear-only adaptive filter that preserves the spectral features the wake-word neural model relies on. The VOIP engines add a residual echo suppressor (RES) that distorts those features and drops MWW detection rate from 10/10 to 2/10 in our hardware tests.
 
@@ -98,7 +98,29 @@ Why `sr_*` is recommended for VA + MWW: the SR engines use a linear-only adaptiv
 
 ## Runtime mode switching from Home Assistant
 
-The `AEC Mode` select pattern wires the four modes to a Home Assistant select entity, with the device publishing back the live mode (so a rejected switch does not leave HA showing the wrong value).
+The `AEC Mode` select wires runtime modes to a Home Assistant select entity, with the device publishing back the live mode so a rejected switch never leaves HA showing the wrong value.
+
+**Engine standard**: stay inside one engine per device tier to avoid esp-sr's silent FFT calloc-fail bug on cross-engine transitions at `filter_length > 4`. Public YAMLs restrict the options accordingly.
+
+Intercom-only (no MWW) — VOIP engine only:
+
+```yaml
+select:
+  - platform: template
+    id: aec_mode_select
+    name: "AEC Mode"
+    options:
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "voip_high_perf"
+    optimistic: false
+    restore_value: false
+    set_action:
+      - lambda: 'id(aec_processor).reinit_by_name(x);'
+      - lambda: 'id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());'
+```
+
+Full-experience with MWW — SR engine only:
 
 ```yaml
 select:
@@ -108,17 +130,15 @@ select:
     options:
       - "sr_low_cost"
       - "sr_high_perf"
-      - "voip_low_cost"
-      - "voip_high_perf"
     initial_option: "sr_low_cost"
-    optimistic: false           # do NOT auto-publish; we publish the live mode below
+    optimistic: false
     restore_value: false
     set_action:
       - lambda: 'id(aec_processor).reinit_by_name(x);'
       - lambda: 'id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());'
 ```
 
-`optimistic: false` matters: without it, `template_select::control()` auto-publishes the user-selected value after the action runs, overwriting any rejection.
+`optimistic: false` matters: without it, `template_select::control()` auto-publishes the user-selected value after the action runs, overwriting any rejection (e.g. when `sr_high_perf` cannot allocate the contiguous DMA block).
 
 ## Threading model
 

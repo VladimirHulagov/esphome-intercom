@@ -1642,11 +1642,14 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Full-experience standard: stay inside the esp_aec3 engine. MWW
+    # requires SR modes (the VOIP residual echo suppressor distorts the
+    # spectral features, dropping wake-word detection from 10/10 to 2/10).
+    # Both SR options share the same engine, so a runtime switch never
+    # triggers a dios_ssp tail-buffer alloc.
     options:
       - "sr_low_cost"
       - "sr_high_perf"
-      - "voip_low_cost"
-      - "voip_high_perf"
     initial_option: "sr_low_cost"
     # Non-optimistic: template_select::control() runs our set_action trigger
     # first, THEN publishes `index` if optimistic=true, overwriting any state

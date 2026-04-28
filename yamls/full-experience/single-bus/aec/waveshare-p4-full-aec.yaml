@@ -2491,14 +2491,21 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Full-experience standard: stay inside the esp_aec3 engine. MWW
+    # requires SR modes (the VOIP residual echo suppressor distorts the
+    # spectral features, dropping wake-word detection from 10/10 to 2/10).
+    # Both SR options share the same engine, so a runtime switch never
+    # triggers a dios_ssp tail-buffer alloc.
     options:
       - "sr_low_cost"
       - "sr_high_perf"
-      - "voip_low_cost"
-      - "voip_high_perf"
     initial_option: "sr_low_cost"
-    optimistic: true
-    restore_value: true
+    # Non-optimistic: HA reflects the live component mode, not the value the
+    # user clicked. If the switch is rejected (e.g. internal RAM fragmented)
+    # or the component falls back to the previous mode, the select shows the
+    # actual mode rather than a fictitious one.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -2532,6 +2539,9 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());
 
 # =============================================================================
 # TEXT SENSORS

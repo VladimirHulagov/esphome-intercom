@@ -44,6 +44,34 @@ Follow the first branch that matches your hardware and intent.
 | Xiaozhi Ball V3 | ESP32-S3 | 1 (ES8311 ADC) | full + afe (SR low-cost) | `full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml` |
 | Xiaozhi intercom-only | ESP32-S3 | 1 | intercom + single | `intercom-only/single-bus/xiaozhi-intercom.yaml` |
 | Generic S3 speaker + MEMS | ESP32-S3 | 1 | intercom + dual | `intercom-only/dual-bus/generic-s3-dual-intercom.yaml` |
+| Generic S3 single-bus MEMS+amp | ESP32-S3 | 1 | intercom + duplex | `intercom-only/single-bus/generic-s3-intercom.yaml` |
+
+### AEC engine standard: VOIP for intercom-only, SR for full-experience
+
+The `AEC Mode` select in every public YAML is restricted to a single esp-sr
+engine to keep runtime mode switches stable. esp-sr's `aec_create()` has a
+silent FFT-table calloc-fail bug on cross-engine transitions when
+`filter_length > 4`; staying inside one engine sidesteps it entirely.
+
+| Tier | filter_length | mode default | select runtime | Engine |
+|---|---|---|---|---|
+| **Intercom-only** (no MWW) | 8 | `voip_high_perf` | `voip_low_cost`, `voip_high_perf` | dios_ssp_aec |
+| **Full-experience AEC** (with MWW) | 4 | `sr_low_cost` | `sr_low_cost`, `sr_high_perf` | esp_aec3 |
+
+Why the split:
+
+- **Intercom-only** wants human-ear quality, so the VOIP modes' non-linear
+  residual echo suppressor is exactly what you want. `filter_length: 8` is
+  required because voip frames are 16 ms each (vs 32 ms in SR), so 8 taps
+  give the same 128 ms of echo coverage as `filter_length: 4` in SR.
+- **Full-experience AEC** runs MWW on the post-AEC mic, and the VOIP RES
+  destroys the spectral features the wake-word neural model relies on
+  (10/10 → 2/10 detection rate observed). SR modes are linear-only and
+  preserve the spectrum, so MWW keeps working.
+
+Default `aec_reference: previous_frame` works for both. Switch to
+`aec_reference: ring_buffer` (with `aec_reference_buffer_ms`) only if a
+specific room/hardware combo shows residual echo with the default.
 
 ## Hardware sizing
 

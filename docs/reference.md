@@ -90,8 +90,8 @@ They are drop-in replacements **only behind `i2s_audio_duplex`**, which feeds th
 |--------|------|---------|-------------|
 | `id` | ID | Required | Component ID |
 | `sample_rate` | int | 16000 | Must match audio sample rate |
-| `filter_length` | int | 4 | Echo tail in frames (4 = 64ms) |
-| `mode` | string | `voip_low_cost` | AEC algorithm mode |
+| `filter_length` | int | 4 | Echo tail in frames. Range 1 to 8. Frame size depends on `mode`: 32 ms in SR modes, 16 ms in VOIP modes. Use **4** with SR modes (full-experience with MWW, ~128 ms tail), **8** with VOIP modes (intercom-only, ~128 ms tail). |
+| `mode` | string | `voip_low_cost` | AEC algorithm mode. Pick the engine to match the use case: **VOIP modes** for intercom-only (human ears, residual echo suppressor active), **SR modes** for full-experience with MWW (linear-only, preserves spectral features). Do not mix engines at runtime, see "AEC engine standard" below. |
 
 **AEC modes** (ESP-SR library, two completely different engines):
 
@@ -99,8 +99,25 @@ They are drop-in replacements **only behind `i2s_audio_duplex`**, which feeds th
 |------|--------|-------------|-----|-----------------|-------------|
 | `sr_low_cost` | `esp_aec3` (linear) | **~22 %** | No | **10/10** | **Yes, for VA + MWW** |
 | `sr_high_perf` | `esp_aec3` (FFT) | ~25 % | No | 10/10 | Only when DMA-capable internal RAM is available |
-| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58 % | Yes | 2/10 | Only if MWW is not needed |
-| `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | No |
+| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58 % | Yes | 2/10 | Intercom-only, mild echo, low CPU budget |
+| `voip_high_perf` | `dios_ssp_aec` | ~64 % | Yes | 2/10 | **Default for intercom-only** (with `filter_length: 8`) |
+
+### AEC engine standard (intercom-only vs full-experience)
+
+`aec_create()` in esp-sr 2.3.1 has a silent FFT-table calloc-fail bug
+that crashes the next `aec_process` if `filter_length > 4` and the
+contiguous DMA-capable internal block is too small. The bug only emerges
+on cross-engine transitions (VOIP ↔ SR), because each engine allocates
+a different scratch layout. Public YAMLs in this repo restrict the
+runtime AEC select to a single engine per tier:
+
+| Tier | filter_length | Initial mode | Runtime select options | Engine |
+|---|---|---|---|---|
+| Intercom-only (no MWW) | 8 | `voip_high_perf` | `voip_low_cost`, `voip_high_perf` | `dios_ssp_aec` |
+| Full-experience AEC (with MWW) | 4 | `sr_low_cost` | `sr_low_cost`, `sr_high_perf` | `esp_aec3` |
+
+Full-experience AFE setups select the engine via `esp_afe.mode` /
+`esp_afe.afe_type` and do not use the `esp_aec` select at all.
 
 CPU figures measured on ESP32-S3 at 240 MHz feeding one 16 kHz mic channel (S3 reference hardware, esp-sr 2.3.1). They scale roughly linearly with the sample rate.
 

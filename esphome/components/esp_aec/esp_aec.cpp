@@ -19,10 +19,17 @@ static const char *const TAG = "esp_aec";
 // cos/sin windows table"), and the next process() dereferences the NULL
 // table → LoadProhibited in fft_esp_proc. Guard the switch with a
 // largest-free-block threshold; reject mode change early when the
-// contiguous DMA-capable block is too small. Empirically 28 KB is not
-// enough (observed crash), so require at least 40 KB to leave headroom
-// for the transform scratch allocations that follow the table build.
-static constexpr size_t HIGH_PERF_MIN_DMA_BLOCK = 40 * 1024;
+// contiguous DMA-capable block is too small. The threshold scales with
+// filter_length because esp-sr's FFT scratch and dios_ssp tail buffer grow
+// linearly with the number of taps (40 KB validated on S3 codec devices
+// running filter_length=4; doubling filter_length doubles the requirement).
+static constexpr size_t HIGH_PERF_MIN_DMA_BLOCK_PER_4_TAPS = 40 * 1024;
+
+static size_t high_perf_min_dma_block_(int filter_length) {
+  int multiplier = filter_length / 4;
+  if (multiplier < 1) multiplier = 1;
+  return HIGH_PERF_MIN_DMA_BLOCK_PER_4_TAPS * static_cast<size_t>(multiplier);
+}
 
 static bool is_high_perf_mode_(aec_mode_t m) {
   return m == AEC_MODE_SR_HIGH_PERF || static_cast<int>(m) == 4;  // 4 = VOIP_HIGH_PERF
@@ -161,15 +168,17 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
   // instance: a rejected switch leaves the audio task running with the
   // previous (working) mode, no frame_spec bump, no audio gap.
   if (is_high_perf_mode_(new_mode)) {
+    const size_t threshold = high_perf_min_dma_block_(this->filter_length_);
     size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (largest_internal < HIGH_PERF_MIN_DMA_BLOCK) {
+    if (largest_internal < threshold) {
       ESP_LOGE(TAG,
-               "reinit_: %s needs >=%u bytes contiguous DMA-capable internal RAM "
-               "(largest free block: %u). Rejecting mode change to avoid crash in "
-               "fft_esp_proc. Keeping mode=%s. Free DRAM first "
-               "(e.g. CONFIG_ESP_WIFI_IRAM_OPT=n) to use this mode.",
-               mode_name_(new_mode),
-               (unsigned) HIGH_PERF_MIN_DMA_BLOCK,
+               "reinit_: %s with filter_length=%d needs >=%u bytes contiguous "
+               "DMA-capable internal RAM (largest free block: %u). Rejecting "
+               "mode change to avoid silent fft calloc fail in aec_create. "
+               "Keeping mode=%s. Free DRAM first (e.g. CONFIG_ESP_WIFI_IRAM_OPT=n) "
+               "to use this mode.",
+               mode_name_(new_mode), this->filter_length_,
+               (unsigned) threshold,
                (unsigned) largest_internal,
                mode_name_(this->mode_));
       return false;
