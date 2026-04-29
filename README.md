@@ -556,10 +556,10 @@ sequenceDiagram
 | **Waveshare S3-Audio (AFE)** | [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
 | **Waveshare P4-Touch (AEC)** | [`waveshare-p4-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-p4-full-aec.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_aec` (SR, MIC3 ref) | VA + MWW + Intercom + LVGL touch |
 | **Waveshare P4-Touch (AFE)** | [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LVGL touch |
-| **ESP32-S3 Mini** | [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
-| **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
+| **ESP32-S3 Mini** | [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
+| **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 | **Generic S3 (intercom)** | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (direct TX reference) | Intercom only |
-| **Generic S3 (dual bus)** | [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Any I2S MEMS | Any I2S amp | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
+| **Generic S3 (dual bus)** | [`generic-s3-dual-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml) | Any I2S MEMS | Any I2S amp | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -757,7 +757,7 @@ Working configs tested on real hardware, organized by use case. Not sure which o
 | [`xiaozhi-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-full-aec.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC |
 | [`waveshare-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-s3-full-aec.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, MIC3 reference |
 | [`waveshare-p4-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-p4-full-aec.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, MIC3 reference, LVGL touch |
-| [`esp32-s3-mini-full.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+| [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
 
 ### Full Experience with `esp_afe` (VA + MWW + Intercom + NS/AGC/VAD, heavier)
 
@@ -773,8 +773,8 @@ Working configs tested on real hardware, organized by use case. Not sure which o
 |------|--------|-------|
 | [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, `esp_aec`, intercom display |
 | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, `esp_aec` |
-| [`esp32-s3-mini-intercom.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
-| [`generic-s3-dual-intercom.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, ring-buffer reference |
+| [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+| [`generic-s3-dual-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, ring-buffer reference |
 
 ---
 

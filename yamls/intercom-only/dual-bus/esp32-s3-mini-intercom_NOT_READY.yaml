@@ -38,6 +38,17 @@ substitutions:
   # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
   ext_components_source: "../../../esphome/components"
 
+# ==============================================================================
+# Package: shared intercom state machine
+# ==============================================================================
+packages:
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@audio-core-v2
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
+  core: !include ../../../packages/intercom_only.yaml
+  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
+
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
@@ -50,12 +61,6 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      # Headroom for intercom_api peer sockets on top of the api socket.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      # esp-sr 2.3.x (pulled in by esp_aec) requires 64KB data cache with
-      # 64B line on S3 (ref: esp_process_sdkconfig.c:26-31).
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
@@ -118,7 +123,7 @@ i2s_audio:
 # ==============================================================================
 microphone:
   - platform: i2s_audio
-    id: mic_component
+    id: mic_main
     i2s_audio_id: i2s_mic_bus
     i2s_din_pin: GPIO4
     adc_type: external
@@ -132,7 +137,7 @@ microphone:
 # ==============================================================================
 speaker:
   - platform: i2s_audio
-    id: spk_component
+    id: hw_speaker
     i2s_audio_id: i2s_spk_bus
     i2s_dout_pin: GPIO8
     dac_type: external
@@ -152,125 +157,19 @@ esp_aec:
   mode: voip_high_perf # High performance AEC for better echo cancellation
 
 # ==============================================================================
-# INTERCOM API (TCP-based, port 6054)
+# Intercom API: Device part (merged with package callbacks)
 # ==============================================================================
-# Auto-creates these sensors:
-#   - text_sensor.intercom_mini_intercom_state (Idle/Ringing/Streaming)
-#   - text_sensor.intercom_mini_destination (selected contact) [full mode only]
-#   - text_sensor.intercom_mini_caller (who is calling) [full mode only]
-#   - text_sensor.intercom_mini_contacts (count) [full mode only]
-
 intercom_api:
   id: intercom
-  mode: full                  # full = ESP↔ESP calls with contacts, simple = browser only
-  microphone: mic_component
-  speaker: spk_component
-  dc_offset_removal: true     # SPH0645 has DC bias that must be removed
-  processor_id: aec_processor       # Links to esp_aec for echo cancellation
-  ringing_timeout: 30s        # Auto-decline unanswered calls
-
-  # === FSM event callbacks ===
-  on_outgoing_call:
-    - light.turn_on:
-        id: status_led
-        effect: "Ringing"
-        red: 100%
-        green: 50%
-        blue: 0%
-    # Fire HA event when the selected contact is the HA peer (always contacts_[0]).
-    # The is_ha_destination condition stays correct even if the user renames their
-    # HA instance (location_name) -- the integration sends the new name as the
-    # first contact, but the peer slot is identified by index, not by string.
-    - if:
-        condition:
-          intercom_api.is_ha_destination: intercom
-        then:
-          - homeassistant.event:
-              event: esphome.intercom_call
-              data:
-                caller: "${friendly_name}"
-                destination: "Home Assistant"
-                type: "doorbell"
-
-  on_ringing:
-    - light.turn_on:
-        id: status_led
-        effect: "Ringing"
-        red: 100%
-        green: 0%
-        blue: 0%
-
-  on_answered:
-    - logger.log: "Call answered"
-
-  on_streaming:
-    - light.turn_on:
-        id: status_led
-        effect: none
-        red: 0%
-        green: 100%
-        blue: 0%
-
-  on_idle:
-    - light.turn_off: status_led
-
-  on_hangup:
-    - logger.log:
-        format: "Hangup: %s"
-        args: ['reason.c_str()']
-
-  on_call_failed:
-    - logger.log:
-        format: "Call failed: %s"
-        args: ['reason.c_str()']
+  mode: full
+  microphone: mic_main
+  speaker: hw_speaker
+  dc_offset_removal: true
+  processor_id: aec_processor
+  ringing_timeout: 30s
 
 # ==============================================================================
-# BUTTONS
-# ==============================================================================
-button:
-  # Smart Call button: idle→call, ringing→answer, streaming→hangup
-  # The on_outgoing_call callback handles the HA event for doorbell notifications
-  - platform: template
-    id: call_button
-    name: "Call"
-    icon: "mdi:phone"
-    on_press:
-      - intercom_api.call_toggle:
-          id: intercom
-
-  # Next contact (full mode)
-  - platform: template
-    id: next_contact_button
-    name: "Next Contact"
-    icon: "mdi:arrow-right"
-    on_press:
-      - intercom_api.next_contact:
-          id: intercom
-
-  # Previous contact (full mode)
-  - platform: template
-    id: prev_contact_button
-    name: "Previous Contact"
-    icon: "mdi:arrow-left"
-    on_press:
-      - intercom_api.prev_contact:
-          id: intercom
-
-  # Decline incoming call
-  - platform: template
-    id: decline_button
-    name: "Decline"
-    icon: "mdi:phone-hangup"
-    on_press:
-      - intercom_api.decline_call:
-          id: intercom
-
-  - platform: restart
-    name: "Restart"
-    icon: "mdi:restart"
-
-# ==============================================================================
-# SWITCHES (native platform with restore_mode)
+# Switches (device-specific)
 # ==============================================================================
 switch:
   - platform: intercom_api
@@ -278,7 +177,7 @@ switch:
     auto_answer:
       id: auto_answer_switch
       name: "Auto Answer"
-      restore_mode: RESTORE_DEFAULT_ON
+      restore_mode: RESTORE_DEFAULT_OFF
     aec:
       id: aec_switch
       name: "Echo Cancellation"
@@ -311,6 +210,12 @@ light:
     rgb_order: RGB
     effects:
       - pulse:
+          name: "Slow Pulse"
+          min_brightness: 20%
+          max_brightness: 100%
+          transition_length: 1s
+          update_interval: 1s
+      - pulse:
           name: "Streaming"
           min_brightness: 20%
           max_brightness: 100%
@@ -325,19 +230,17 @@ light:
               duration: 250ms
             - state: false
               duration: 250ms
-
-# ==============================================================================
-# TEXT SENSORS
-# ==============================================================================
-text_sensor:
-  # Subscribe to HA's centralized contacts sensor
-  - platform: homeassistant
-    id: ha_active_devices
-    entity_id: sensor.intercom_active_devices
-    on_value:
-      - intercom_api.set_contacts:
-          id: intercom
-          contacts_csv: !lambda 'return x;'
+      - strobe:
+          name: "Calling"
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 50%
+              blue: 0%
+              duration: 500ms
+            - state: false
+              duration: 500ms
 
 # ==============================================================================
 # DIAGNOSTICS

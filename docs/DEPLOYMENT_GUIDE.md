@@ -43,7 +43,7 @@ Follow the first branch that matches your hardware and intent.
 | Waveshare P4 touch panel | ESP32-P4 | 2 (ES7210 TDM) | full + afe | `full-experience/single-bus/afe/waveshare-p4-full-afe.yaml` |
 | Xiaozhi Ball V3 | ESP32-S3 | 1 (ES8311 ADC) | full + afe (SR low-cost) | `full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml` |
 | Xiaozhi intercom-only | ESP32-S3 | 1 | intercom + single | `intercom-only/single-bus/xiaozhi-intercom.yaml` |
-| Generic S3 speaker + MEMS | ESP32-S3 | 1 | intercom + dual | `intercom-only/dual-bus/generic-s3-dual-intercom.yaml` |
+| Generic S3 speaker + MEMS | ESP32-S3 | 1 | intercom + dual | `intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml` |
 | Generic S3 single-bus MEMS+amp | ESP32-S3 | 1 | intercom + duplex | `intercom-only/single-bus/generic-s3-intercom.yaml` |
 | Generic S3 single-bus MEMS+amp + VA/MWW | ESP32-S3 | 1 | full + aec (SR low-cost) | `full-experience/single-bus/aec/generic-s3-full-aec.yaml` |
 

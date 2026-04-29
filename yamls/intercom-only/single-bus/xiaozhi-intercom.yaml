@@ -95,9 +95,6 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
-    sdkconfig_options:
-      # Headroom for intercom_api peer sockets on top of the api/ota sockets.
-      CONFIG_LWIP_MAX_SOCKETS: "16"
 
 psram:
   mode: octal

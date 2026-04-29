@@ -27,8 +27,10 @@
 # =============================================================================
 
 substitutions:
-  name: esp32-s3-mini-full
-  friendly_name: ESP32-S3 Mini Full
+  # Hardware-shared identity: keep the same device name across firmware variants
+  # for this board so HA and .esphome/build reuse the same hardware identity.
+  name: esp32-s3-mini
+  friendly_name: ESP32-S3 Mini
 
   # ---- External components: Remote (release / users without local clone) ----
   # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
@@ -53,8 +55,10 @@ substitutions:
 packages:
   # ---- Remote (release / users without local clone) ----
   # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@audio-core-v2
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
   # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../packages/va_intercom.yaml
+  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
 
 # =============================================================================
 # ESPHome Base
@@ -75,11 +79,6 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      # esp-sr 2.3.x (pulled in by esp_aec and micro_wake_word) requires
-      # 64KB data cache with 64B line on S3
-      # (ref: esp_process_sdkconfig.c:26-31).
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
@@ -258,7 +257,7 @@ switch:
     auto_answer:
       id: auto_answer_switch
       name: "Auto Answer"
-      restore_mode: RESTORE_DEFAULT_ON
+      restore_mode: RESTORE_DEFAULT_OFF
     aec:
       id: aec_switch
       name: "Echo Cancellation"
