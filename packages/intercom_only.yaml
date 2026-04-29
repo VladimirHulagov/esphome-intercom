@@ -42,9 +42,7 @@ intercom_api:
         peer: !lambda 'return id(intercom).get_current_destination();'
     - if:
         condition:
-          intercom_api.destination_is:
-            id: intercom
-            destination: "Home Assistant"
+          intercom_api.is_ha_destination: intercom
         then:
           - homeassistant.event:
               event: esphome.intercom_call

@@ -64,6 +64,7 @@ IntercomIsIncomingCondition = intercom_api_ns.class_("IntercomIsIncomingConditio
 IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondition", automation.Condition)
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
 IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
+IntercomIsHaDestinationCondition = intercom_api_ns.class_("IntercomIsHaDestinationCondition", automation.Condition)
 
 AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
@@ -552,4 +553,16 @@ async def intercom_destination_is_to_code(config, condition_id, template_arg, ar
     cg.add(var.set_parent(parent))
     templ = await cg.templatable(config[CONF_DESTINATION], args, cg.std_string)
     cg.add(var.set_destination(templ))
+    return var
+
+
+@automation.register_condition(
+    "intercom_api.is_ha_destination",
+    IntercomIsHaDestinationCondition,
+    INTERCOM_CONDITION_SCHEMA,
+)
+async def intercom_is_ha_destination_to_code(config, condition_id, template_arg, args):
+    var = cg.new_Pvariable(condition_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
     return var

@@ -180,6 +180,10 @@ class IntercomApi : public Component {
   bool is_outgoing() const { return this->call_state_.load(std::memory_order_acquire) == CallState::OUTGOING; }
   bool is_idle() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IDLE; }
   bool is_streaming() const { return this->call_state_.load(std::memory_order_acquire) == CallState::STREAMING; }
+  // The HA peer is by convention contacts_[0] (the integration sensor always
+  // prepends the HA instance name). Selecting it by index instead of by string
+  // keeps the YAML conditions stable when location_name changes.
+  bool is_ha_destination() const { return this->contact_index_ == 0; }
 
   // Smart call toggle: ringing → answer, active → hangup, idle → start
   void call_toggle();
@@ -649,6 +653,12 @@ class IntercomDestinationIsCondition : public Condition<Ts...>, public Parented<
   bool check(const Ts &...x) override {
     return this->parent_->get_current_destination() == this->destination_.value(x...);
   }
+};
+
+template<typename... Ts>
+class IntercomIsHaDestinationCondition : public Condition<Ts...>, public Parented<IntercomApi> {
+ public:
+  bool check(const Ts &...x) override { return this->parent_->is_ha_destination(); }
 };
 
 }  // namespace intercom_api

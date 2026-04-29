@@ -172,12 +172,13 @@ intercom_api:
         red: 100%
         green: 50%
         blue: 0%
-    # Fire HA event when calling "Home Assistant" (for notifications/automations)
+    # Fire HA event when the selected contact is the HA peer (always contacts_[0]).
+    # The is_ha_destination condition stays correct even if the user renames their
+    # HA instance (location_name) -- the integration sends the new name as the
+    # first contact, but the peer slot is identified by index, not by string.
     - if:
         condition:
-          intercom_api.destination_is:
-            id: intercom
-            destination: "Home Assistant"
+          intercom_api.is_ha_destination: intercom
         then:
           - homeassistant.event:
               event: esphome.intercom_call
