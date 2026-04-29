@@ -18,7 +18,7 @@
 #   long   : mute toggle
 #
 # Touch (CST816, dedicated I2C bus):
-#   vertical swipe in IC idle : prev/next contact
+#   horizontal swipe in IC idle : prev/next contact (right=prev, left=next)
 # =============================================================================
 
 substitutions:
@@ -41,7 +41,8 @@ substitutions:
   # IC layout proportions (relative to display_height)
   ic_btn_size: "25%"
   ic_btn_offset: "2%"
-  ic_btn_below_center: "17%"
+  ic_btn_below_center: "19%"   # cornetta center between peer (50%) and battery overlay (82%)
+  ic_contacts_y: "31%"         # idle rubrica icon: visual midway between IDLE label (~y=58) and peer (~y=120)
   ic_peer_width: "58%"
 
   # Display constants
@@ -407,17 +408,13 @@ script:
           id: ic_idle_peer_label
           text: !lambda 'return id(peer_name);'
       - lvgl.label.update:
-          id: ic_idle_status_label
+          id: ic_idle_contacts_label
           text: !lambda |-
             auto csv = id(intercom).get_contacts_csv();
             int count = csv.empty() ? 0 : std::count(csv.begin(), csv.end(), ',') + 1;
-            char buf[48];
-            snprintf(buf, sizeof(buf), "IDLE  \U000F06CB %d", count);
+            char buf[16];
+            snprintf(buf, sizeof(buf), "\U000F06CB %d", count);
             return std::string(buf);
-      - lambda: |-
-          lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, 0);
-          lv_obj_align_to(id(ic_idle_arrow_down), id(ic_idle_peer_label), LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
-
   # Top-layer clock + battery/wifi/HA status bar refresh.
   - id: update_idle_labels
     then:
@@ -850,8 +847,8 @@ number:
           id(es8311_dac).set_volume(es8311_vol);
 
 # =============================================================================
-# Touchscreen (CST816 on dedicated I2C bus). Vertical swipe = prev/next contact.
-# No horizontal swipe (intercom-only, no VA toggle).
+# Touchscreen (CST816 on dedicated I2C bus). Horizontal swipe = prev/next contact
+# (swipe right = previous, swipe left = next). No vertical swipe (intercom-only).
 # =============================================================================
 touchscreen:
   - platform: cst816
@@ -870,12 +867,12 @@ touchscreen:
             if (swipe_fired) continue;
             int dx = touch.x - touch.x_org;
             int dy = touch.y - touch.y_org;
-            // Vertical swipe in center zone: change contact (idle only)
-            if (abs(dy) > 50 && abs(dy) > abs(dx)) {
+            // Horizontal swipe in center zone: change contact (idle only)
+            if (abs(dx) > 50 && abs(dx) > abs(dy)) {
               if (id(intercom).is_idle()) {
-                int h = ${display_height};
-                if (abs(touch.y_org - h / 2) < h / 4) {
-                  if (dy > 0) id(prev_contact_button)->press();
+                int w = ${display_width};
+                if (abs(touch.x_org - w / 2) < w / 4) {
+                  if (dx > 0) id(prev_contact_button)->press();
                   else        id(next_contact_button)->press();
                   id(peer_name) = id(intercom).get_current_destination();
                   id(update_ic_idle_labels)->execute();
@@ -971,6 +968,10 @@ font:
     size: 24
     glyphsets:
       - GF_Latin_Core
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F06CB" # contacts (address book)
 
   - file:
       type: gfonts
@@ -980,10 +981,6 @@ font:
     size: 28
     glyphsets:
       - GF_Latin_Core
-    extras:
-      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-        glyphs:
-          - "\U000F06CB" # contacts (address book)
 
   - file:
       type: gfonts
@@ -1075,14 +1072,22 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-        # State + contacts count on one line: "IDLE (book) N"
+        # State (static) + contacts row (dynamic) on two lines, centered.
         - label:
             id: ic_idle_status_label
             align: TOP_MID
             y: 17%
-            text: "IDLE  \U000F06CB 0"
+            text: "IDLE"
             text_color: 0x00FF00
             text_font: font_state
+            text_align: CENTER
+        - label:
+            id: ic_idle_contacts_label
+            align: TOP_MID
+            y: ${ic_contacts_y}
+            text: "\U000F06CB 0"
+            text_color: 0xFFFFFF
+            text_font: font_title
             text_align: CENTER
         # Peer name: single line; long names ping-pong scroll horizontally.
         - label:
@@ -1094,26 +1099,32 @@ lvgl:
             width: ${ic_peer_width}
             text_align: CENTER
             long_mode: SCROLL
-        # Swipe hint arrows (anchored to peer label)
+        # Prev/next contact swipe hints: decorative only. The < > glyphs frame
+        # the peer name to suggest a horizontal swipe gesture on the text;
+        # actual nav is handled by the touchscreen swipe handler. Tips touch
+        # the round display edges at the horizontal diameter (chord = full
+        # width there, no chord math needed).
         - label:
-            id: ic_idle_arrow_up
-            floating: true
-            text: "\U000F0143"
-            text_color: 0x8080FF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            id: ic_idle_arrow_down
-            floating: true
-            text: "\U000F0140"
-            text_color: 0x8080FF
-            text_font: font_debug
-            text_align: CENTER
-        # Floating call/hangup buttons (left=call, right=disabled hangup)
-        - button:
             floating: true
             align: LEFT_MID
-            x: ${ic_btn_offset}
+            x: 0
+            text: "<"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            floating: true
+            align: RIGHT_MID
+            x: 0
+            text: ">"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        # Green call button below the peer name (idle screen only calls).
+        - button:
+            floating: true
+            align: CENTER
+            y: ${ic_btn_below_center}
             width: ${ic_btn_size}
             height: ${ic_btn_size}
             bg_opa: TRANSP
@@ -1126,21 +1137,6 @@ lvgl:
                   text_font: ic_icons
             on_short_click:
               - button.press: call_button
-        - button:
-            floating: true
-            align: RIGHT_MID
-            x: -5
-            width: ${ic_btn_size}
-            height: ${ic_btn_size}
-            bg_opa: TRANSP
-            shadow_opa: TRANSP
-            clickable: false
-            widgets:
-              - label:
-                  text: "\U000F03F5"
-                  align: CENTER
-                  text_color: 0x808080
-                  text_font: ic_icons
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -1169,7 +1165,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Answer (green left) / Decline (red right)
         - button:
@@ -1232,7 +1228,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Hangup below center
         - button:
@@ -1279,7 +1275,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Hangup below center
         - button:

@@ -53,7 +53,8 @@ substitutions:
   # IC layout proportions (relative to display_height)
   ic_btn_size: "25%"
   ic_btn_offset: "2%"
-  ic_btn_below_center: "17%"
+  ic_btn_below_center: "19%"   # cornetta center between peer (50%) and battery overlay (82%)
+  ic_contacts_y: "31%"         # idle rubrica icon: visual midway between IDLE label (~y=58) and peer (~y=120)
   ic_peer_width: "58%"
 
   voice_assist_idle_phase_id: "1"
@@ -1097,16 +1098,31 @@ script:
                       id: voice_assistant_phase
                       value: '${voice_assist_idle_phase_id}'
 
-  # Swipe gesture: toggle between VA and intercom modes
-  - id: swipe_toggle_mode
+  # Animated mode-switch scripts driven by vertical-swipe gestures.
+  # The non-animated switch_to_va / switch_to_intercom (below) remain for
+  # callers that want an instant page change (e.g. long-press button).
+  - id: swipe_to_intercom
     then:
-      - if:
-          condition:
-            binary_sensor.is_on: is_idle_screen
-          then:
-            - script.execute: switch_to_intercom
-          else:
-            - script.execute: switch_to_va
+      - script.stop: reply_pagination_timer
+      - globals.set:
+          id: current_mode
+          value: '1'
+      - script.execute: update_ic_idle_labels
+      - lvgl.page.show:
+          id: ic_idle_page
+          animation: MOVE_TOP
+          time: 300ms
+
+  - id: swipe_to_va
+    then:
+      - globals.set:
+          id: current_mode
+          value: '0'
+      - script.execute: set_idle_or_mute_phase
+      - lvgl.page.show:
+          id: idle_page
+          animation: MOVE_BOTTOM
+          time: 300ms
 
   # Mode switching scripts
   - id: switch_to_va
@@ -1146,16 +1162,13 @@ script:
           id: ic_idle_peer_label
           text: !lambda 'return id(peer_name);'
       - lvgl.label.update:
-          id: ic_idle_status_label
+          id: ic_idle_contacts_label
           text: !lambda |-
             auto csv = id(intercom).get_contacts_csv();
             int count = csv.empty() ? 0 : std::count(csv.begin(), csv.end(), ',') + 1;
-            char buf[48];
-            snprintf(buf, sizeof(buf), "IDLE  \U000F06CB %d", count);
+            char buf[16];
+            snprintf(buf, sizeof(buf), "\U000F06CB %d", count);
             return std::string(buf);
-      - lambda: |-
-          lv_obj_align_to(id(ic_idle_arrow_up), id(ic_idle_peer_label), LV_ALIGN_OUT_TOP_MID, 0, 0);
-          lv_obj_align_to(id(ic_idle_arrow_down), id(ic_idle_peer_label), LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
 
   # Update clock and battery labels on idle page
   - id: update_idle_labels
@@ -2158,6 +2171,10 @@ font:
     size: 24
     glyphsets:
       - GF_Latin_Core
+    extras:
+      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+        glyphs:
+          - "\U000F06CB" # contacts (address book)
   - file:
       type: gfonts
       family: Roboto
@@ -2166,10 +2183,6 @@ font:
     size: 28
     glyphsets:
       - GF_Latin_Core
-    extras:
-      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-        glyphs:
-          - "\U000F06CB" # contacts (address book)
   - file:
       type: gfonts
       family: Roboto
@@ -2209,35 +2222,8 @@ touchscreen:
             switch.is_on: timer_ringing
           then:
             - switch.turn_off: timer_ringing
-    on_update:
-      lambda: |-
-        static bool swipe_fired = false;
-        for (auto touch : touches) {
-          if (touch.state <= 2) {
-            if (swipe_fired) continue;
-            int dx = touch.x - touch.x_org;
-            int dy = touch.y - touch.y_org;
-            // Vertical swipe in center zone: change contact
-            if (abs(dy) > 50 && abs(dy) > abs(dx) && id(current_mode) == 1) {
-              int h = ${display_height};
-              if (abs(touch.y_org - h / 2) < h / 4) {
-                if (dy > 0) id(prev_contact_button)->press();
-                else id(next_contact_button)->press();
-                id(peer_name) = id(intercom).get_current_destination();
-                id(update_ic_idle_labels)->execute();
-                id(draw_display)->execute();
-                swipe_fired = true;
-              }
-            }
-            // Horizontal swipe: toggle VA/intercom
-            else if (abs(dx) > 50 && abs(dx) > abs(dy)) {
-              id(swipe_toggle_mode)->execute();
-              swipe_fired = true;
-            }
-          } else {
-            swipe_fired = false;
-          }
-        }
+    # Gestures handled natively by LVGL on each page (on_swipe_up/down/left/right);
+    # no manual dx/dy lambda needed. on_touch above is kept for backlight refresh.
 
 # =============================================================================
 # SPI BUS (DISPLAY)
@@ -2338,6 +2324,8 @@ lvgl:
     # ========================================================================
     - id: idle_page
       bg_color: 0x000000
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
       widgets:
         # Idle animation: fwd 0→19 + 2s hold + bwd 18→0 = 55 frames @ 120ms = 6.6s
         - animimg:
@@ -2408,6 +2396,8 @@ lvgl:
     # ========================================================================
     - id: listening_page
       bg_color: 0xFFFFFF
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
       widgets:
         - image:
             align: CENTER
@@ -2419,6 +2409,8 @@ lvgl:
     # ========================================================================
     - id: thinking_page
       bg_color: 0xFFFFFF
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
       widgets:
         - image:
             align: CENTER
@@ -2533,6 +2525,8 @@ lvgl:
     - id: replying_page
       bg_color: 0x000000
       scrollbar_mode: "off"
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
       widgets:
         # Mood background image (set dynamically based on LLM emoticon prefix)
         - image:
@@ -2654,6 +2648,8 @@ lvgl:
     # ========================================================================
     - id: error_page
       bg_color: 0x000000
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
       widgets:
         - image:
             align: CENTER
@@ -2664,6 +2660,8 @@ lvgl:
     # ========================================================================
     - id: muted_page
       bg_color: 0x000000
+      on_swipe_up:
+        - script.execute: swipe_to_intercom
 
     # ========================================================================
     # VA: TIMER FINISHED PAGE
@@ -2700,6 +2698,16 @@ lvgl:
     # ========================================================================
     - id: ic_idle_page
       bg_color: 0x0000FF
+      # Horizontal swipe = prev/next contact (visual hint via < > glyphs).
+      # Vertical swipe down = back to VA mode (page transition).
+      on_swipe_left:
+        - button.press: next_contact_button
+        - script.execute: update_ic_idle_labels
+      on_swipe_right:
+        - button.press: prev_contact_button
+        - script.execute: update_ic_idle_labels
+      on_swipe_down:
+        - script.execute: swipe_to_va
       widgets:
         - label:
             align: TOP_MID
@@ -2708,14 +2716,22 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-        # State + contacts count on one line: "IDLE 📖 3"
+        # State (static) + contacts row (dynamic) on two lines, centered.
         - label:
             id: ic_idle_status_label
             align: TOP_MID
             y: 17%
-            text: "IDLE  \U000F06CB 0"
+            text: "IDLE"
             text_color: 0x00FF00
             text_font: font_state
+            text_align: CENTER
+        - label:
+            id: ic_idle_contacts_label
+            align: TOP_MID
+            y: ${ic_contacts_y}
+            text: "\U000F06CB 0"
+            text_color: 0xFFFFFF
+            text_font: font_title
             text_align: CENTER
         # Peer name: single line; long names ping-pong scroll horizontally.
         - label:
@@ -2727,26 +2743,30 @@ lvgl:
             width: ${ic_peer_width}
             text_align: CENTER
             long_mode: SCROLL
-        # Swipe hint arrows (anchored to peer label)
+        # Prev/next contact swipe hints: decorative only. The < > glyphs frame
+        # the peer name to suggest a horizontal swipe gesture on the text;
+        # actual nav is handled by the page on_swipe_left/right triggers.
         - label:
-            id: ic_idle_arrow_up
-            floating: true
-            text: "\U000F0143"
-            text_color: 0x8080FF
-            text_font: font_debug
-            text_align: CENTER
-        - label:
-            id: ic_idle_arrow_down
-            floating: true
-            text: "\U000F0140"
-            text_color: 0x8080FF
-            text_font: font_debug
-            text_align: CENTER
-        # Floating call/hangup buttons
-        - button:
             floating: true
             align: LEFT_MID
-            x: ${ic_btn_offset}
+            x: 0
+            text: "<"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        - label:
+            floating: true
+            align: RIGHT_MID
+            x: 0
+            text: ">"
+            text_color: 0xFFFFFF
+            text_font: font_title
+            text_align: CENTER
+        # Green call button below the peer name (idle screen only calls).
+        - button:
+            floating: true
+            align: CENTER
+            y: ${ic_btn_below_center}
             width: ${ic_btn_size}
             height: ${ic_btn_size}
             bg_opa: TRANSP
@@ -2759,21 +2779,6 @@ lvgl:
                   text_font: ic_icons
             on_short_click:
               - button.press: call_button
-        - button:
-            floating: true
-            align: RIGHT_MID
-            x: -5
-            width: ${ic_btn_size}
-            height: ${ic_btn_size}
-            bg_opa: TRANSP
-            shadow_opa: TRANSP
-            clickable: false
-            widgets:
-              - label:
-                  text: "\U000F03F5"
-                  align: CENTER
-                  text_color: 0x808080
-                  text_font: ic_icons
 
     # ========================================================================
     # INTERCOM: RINGING IN PAGE
@@ -2802,7 +2807,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Answer (green left) / Decline (red right) at sides like idle
         - button:
@@ -2865,7 +2870,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Hangup below center
         - button:
@@ -2912,7 +2917,7 @@ lvgl:
             text_color: 0xFFFFFF
             text_font: font_title
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
             width: ${ic_peer_width}
         # Hangup below center
         - button:
