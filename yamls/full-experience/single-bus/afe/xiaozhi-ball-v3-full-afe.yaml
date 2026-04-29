@@ -437,10 +437,10 @@ micro_wake_word:
   microphone: mic_afe    # Post-AEC: SR linear AEC preserves spectral features
   stop_after_detection: false
   models:
+    - model: alexa
     - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
-    - model: alexa
 
 voice_assistant:
   id: va
