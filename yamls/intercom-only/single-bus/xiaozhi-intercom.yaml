@@ -5,7 +5,7 @@
 # the full-experience build for the intercom pages, but with NO voice
 # assistant, NO micro_wake_word, NO mixer, and NO VA pages.
 #
-# Audio pipeline (mixer topology, mirrors xiaozhi-full-aec speaker stack):
+# Audio pipeline (mixer topology, mirrors xiaozhi-ball-v3-full-aec speaker stack):
 #
 #   I2S RX 48kHz stereo (L=DAC ref, R=ADC mic) ─FIR x3─> esp_aec @16k ──> mic_main ──> intercom TX
 #
@@ -222,7 +222,7 @@ microphone:
 
 # =============================================================================
 # Speakers (mixer topology: sources -> resampler -> mixer 48kHz -> hw_speaker)
-# Mirrors xiaozhi-full-aec stack so the intercom RX push-stream and the
+# Mirrors xiaozhi-ball-v3-full-aec stack so the intercom RX push-stream and the
 # ringtone announcement go through a buffered mixer instead of competing
 # directly on hw_speaker.
 # =============================================================================
@@ -847,8 +847,9 @@ number:
           id(es8311_dac).set_volume(es8311_vol);
 
 # =============================================================================
-# Touchscreen (CST816 on dedicated I2C bus). Horizontal swipe = prev/next contact
-# (swipe right = previous, swipe left = next). No vertical swipe (intercom-only).
+# Touchscreen (CST816 on dedicated I2C bus). Contact swipe is handled natively
+# via on_swipe_left / on_swipe_right on ic_idle_page; on_touch only refreshes
+# the backlight timer.
 # =============================================================================
 touchscreen:
   - platform: cst816
@@ -859,32 +860,6 @@ touchscreen:
     reset_pin: GPIO6
     on_touch:
       - script.execute: backlight_timer
-    on_update:
-      lambda: |-
-        static bool swipe_fired = false;
-        for (auto touch : touches) {
-          if (touch.state <= 2) {
-            if (swipe_fired) continue;
-            int dx = touch.x - touch.x_org;
-            int dy = touch.y - touch.y_org;
-            // Horizontal swipe in center zone: change contact (idle only)
-            if (abs(dx) > 50 && abs(dx) > abs(dy)) {
-              if (id(intercom).is_idle()) {
-                int w = ${display_width};
-                if (abs(touch.x_org - w / 2) < w / 4) {
-                  if (dx > 0) id(prev_contact_button)->press();
-                  else        id(next_contact_button)->press();
-                  id(peer_name) = id(intercom).get_current_destination();
-                  id(update_ic_idle_labels)->execute();
-                  id(draw_display)->execute();
-                  swipe_fired = true;
-                }
-              }
-            }
-          } else {
-            swipe_fired = false;
-          }
-        }
 
 # =============================================================================
 # Display + LVGL (mipi_spi, GC9A01A 240x240 round)
@@ -982,29 +957,6 @@ font:
     glyphsets:
       - GF_Latin_Core
 
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 400
-    id: font_info
-    size: 20
-    glyphsets:
-      - GF_Latin_Core
-
-  - file:
-      type: gfonts
-      family: Roboto Mono
-      weight: 400
-    id: font_debug
-    size: 14
-    glyphsets:
-      - GF_Latin_Core
-    extras:
-      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-        glyphs:
-          - "\U000F0143" # chevron-up
-          - "\U000F0140" # chevron-down
-
 # =============================================================================
 # LVGL display engine (intercom-only: 4 IC pages + no_wifi/no_ha + top status)
 # =============================================================================
@@ -1064,6 +1016,13 @@ lvgl:
     # ========================================================================
     - id: ic_idle_page
       bg_color: 0x0000FF
+      # Horizontal swipe = prev/next contact (visual hint via < > glyphs).
+      on_swipe_left:
+        - button.press: next_contact_button
+        - script.execute: update_ic_idle_labels
+      on_swipe_right:
+        - button.press: prev_contact_button
+        - script.execute: update_ic_idle_labels
       widgets:
         - label:
             align: TOP_MID

@@ -549,7 +549,7 @@ sequenceDiagram
 
 | Device | YAML | Microphone | Speaker | I2S Mode | Audio pipeline | Features |
 |--------|------|------------|---------|----------|----------------|----------|
-| **Xiaozhi Ball V3 (AEC)** | [`xiaozhi-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-full-aec.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | VA + MWW + Intercom + LVGL |
+| **Xiaozhi Ball V3 (AEC)** | [`xiaozhi-ball-v3-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | VA + MWW + Intercom + LVGL |
 | **Xiaozhi Ball V3 (AFE)** | [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | ES8311 | ES8311 | Single bus | `esp_afe` (AEC + NS + AGC + VAD) | VA + MWW + Intercom + LVGL |
 | **Xiaozhi Ball V3 (intercom)** | [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | Intercom only |
 | **Waveshare S3-Audio (AEC)** | [`waveshare-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-s3-full-aec.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_aec` (SR, MIC3 ref) | VA + MWW + Intercom + LED |
@@ -691,7 +691,7 @@ micro_wake_word:
 
 ### LVGL Display
 
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-full-aec.yaml` and `waveshare-p4-full-aec.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-full-aec.yaml` and `waveshare-p4-full-aec.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -754,7 +754,7 @@ Working configs tested on real hardware, organized by use case. Not sure which o
 
 | File | Device | Audio |
 |------|--------|-------|
-| [`xiaozhi-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-full-aec.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC |
+| [`xiaozhi-ball-v3-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC |
 | [`waveshare-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-s3-full-aec.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, MIC3 reference |
 | [`waveshare-p4-full-aec.yaml`](yamls/full-experience/single-bus/aec/waveshare-p4-full-aec.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, MIC3 reference, LVGL touch |
 | [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |

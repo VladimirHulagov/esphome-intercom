@@ -498,6 +498,20 @@ globals:
     restore_value: no
     initial_value: "0"
 
+  # Animation hint for the next draw_display call. 0 = LV_SCR_LOAD_ANIM_NONE
+  # (instant lv_disp_load_scr). Non-zero = LVGL anim type (e.g. MOVE_TOP),
+  # consumed and reset back to 0 on use. Set by swipe_to_intercom/swipe_to_va
+  # so a swipe-driven page change is animated, while every other caller
+  # (long-press toggle, intercom state callbacks, etc.) stays instant.
+  - id: nav_anim
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: nav_anim_ms
+    type: int
+    restore_value: no
+    initial_value: "0"
+
   # Previous mode (for restoring after incoming call)
   - id: previous_mode
     type: int
@@ -960,10 +974,21 @@ script:
                      page_name, id(current_mode), id(voice_assistant_phase));
             // Stop animation before page switch to prevent split-screen glitch
             lv_anim_del(id(idle_anim), nullptr);
-            lv_disp_load_scr(target);
+            // Honour swipe-driven animation hint, otherwise instant load.
+            if (id(nav_anim) != 0) {
+              lv_scr_load_anim(target,
+                               (lv_scr_load_anim_t) id(nav_anim),
+                               (uint32_t) id(nav_anim_ms),
+                               0, false);
+            } else {
+              lv_disp_load_scr(target);
+            }
             // Invalidate screen to ensure full redraw on next LVGL tick
             lv_obj_invalidate(lv_disp_get_scr_act(nullptr));
           }
+          // Always consume the hint, even if no page change happened.
+          id(nav_anim) = 0;
+          id(nav_anim_ms) = 0;
 
           // Hide top layer status bar on replying/thinking pages (text overlap)
           bool show_status = (target != id(replying_page)->obj && target != id(thinking_page)->obj);
@@ -1098,31 +1123,24 @@ script:
                       id: voice_assistant_phase
                       value: '${voice_assist_idle_phase_id}'
 
-  # Animated mode-switch scripts driven by vertical-swipe gestures.
-  # The non-animated switch_to_va / switch_to_intercom (below) remain for
-  # callers that want an instant page change (e.g. long-press button).
+  # Swipe-driven mode switch: set the nav_anim hint, then delegate to the
+  # existing switch_to_intercom / switch_to_va scripts. They funnel into
+  # draw_display, which honours nav_anim (animated transition) and resets
+  # it. Non-swipe callers (long-press GPIO0) leave nav_anim=0 and stay
+  # instant. Single source of truth for routing + state transitions.
   - id: swipe_to_intercom
     then:
-      - script.stop: reply_pagination_timer
-      - globals.set:
-          id: current_mode
-          value: '1'
-      - script.execute: update_ic_idle_labels
-      - lvgl.page.show:
-          id: ic_idle_page
-          animation: MOVE_TOP
-          time: 300ms
+      - lambda: |-
+          id(nav_anim) = LV_SCR_LOAD_ANIM_MOVE_TOP;
+          id(nav_anim_ms) = 300;
+      - script.execute: switch_to_intercom
 
   - id: swipe_to_va
     then:
-      - globals.set:
-          id: current_mode
-          value: '0'
-      - script.execute: set_idle_or_mute_phase
-      - lvgl.page.show:
-          id: idle_page
-          animation: MOVE_BOTTOM
-          time: 300ms
+      - lambda: |-
+          id(nav_anim) = LV_SCR_LOAD_ANIM_MOVE_BOTTOM;
+          id(nav_anim_ms) = 300;
+      - script.execute: switch_to_va
 
   # Mode switching scripts
   - id: switch_to_va
@@ -2199,11 +2217,6 @@ font:
     size: 14
     glyphsets:
       - GF_Latin_Core
-    extras:
-      - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
-        glyphs:
-          - "\U000F0143" # chevron-up
-          - "\U000F0140" # chevron-down
 
 # =============================================================================
 # TOUCHSCREEN (CST816)
