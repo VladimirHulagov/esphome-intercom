@@ -1141,6 +1141,7 @@ script:
   # Update all dynamic labels on the intercom idle page
   - id: update_ic_idle_labels
     then:
+      - lambda: id(peer_name) = id(intercom).get_current_destination();
       - lvgl.label.update:
           id: ic_idle_peer_label
           text: !lambda 'return id(peer_name);'
@@ -1290,6 +1291,16 @@ button:
   - platform: factory_reset
     id: factory_reset_btn
     internal: true
+
+  - id: !extend next_contact_button
+    on_press:
+      - script.execute: update_ic_idle_labels
+      - script.execute: draw_display
+
+  - id: !extend prev_contact_button
+    on_press:
+      - script.execute: update_ic_idle_labels
+      - script.execute: draw_display
 
 # =============================================================================
 # SENSORS
@@ -2707,8 +2718,6 @@ lvgl:
             text_font: font_state
             text_align: CENTER
         # Peer name: single line; long names ping-pong scroll horizontally.
-        # WRAP would leave a leading space on continuation lines that breaks
-        # CENTER alignment; SCROLL avoids the issue and shows the whole name.
         - label:
             id: ic_idle_peer_label
             align: CENTER
