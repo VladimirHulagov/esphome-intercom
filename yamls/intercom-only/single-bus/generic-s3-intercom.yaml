@@ -31,13 +31,25 @@
 # =============================================================================
 
 substitutions:
-  name: generic-intercom
-  friendly_name: Generic Intercom
+  # Hardware-shared identity: any firmware variant for this generic S3 board
+  # uses the same name so HA reuses the device entity and ESPHome reuses the
+  # build cache (.esphome/build/${name}).
+  name: generic-s3
+  friendly_name: Generic S3
+
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../esphome/components"
 
 # =============================================================================
 # Package: shared intercom state machine
 # =============================================================================
 packages:
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@audio-core-v2
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../packages/intercom_only.yaml
   s3_base: !include ../../../packages/platform/esp32s3_base.yaml
 
@@ -90,10 +102,7 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+  - source: ${ext_components_source}
     components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================

@@ -22,10 +22,20 @@
 # =============================================================================
 
 substitutions:
-  name: xiaozhi-intercom
-  friendly_name: Xiaozhi Intercom
+  # Device identity is hardware-based, not firmware-variant-based: all Xiaozhi
+  # firmwares (intercom / full-aec / full-afe) share `xiaozhi` so a flash swap
+  # reuses the same HA device entity and the same .esphome/build cache.
+  name: xiaozhi
+  friendly_name: Xiaozhi
 
-  # Local mode: paths relative to this yaml location (3 levels deep)
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../esphome/components"
+
+  # ---- Media: Remote (release / users without local clone) ----
+  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
+  # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
   assets_base: "../../../"
 
   # IC layout proportions (relative to display_height)
@@ -42,6 +52,12 @@ substitutions:
 # Packages
 # =============================================================================
 packages:
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@audio-core-v2
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
+  # audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@audio-core-v2
+  # es8311_stereo_ref: github://n-IA-hane/esphome-intercom/packages/codec/es8311_stereo_ref.yaml@audio-core-v2
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../packages/intercom_only.yaml
   s3_base: !include ../../../packages/platform/esp32s3_base.yaml
   audio_mem: !include ../../../packages/profile/audio_memory.yaml
@@ -144,10 +160,7 @@ time:
 # External components
 # =============================================================================
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+  - source: ${ext_components_source}
     components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
@@ -480,6 +493,19 @@ script:
           then:
             - script.execute: update_idle_labels
             - delay: 30s
+
+# =============================================================================
+# Text sensors: extend the package's ha_active_devices to refresh the LVGL
+# idle screen (peer name + contact count) when HA pushes a new contacts CSV.
+# The package already runs intercom_api.set_contacts in on_value; this !extend
+# appends two more actions to the same chain. The filter on the package side
+# guarantees we only land here when the CSV actually changed.
+# =============================================================================
+text_sensor:
+  - id: !extend ha_active_devices
+    on_value:
+      - lambda: id(peer_name) = id(intercom).get_current_destination();
+      - script.execute: update_ic_idle_labels
 
 # =============================================================================
 # Buttons (factory_reset only; call/decline/next/prev provided by package)
@@ -1050,7 +1076,9 @@ lvgl:
             text_color: 0x00FF00
             text_font: font_state
             text_align: CENTER
-        # Peer name: centered, WRAP for long names
+        # Peer name: single line; long names ping-pong scroll horizontally.
+        # WRAP would leave a leading space on continuation lines that breaks
+        # CENTER alignment; SCROLL avoids the issue and shows the whole name.
         - label:
             id: ic_idle_peer_label
             align: CENTER
@@ -1059,7 +1087,7 @@ lvgl:
             text_font: font_title
             width: ${ic_peer_width}
             text_align: CENTER
-            long_mode: WRAP
+            long_mode: SCROLL
         # Swipe hint arrows (anchored to peer label)
         - label:
             id: ic_idle_arrow_up

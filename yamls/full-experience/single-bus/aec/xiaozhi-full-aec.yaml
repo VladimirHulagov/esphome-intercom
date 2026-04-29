@@ -24,11 +24,21 @@
 # =============================================================================
 
 substitutions:
-  name: xiaozhi-full-aec
-  friendly_name: Xiaozhi Full AEC
+  # Hardware-shared identity: all Xiaozhi firmware variants (intercom / full-aec
+  # / full-afe) share `xiaozhi` so a flash swap reuses the same HA device entity
+  # and the same .esphome/build cache.
+  name: xiaozhi
+  friendly_name: Xiaozhi
   mic_id: mic_aec
 
-  # Local-dev paths (audio-core-v2-audit): relative to this yaml (4 levels up).
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../../esphome/components"
+
+  # ---- Media: Remote (release / users without local clone) ----
+  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
+  # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
   assets_base: "../../../../"
 
   # AI avatar folder (${assets_base}assets/images/assistant/<ai_avatar>/)
@@ -62,11 +72,16 @@ substitutions:
   display_height: "240"
 
 packages:
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@audio-core-v2
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
+  # audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@audio-core-v2
+  # es8311_stereo_ref: github://n-IA-hane/esphome-intercom/packages/codec/es8311_stereo_ref.yaml@audio-core-v2
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../../packages/va_intercom.yaml
   s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
   audio_mem: !include ../../../../packages/profile/audio_memory.yaml
   es8311_stereo_ref: !include ../../../../packages/codec/es8311_stereo_ref.yaml
-  jtag: !include ../../../../packages/debug/jtag.yaml
 
 # =============================================================================
 # ESP32 BASE CONFIGURATION
@@ -131,9 +146,7 @@ psram:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source:
-      type: local
-      path: ../../../../esphome/components
+  - source: ${ext_components_source}
     components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
@@ -1699,6 +1712,15 @@ select:
 # TEXT SENSORS
 # =============================================================================
 text_sensor:
+  # Extend the package's ha_active_devices: when HA pushes a new contacts CSV
+  # (already deduped at filter level in packages/va_intercom.yaml), refresh the
+  # idle screen so peer name and contact count reflect the new list without
+  # waiting for a manual contact swipe.
+  - id: !extend ha_active_devices
+    on_value:
+      - lambda: id(peer_name) = id(intercom).get_current_destination();
+      - script.execute: update_ic_idle_labels
+
   - id: text_request
     platform: template
     on_value:

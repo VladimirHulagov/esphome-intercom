@@ -43,15 +43,21 @@
 # =============================================================================
 
 substitutions:
-  name: waveshare-p4-full-aec
-  friendly_name: Waveshare P4 Full AEC
+  # Hardware-shared identity: all Waveshare P4 firmware variants share the same
+  # name so HA reuses the device entity and ESPHome reuses the build cache.
+  name: waveshare-p4
+  friendly_name: Waveshare P4 Touch
   mic_id: mic_aec
 
-  # ---- Remote mode (for users, just download and flash) ----
-  # Switch to raw/main/ once audio-core-v2 is merged.
-  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
-  # ---- Local mode (for development, clone repo first) ----
-  # assets_base: ""
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../../esphome/components"
+
+  # ---- Media: Remote (release / users without local clone) ----
+  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
+  # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
+  assets_base: "../../../../"
 
   # Display dimensions (portrait)
   display_width: "800"
@@ -74,6 +80,13 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
 packages:
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@audio-core-v2
+  # p4_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32p4_base.yaml@audio-core-v2
+  # audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@audio-core-v2
+  # p4_c6: github://n-IA-hane/esphome-intercom/packages/board/waveshare_p4_c6.yaml@audio-core-v2
+  # es7210_tdm: github://n-IA-hane/esphome-intercom/packages/codec/es7210_tdm.yaml@audio-core-v2
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../../packages/va_intercom.yaml
   p4_base: !include ../../../../packages/platform/esp32p4_base.yaml
   audio_mem: !include ../../../../packages/profile/audio_memory.yaml
@@ -201,10 +214,7 @@ time:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+  - source: ${ext_components_source}
     components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================

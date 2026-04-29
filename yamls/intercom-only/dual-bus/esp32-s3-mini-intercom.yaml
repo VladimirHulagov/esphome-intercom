@@ -28,8 +28,15 @@
 # ==============================================================================
 
 substitutions:
-  name: esp32-s3-mini-intercom
-  friendly_name: ESP32-S3 Mini Intercom
+  # Hardware-shared identity: dropping firmware-variant suffix keeps build cache
+  # and HA device entity stable across rebuilds.
+  name: esp32-s3-mini
+  friendly_name: ESP32-S3 Mini
+
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../esphome/components"
 
 esphome:
   name: ${name}
@@ -89,9 +96,7 @@ wifi:
 # EXTERNAL COMPONENTS
 # ==============================================================================
 external_components:
-  - source:
-      type: local
-      path: ../../../esphome/components
+  - source: ${ext_components_source}
     components: [intercom_api, esp_aec, audio_processor]
 
 # ==============================================================================

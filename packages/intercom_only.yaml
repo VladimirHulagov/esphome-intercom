@@ -232,6 +232,16 @@ text_sensor:
   - platform: homeassistant
     id: ha_active_devices
     entity_id: sensor.intercom_active_devices
+    # ESPHome's TextSensor::publish_state always fires on_value, even when the
+    # value is identical to the previous one. HA also re-emits the current state
+    # on every reconnect/subscribe. Drop unchanged CSV here so set_contacts() and
+    # any device-side on_value extensions only fire on real change.
+    filters:
+      - lambda: |-
+          static std::string last;
+          if (x == last) return optional<std::string>{};
+          last = x;
+          return optional<std::string>(x);
     on_value:
       - intercom_api.set_contacts:
           id: intercom

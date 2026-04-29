@@ -1318,9 +1318,14 @@ async def start_auto_bridge(hass: HomeAssistant, intercom_state_entity_id: str) 
         _LOGGER.warning("Auto-bridge: no valid destination for %s", source_name)
         return
 
-    # Special case: "Home Assistant" destination means browser call, not ESP bridge
-    if destination_name.lower() == "home assistant":
-        _LOGGER.info("Auto-bridge: destination is 'Home Assistant' - this requires card/browser, skipping auto-bridge")
+    # Special case: ESP is calling the HA instance itself (the destination text
+    # equals location_name, prepended as contacts_[0] by the integration sensor).
+    # This means "ring the browser card", not "bridge to another ESP", so skip
+    # auto-bridge.
+    ha_name = (hass.config.location_name or "Home Assistant").lower()
+    if destination_name.lower() == ha_name:
+        _LOGGER.info("Auto-bridge: destination is the HA instance ('%s') - this requires card/browser, skipping auto-bridge",
+                     hass.config.location_name or "Home Assistant")
         return
 
     # Find destination device by name (only among intercom devices)
