@@ -11,6 +11,12 @@ secrets.yaml
 # Claude Code project file (internal notes)
 CLAUDE.md
 
+# Codex CLI marker (internal tool config)
+.codex
+
+# Internal dev tooling (not published)
+scripts/
+
 # Python cache
 __pycache__/
 *.pyc
