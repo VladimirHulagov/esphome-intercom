@@ -39,9 +39,67 @@ Under the hood: full-duplex I²S on a single bus, ESP-SR echo cancellation, opti
 - [Hardware Support](#hardware-support)
 - [Audio components](#audio-components): i2s_audio_duplex, esp_aec, esp_afe
 - [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
+- [What's New](#whats-new)
 - [Troubleshooting](#troubleshooting) ([docs/troubleshooting.md](docs/troubleshooting.md))
 - [Deep dives and architecture](docs/)
 - [License](#license)
+
+---
+
+## What's New
+
+### Audio core round 3 (2026-04-30, branch `audio-core-v2`)
+
+This update is a substantial rework of the audio path. **It is fully
+backward-compatible** with existing YAMLs (no API or config break) but
+needs hardware-side validation across the device matrix. Please flash, run
+your usual workload, and open an issue if you observe any regression.
+
+What changed:
+
+- **AEC reference pipeline** (`i2s_audio_duplex`) now decimates the speaker
+  reference on the TX side before storage, matching the Espressif
+  [`esp-gmf aec_rec`](https://github.com/espressif/esp-gmf/blob/main/elements/gmf_ai_audio/examples/aec_rec/main/main.c)
+  reference pipeline. Effect on the `previous_frame` and `ring_buffer`
+  paths (the `Generic S3` builds): cleaner echo cancellation (no residual
+  "ghost" tail), 2-5 KB internal RAM freed, ~13 us/frame Core 0 saved.
+  No effect on `use_stereo_aec_reference` / `use_tdm_reference` builds
+  (Xiaozhi / Waveshare): they take the reference from the codec hardware
+  feedback path, not from this code.
+- **`-O2` codegen** enabled on every audio YAML
+  (`compiler_optimization: PERF`). Validated on `xiaozhi-ball-v3-full-afe`
+  under simultaneous music + MWW + intercom call + TTS: **intercom audio
+  latency dropped from ~500 ms to near-instant**, internal heap minimum
+  improved 35.7 KB → 39.2 KB. Firmware grows ~200 KB.
+- **Granular PSRAM placement knobs** for hot-path audio buffers
+  (`feed_buf_in_psram`, `feed_ring_in_psram`, `fetch_ring_in_psram` on
+  `esp_afe`; `frame_buffers_in_psram` on `intercom_api`;
+  `aec_ref_ring_in_psram` on `i2s_audio_duplex`). Defaults are internal
+  RAM (~80 us/frame faster on Core 0); the shipped YAMLs declare the
+  flags `true` to keep the previous PSRAM placement, so existing builds
+  see no behaviour change. See each component's README for the
+  trade-offs and per-device tuning guidance.
+- **`intercom_api` socket TX** now uses `sendmsg()` scatter/gather: one
+  fewer memcpy per audio chunk, ~2 KB of PSRAM freed.
+- **Bug fix**: `intercom_api` `spk_ref_scaled_` buffer was undersized
+  for the maximum batched speaker iteration (1024 samples allocated,
+  up to 2048 sample loop). Could corrupt the next heap block during
+  loud speaker volume scaling. No reported crash but worth a flash.
+
+How to help:
+
+1. Flash your device with the latest `audio-core-v2` build of the YAML
+   you use today. No YAML edit needed.
+2. Run a representative session: a phone call via the intercom, a TTS
+   announcement, music playback if applicable.
+3. Open an issue or start a discussion if you see anything off:
+   echo coming back, audio glitches, latency, reboots, or sensor numbers
+   (`Free Internal`, `Free Heap`, `Internal Heap Minimum`,
+   `Internal Largest Block`) drifting compared with your previous build.
+
+The `Generic S3 (full AEC)` configuration was validated on the author's
+hardware on 2026-04-30 and shows a clear AEC quality improvement; help
+us confirm it on your hardware too.
 
 ---
 
@@ -558,7 +616,8 @@ sequenceDiagram
 | **Waveshare P4-Touch (AFE)** | [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LVGL touch |
 | **ESP32-S3 Mini** | [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
 | **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
-| **Generic S3 (intercom)** | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (direct TX reference) | Intercom only |
+| **Generic S3 (full AEC)** | [`generic-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/generic-s3-full-aec.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (TX-side decimated ref, see [What's New](#whats-new)) | VA + MWW + Intercom |
+| **Generic S3 (intercom)** | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (TX-side decimated ref) | Intercom only |
 | **Generic S3 (dual bus)** | [`generic-s3-dual-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml) | Any I2S MEMS | Any I2S amp | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!

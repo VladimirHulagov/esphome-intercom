@@ -447,23 +447,11 @@ void I2SAudioDuplex::setup() {
   }
 
   // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
-  // Direct copy of previous TX frame, used for decimation on the next AEC pass.
-  // Respect buffers_in_psram_ like the rest of the audio buffers: strict
-  // placement, no PSRAM-first-then-fallback, so explicit user intent wins.
-  if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
-    size_t bus_frame_size = this->sample_rate_ / 1000 * 32;
-    const uint32_t caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
-    this->direct_aec_ref_ = static_cast<int16_t *>(
-        heap_caps_malloc(bus_frame_size * sizeof(int16_t), caps));
-    if (this->direct_aec_ref_ != nullptr) {
-      memset(this->direct_aec_ref_, 0, bus_frame_size * sizeof(int16_t));
-      ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples, %s)",
-               (unsigned)bus_frame_size,
-               this->buffers_in_psram_ ? "PSRAM" : "internal");
-    } else {
-      ESP_LOGE(TAG, "Failed to allocate direct AEC reference buffer");
-    }
-  }
+  // direct_aec_ref_ is allocated lazily in process_aec_and_callbacks_setup_()
+  // once the decimation ratio is known: storage size matches output_frame_bytes
+  // (decimated reference at the processor rate, e.g. 16 kHz mono = 1024 B at
+  // 32 ms / 512 samples), not the bus rate. This mirrors the canonical
+  // Espressif AEC pipeline (esp-gmf aec_rec) which decimates before AEC.
 
   // Audio task is created lazily on the first start() and kept alive for the
   // rest of the component's lifetime. Creating it here would hold ~8KB of
@@ -1108,11 +1096,26 @@ bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
     this->prealloc_aec_output_ = static_cast<int16_t *>(
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
 
+    // direct_aec_ref_ stores the decimated TX reference at the processor rate.
+    // Sized to ctx.output_frame_bytes (e.g. 1024 B at 16 kHz / 512 samples)
+    // rather than the bus rate so the same buffer feeds AEC without an extra
+    // RX-side decimation pass. Honours buffers_in_psram_ alongside the rest.
+    if (!this->direct_aec_ref_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
+      this->direct_aec_ref_ = static_cast<int16_t *>(
+          heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
+      if (this->direct_aec_ref_ != nullptr) {
+        memset(this->direct_aec_ref_, 0, ctx.output_frame_bytes);
+      }
+    }
+
     // AEC reference ring buffer (TYPE2-style, no-codec setups). Also one-shot.
     if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref &&
         !this->aec_ref_ring_buffer_) {
-      size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
-      if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;
+      // Sized at the processor rate (post-decimation), not the bus rate, since
+      // we now decimate on the TX side before storing.
+      const uint32_t output_rate = this->sample_rate_ / ctx.ratio;
+      size_t rb_bytes = (output_rate * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
+      if (rb_bytes < ctx.output_frame_bytes * 4) rb_bytes = ctx.output_frame_bytes * 4;
       // Placement YAML-controlled: internal saves ~13.6 us/frame on Core 0 (R+W ~1 KB each),
       // PSRAM saves ~3-5 KB internal RAM (set aec_ref_ring_in_psram).
       this->aec_ref_ring_buffer_ = this->aec_ref_ring_in_psram_
@@ -1658,25 +1661,18 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
 }
 
 void I2SAudioDuplex::fill_mono_aec_reference_(AudioTaskCtx &ctx) {
+  // direct_aec_ref_ and the ring buffer now hold already-decimated samples at
+  // the processor rate (decimation happens once on the TX side in
+  // process_tx_path_), so this consumer just copies one frame out without
+  // running the FIR again.
+  const size_t out_bytes = ctx.output_frame_bytes;
   if (this->aec_ref_ring_buffer_) {
-    // Ring buffer mode: read one frame, zero-fill if not enough data (TYPE2 timeout pattern)
-    size_t ref_bytes = ctx.bus_frame_size * sizeof(int16_t);
-    size_t avail = this->aec_ref_ring_buffer_->available();
-    if (avail >= ref_bytes) {
-      if (ctx.ratio > 1 && this->direct_aec_ref_ != nullptr) {
-        // Read at bus rate into direct_aec_ref_ (temp), then decimate to output rate
-        this->aec_ref_ring_buffer_->read(this->direct_aec_ref_, ref_bytes, 0);
-        this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
-      } else {
-        // No decimation or no temp buffer: read directly into spk_ref_buffer
-        size_t read_bytes = (ctx.ratio > 1) ? ctx.input_frame_bytes : ref_bytes;
-        this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, read_bytes, 0);
-      }
+    if (this->aec_ref_ring_buffer_->available() >= out_bytes) {
+      this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, out_bytes, 0);
       return;
     }
   } else if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
-    // Previous frame mode: decimate from bus rate to output rate
-    this->play_ref_decimator_.process(this->direct_aec_ref_, ctx.spk_ref_buffer, ctx.bus_frame_size);
+    memcpy(ctx.spk_ref_buffer, this->direct_aec_ref_, out_bytes);
     return;
   }
 
@@ -1719,34 +1715,40 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     ctx.speaker_got = 0;
   }
 
-  // Save post-volume TX data as AEC reference (skip if processor is off)
+  // Save post-volume TX data as AEC reference (skip if processor is off).
+  // The reference is decimated to the processor rate HERE, on the TX side, so
+  // downstream storage and consumer reads happen at the smaller output size.
+  // Two safety properties of this gating:
+  //   1) Decimation only runs on a complete frame (speaker_got == bus_frame_bytes),
+  //      otherwise the FIR delay-line would absorb zero-padding and pollute the
+  //      next valid frame's reference for ~32 samples.
+  //   2) Skipping the save on a short read keeps the last good reference, same
+  //      as the prior implementation.
 #ifdef USE_AUDIO_PROCESSOR
+  const bool full_frame =
+      ctx.speaker_running && !ctx.speaker_paused && ctx.speaker_got == ctx.bus_frame_bytes;
   if (this->aec_ref_ring_buffer_ && ctx.processor_enabled) {
-    // Ring buffer mode: write post-volume PCM for TYPE2-style reference
-    if (ctx.speaker_running && !ctx.speaker_paused) {
-      size_t frame_bytes = ctx.bus_frame_size * sizeof(int16_t);
-      size_t written = this->aec_ref_ring_buffer_->write(
-          (void *) ctx.spk_buffer, frame_bytes);
+    if (full_frame && this->direct_aec_ref_ != nullptr) {
+      // Decimate TX -> processor rate into direct_aec_ref_ scratch, then push
+      // the decimated frame into the ring. direct_aec_ref_ is sized for
+      // output_frame_bytes by process_aec_and_callbacks_setup_().
+      this->play_ref_decimator_.process(ctx.spk_buffer, this->direct_aec_ref_, ctx.bus_frame_size);
+      const size_t out_bytes = ctx.output_frame_bytes;
+      size_t written = this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, out_bytes);
       if (written == 0) {
-        // Buffer full: discard one frame to make room (deterministic backlog trim)
-        // Reuse direct_aec_ref_ as discard buffer (same size: bus_frame_size samples)
-        if (this->direct_aec_ref_) {
-          this->aec_ref_ring_buffer_->read(this->direct_aec_ref_, frame_bytes, 0);
-        } else {
-          this->aec_ref_ring_buffer_->reset();
-        }
-        this->aec_ref_ring_buffer_->write((void *) ctx.spk_buffer, frame_bytes);
+        // Buffer full: discard one decimated frame (same size as the new one).
+        int16_t discard[1];  // unused, see reset path
+        (void) discard;
+        this->aec_ref_ring_buffer_->reset();
+        this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, out_bytes);
       }
     }
   } else if (this->direct_aec_ref_ != nullptr && ctx.processor_enabled) {
-    // Previous frame mode: save for next iteration ONLY if the frame is
-    // complete. A short-read frame is zero-padded above (process_tx_path_),
-    // and feeding zero-padded TX as AEC reference contaminates the adaptive
-    // filter (mix of real audio + silence does not correlate with the mic).
-    // On a short read we keep the last good direct_aec_ref_ instead.
-    if (ctx.speaker_running && !ctx.speaker_paused &&
-        ctx.speaker_got == ctx.bus_frame_bytes) {
-      memcpy(this->direct_aec_ref_, ctx.spk_buffer, ctx.bus_frame_size * sizeof(int16_t));
+    // Previous frame mode: decimate TX once and keep the result for the next
+    // AEC iteration. Only on a full frame, otherwise we keep the last good
+    // direct_aec_ref_ to avoid feeding a zero-padded reference.
+    if (full_frame) {
+      this->play_ref_decimator_.process(ctx.spk_buffer, this->direct_aec_ref_, ctx.bus_frame_size);
       this->direct_aec_ref_valid_ = true;
     }
   }
