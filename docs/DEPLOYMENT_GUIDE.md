@@ -87,14 +87,31 @@ specific room/hardware combo shows residual echo with the default.
 - **ESP32-P4** has more internal RAM than S3 and generally does not
   need the PSRAM-stack workaround.
 
-## Local overrides
+## Path resolution: local vs remote
 
-Every public YAML in the tree is loaded via ESPHome `packages:` as a
-remote git include. To customize without forking, create a sibling file
-named `<board>-local.yaml` (already in `.gitignore`) and point it at the
-local components path with `type: local`. Any config block you declare
-locally overrides the remote one via ESPHome's merge rules. Examples
-already live next to the public YAMLs (e.g. `waveshare-s3-full-afe-local.yaml`).
+Each public YAML carries one line per external resource. Three knobs:
+
+- `substitutions.ext_components_source` — where ESPHome resolves
+  `external_components` from. Local: `../../../esphome/components`.
+  Remote: `github://OWNER/REPO@BRANCH`.
+- `substitutions.assets_base` — where image/audio assets are fetched
+  from. Local: `../../../`. Remote:
+  `https://github.com/OWNER/REPO/raw/BRANCH/`.
+- `packages:` entries — each one is either `!include ../../../packages/<name>.yaml`
+  (local) or `github://OWNER/REPO/packages/<name>.yaml@BRANCH` (remote).
+
+The repository ships YAMLs in **local mode** on development branches:
+clone the repo, run `esphome compile`, and your changes to
+`esphome/components/` and `packages/` are picked up immediately.
+
+To deploy from a fork or a release tag without cloning, edit those
+three resources to point at `github://your-fork/repo@your-tag`. ESPHome
+fetches the components and assets from there at compile time.
+
+For one-off local tweaks (wifi credentials, GPIO swaps, board-specific
+sdkconfig), create a sibling `<board>-local.yaml` (gitignored via
+`*-local.yaml`) that imports the public YAML and overrides only the
+blocks you need.
 
 ## When to touch the sdkconfig
 
