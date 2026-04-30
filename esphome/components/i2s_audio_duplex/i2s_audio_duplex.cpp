@@ -1097,14 +1097,16 @@ bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
         heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
 
     // direct_aec_ref_ stores the decimated TX reference at the processor rate.
-    // Sized to ctx.output_frame_bytes (e.g. 1024 B at 16 kHz / 512 samples)
-    // rather than the bus rate so the same buffer feeds AEC without an extra
-    // RX-side decimation pass. Honours buffers_in_psram_ alongside the rest.
+    // Sized to ctx.input_frame_bytes: the AEC reference is the signal that
+    // enters the DSP alongside the mic, so it lives on the input side of the
+    // processor (AudioProcessor::process expects in_ref of input_samples len).
+    // The TX-side FIR writes input_frame_size samples here per frame.
+    // Honours buffers_in_psram_ alongside the rest.
     if (!this->direct_aec_ref_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref) {
       this->direct_aec_ref_ = static_cast<int16_t *>(
-          heap_caps_aligned_alloc(AEC_ALIGN, ctx.output_frame_bytes, buf_caps));
+          heap_caps_aligned_alloc(AEC_ALIGN, ctx.input_frame_bytes, buf_caps));
       if (this->direct_aec_ref_ != nullptr) {
-        memset(this->direct_aec_ref_, 0, ctx.output_frame_bytes);
+        memset(this->direct_aec_ref_, 0, ctx.input_frame_bytes);
       }
     }
 
@@ -1112,10 +1114,11 @@ bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
     if (this->aec_use_ring_buffer_ && !ctx.use_stereo_aec_ref && !ctx.use_tdm_ref &&
         !this->aec_ref_ring_buffer_) {
       // Sized at the processor rate (post-decimation), not the bus rate, since
-      // we now decimate on the TX side before storing.
+      // we now decimate on the TX side before storing. Items pushed are
+      // input_frame_bytes (one AEC reference frame) each.
       const uint32_t output_rate = this->sample_rate_ / ctx.ratio;
       size_t rb_bytes = (output_rate * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
-      if (rb_bytes < ctx.output_frame_bytes * 4) rb_bytes = ctx.output_frame_bytes * 4;
+      if (rb_bytes < ctx.input_frame_bytes * 4) rb_bytes = ctx.input_frame_bytes * 4;
       // Placement YAML-controlled: internal saves ~13.6 us/frame on Core 0 (R+W ~1 KB each),
       // PSRAM saves ~3-5 KB internal RAM (set aec_ref_ring_in_psram).
       this->aec_ref_ring_buffer_ = this->aec_ref_ring_in_psram_
@@ -1141,6 +1144,16 @@ bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
   if (this->processor_ != nullptr && this->processor_->is_initialized()) {
     if (!this->prealloc_aec_output_) return false;
     if ((ctx.use_stereo_aec_ref || ctx.use_tdm_ref) && !this->prealloc_spk_ref_buffer_) return false;
+    // Mono AEC depends on direct_aec_ref_ as both the TX-side decimation scratch
+    // and the previous-frame store. If it failed to allocate, the AEC would
+    // silently run with a zero reference (TX writer is null-gated, ring writer
+    // too, fill_mono falls through to zero-fill) and stay degraded until reboot,
+    // because audio_buffers_allocated_ latches true on success. Fail-closed.
+    if (!ctx.use_stereo_aec_ref && !ctx.use_tdm_ref && !this->direct_aec_ref_) {
+      ESP_LOGE(TAG, "Mono AEC reference buffer allocation failed (%zu bytes)",
+               ctx.input_frame_bytes);
+      return false;
+    }
   }
 #endif
 
@@ -1661,23 +1674,24 @@ void I2SAudioDuplex::process_aec_and_callbacks_(AudioTaskCtx &ctx) {
 }
 
 void I2SAudioDuplex::fill_mono_aec_reference_(AudioTaskCtx &ctx) {
-  // direct_aec_ref_ and the ring buffer now hold already-decimated samples at
-  // the processor rate (decimation happens once on the TX side in
-  // process_tx_path_), so this consumer just copies one frame out without
-  // running the FIR again.
-  const size_t out_bytes = ctx.output_frame_bytes;
+  // direct_aec_ref_ and the ring buffer hold already-decimated samples at the
+  // processor rate (decimation happens once on the TX side in process_tx_path_).
+  // The reference is the input side of the processor, so the unit is
+  // input_frame_bytes (matches AudioProcessor::process expecting in_ref of
+  // input_samples length).
+  const size_t ref_bytes = ctx.input_frame_bytes;
   if (this->aec_ref_ring_buffer_) {
-    if (this->aec_ref_ring_buffer_->available() >= out_bytes) {
-      this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, out_bytes, 0);
+    if (this->aec_ref_ring_buffer_->available() >= ref_bytes) {
+      this->aec_ref_ring_buffer_->read(ctx.spk_ref_buffer, ref_bytes, 0);
       return;
     }
   } else if (this->direct_aec_ref_ != nullptr && this->direct_aec_ref_valid_) {
-    memcpy(ctx.spk_ref_buffer, this->direct_aec_ref_, out_bytes);
+    memcpy(ctx.spk_ref_buffer, this->direct_aec_ref_, ref_bytes);
     return;
   }
 
   // No reference available: zero-fill (AEC will pass-through without echo cancellation)
-  memset(ctx.spk_ref_buffer, 0, ctx.input_frame_bytes);
+  memset(ctx.spk_ref_buffer, 0, ref_bytes);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1731,16 +1745,17 @@ void I2SAudioDuplex::process_tx_path_(AudioTaskCtx &ctx) {
     if (full_frame && this->direct_aec_ref_ != nullptr) {
       // Decimate TX -> processor rate into direct_aec_ref_ scratch, then push
       // the decimated frame into the ring. direct_aec_ref_ is sized for
-      // output_frame_bytes by process_aec_and_callbacks_setup_().
+      // input_frame_bytes by allocate_audio_buffers_() (the FIR writes
+      // bus_frame_size / ratio = input_frame_size samples).
       this->play_ref_decimator_.process(ctx.spk_buffer, this->direct_aec_ref_, ctx.bus_frame_size);
-      const size_t out_bytes = ctx.output_frame_bytes;
-      size_t written = this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, out_bytes);
+      const size_t ref_bytes = ctx.input_frame_bytes;
+      size_t written = this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, ref_bytes);
       if (written == 0) {
         // Buffer full: discard one decimated frame (same size as the new one).
         int16_t discard[1];  // unused, see reset path
         (void) discard;
         this->aec_ref_ring_buffer_->reset();
-        this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, out_bytes);
+        this->aec_ref_ring_buffer_->write((void *) this->direct_aec_ref_, ref_bytes);
       }
     }
   } else if (this->direct_aec_ref_ != nullptr && ctx.processor_enabled) {
