@@ -130,6 +130,12 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
+    advanced:
+      # -O2 codegen on our audio components: 5-15 % throughput on tight loops
+      # (deinterleave, FIR, gain/scale, RMS) at the cost of +30-80 KB flash
+      # and slightly higher stack peaks. Flash headroom is ~1.9 MB on this
+      # build, audio_task stack has its own headroom from task_stack_size.
+      compiler_optimization: PERF
     sdkconfig_options:
       # mbedtls tuning (still inline pending benchmark: Codex flagged that
       # most of these are not directly exercised by our component paths).
