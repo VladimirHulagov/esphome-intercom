@@ -71,6 +71,9 @@ esp32:
   variant: esp32s3
   framework:
     type: esp-idf
+    advanced:
+      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
+      compiler_optimization: PERF
     sdkconfig_options:
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"

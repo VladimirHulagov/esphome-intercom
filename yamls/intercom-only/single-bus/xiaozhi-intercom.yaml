@@ -96,6 +96,9 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
+    advanced:
+      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
+      compiler_optimization: PERF
 
 psram:
   mode: octal

@@ -134,6 +134,8 @@ esp32:
     type: esp-idf
     advanced:
       enable_idf_experimental_features: true
+      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); P4 RISC-V untested.
+      compiler_optimization: PERF
     sdkconfig_options:
       # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
