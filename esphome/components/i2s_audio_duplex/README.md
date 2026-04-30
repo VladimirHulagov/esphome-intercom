@@ -157,7 +157,8 @@ speaker:
 | `reference_channel` | string | left | Which stereo channel carries AEC reference: `left` or `right` |
 | `use_tdm_reference` | bool | false | TDM hardware reference mode (ES7210, see below) |
 | `tdm_total_slots` | int | 4 | Number of TDM slots (2-8) |
-| `tdm_mic_slot` | int | 0 | TDM slot index for voice microphone |
+| `tdm_mic_slot` | int | 0 | Single TDM slot index for the voice microphone. Use `tdm_mic_slots` instead for dual-mic beamforming. |
+| `tdm_mic_slots` | list of int | - | List of 1 or 2 TDM slot indices for dual-mic configurations (e.g. ES7210 capturing two MEMS mics on slots 0 and 2). Mutually exclusive with `tdm_mic_slot`. |
 | `tdm_ref_slot` | int | 1 | TDM slot index for AEC reference (e.g. MIC3 capturing DAC output) |
 | `task_priority` | int | 19 | FreeRTOS priority of the audio task (1-24). Default 19 is above lwIP (18), below WiFi (23). |
 | `task_core` | int | 0 | Core affinity: 0 or 1 for pinned, -1 for unpinned. Default 0 follows Espressif AEC pattern. |
@@ -166,6 +167,24 @@ speaker:
 | `audio_stack_in_psram` | bool | false | Place the audio task's own stack in PSRAM. Saves ~8KB of DMA-capable internal RAM at the cost of ~3x slower function return paths. Only enable on boards that need the internal headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS streams from `speaker_media_player` and intercom). The audio task is not CPU-bound (heavy esp-sr work runs in `esp_afe`'s feed task on core 1), so PSRAM stack latency is acceptable here. Requires `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y` (already default on our YAMLs). Leave it `false` on any board that does not hit the "not enough internal RAM" boundary; normal lifecycle is identical to the non-opt-in path. |
 | `aec_reference` | string | `previous_frame` | Mono-mode AEC reference source. `previous_frame` (default) reuses the prior TX frame for echo reference, no buffering, no delay tuning. `ring_buffer` stores TX in a TYPE2-style ring with configurable capacity for better frame alignment on no-codec setups. Ignored when `use_stereo_aec_reference` or `use_tdm_reference` is true. |
 | `aec_reference_buffer_ms` | int | 80 | Capacity of the AEC reference ring buffer in milliseconds (32 to 500). Only used with `aec_reference: ring_buffer`. Larger values absorb more producer/consumer jitter at the cost of latency. |
+
+### I2S Bus Advanced Options
+
+These options expose the underlying I2S driver controls. Defaults are tuned for the supported codecs (ES8311, ES7210); change only when matching a specific hardware quirk or non-standard codec.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `bits_per_sample` | int | 16 | Sample bit depth on the wire (16, 24, or 32). Must match the codec's PCM format. |
+| `num_channels` | int | 1 | Bus channel count: 1 (mono) or 2 (stereo). Combined with `use_stereo_aec_reference` for digital DAC feedback. |
+| `mic_channel` | string | `left` | Which stereo channel carries the mic in non-AEC stereo setups: `left` or `right`. |
+| `tx_channel` | string | `left` | Which stereo channel the speaker writes to: `left` or `right`. |
+| `i2s_mode` | string | `primary` | I2S role: `primary` (ESP drives the clocks, default) or `secondary` (codec drives the clocks). |
+| `use_apll` | bool | false | Use the APLL clock source for cleaner audio at non-multiple-of-8 kHz rates. Costs APLL availability for other peripherals. |
+| `i2s_num` | int | 0 | Which I2S peripheral port to use (0-2 depending on SoC). Lets you reserve a port when other components also use I2S. |
+| `mclk_multiple` | int | 256 | MCLK to LRCLK ratio (128, 256, 384, or 512). Most codecs accept 256. |
+| `i2s_comm_fmt` | string | `philips` | I2S frame format: `philips` (default), `msb`, `pcm_short`, `pcm_long`. Codec datasheets specify which one. |
+| `telemetry` | bool | false | Enable per-stage cycle counting and diagnostic logging. Adds a small overhead in the audio task; only enable while tuning. |
+| `telemetry_log_interval_frames` | int | 128 | When `telemetry: true`, log the snapshot every N audio frames (1-8192). Defaults to 128 frames = ~4 s at 16 kHz / 32 ms frames. |
 
 ### Microphone Options
 
@@ -548,7 +567,7 @@ binary_sensor:
 - **AEC Gating**: Mono/stereo modes process AEC only when speaker had real audio within last 250ms. TDM mode is always-on (hardware ref captures silence naturally, no filter drift).
 - **Thread Safety**: All cross-thread variables use `std::atomic` with `memory_order_relaxed`, including `float` volumes (`mic_gain_`, `mic_attenuation_`, `speaker_volume_`). A **snapshot pattern** loads all atomics once per 16ms frame into local `AudioTaskCtx` fields, avoiding repeated `.load()` in sample loops. Ring buffer resets use atomic request flags (`request_speaker_reset_`) to avoid concurrent access between main thread and audio task.
 - **Task Structure**: `audio_task_()` is split into `process_rx_path_()`, `process_aec_and_callbacks_()`, and `process_tx_path_()`, sharing state via `AudioTaskCtx` struct. AEC buffers use 16-byte aligned allocation for ESP-SR SIMD safety.
-- **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally).
+- **Mic Gain**: -20 to +30 dB range (applied post-AEC in audio_task). Stored via `ESPPreferenceObject` and restored on boot. Mic gain is applied to post-AEC output (affects VA/intercom/MWW equally). **Clipping warning**: positive gain saturates to int16 with a hard clip. On loud speech with gain > +6 dB, peak samples can clip and produce harmonic distortion that degrades STT and intercom audio. If you need gain > +6 dB to bring a weak MEMS mic up to working levels, pair this component with `esp_afe` and `agc_enabled: true` (the AGC caps the post-AFE level before the gain stage); with standalone `esp_aec` there is no automatic ceiling.
 - **Cross-Component Validation**: `FINAL_VALIDATE_SCHEMA` checks at compile time that `i2s_audio_duplex` and `intercom_api` don't both configure an audio processor (`processor_id`) or DC offset removal. If both components are present, `i2s_audio_duplex` takes ownership of audio processing and DC offset; `intercom_api` should NOT set `processor_id` or `dc_offset_removal`.
 
 ### Audio task lifecycle

@@ -34,7 +34,7 @@ Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full 
 | Runtime switches in HA | AEC only | AEC, SE, NS, VAD, AGC |
 | Diagnostic sensors | No | Input volume, output RMS, voice presence |
 | CPU usage (SR LOW_COST) | ~22% Core 0 | ~23% Core 0 (8.4% feed + 15% fetch) |
-| Internal RAM overhead | ~80 KB | ~150 KB (MR), ~170 KB (MMR with BSS) |
+| Internal RAM overhead | ~80 KB | ~100 KB (MR), ~120 KB (MMR with BSS) |
 | Supported platforms | ESP32-S3, ESP32-P4 | ESP32-S3, ESP32-P4 |
 
 **Choose `esp_aec`** when you need minimal RAM usage and only echo cancellation.
@@ -120,6 +120,8 @@ esp_afe:
 | `vad_min_speech_ms` | int | `128` | Minimum speech duration to trigger voice detection (32-60000 ms) |
 | `vad_min_noise_ms` | int | `1000` | Minimum noise duration before VAD clears (64-60000 ms) |
 | `vad_delay_ms` | int | `128` | VAD state transition delay (0-60000 ms) |
+| `vad_mute_playback` | bool | `false` | When VAD detects speech, mute the speaker output to prevent acoustic feedback during voice commands. Useful for voice-assistant pipelines that play TTS while still listening. |
+| `vad_enable_channel_trigger` | bool | `false` | Per-channel VAD triggering (multi-mic setups). esp-sr exposes which mic channel detected the speech, useful for beamforming-aware downstream consumers. |
 | `agc_compression_gain` | int | `9` | AGC compression gain in dB (0-30) |
 | `agc_target_level` | int | `3` | AGC target level (0-31, lower value = louder output) |
 | `memory_alloc_mode` | string | `more_psram` | Memory allocation: `more_internal`, `internal_psram_balance`, `more_psram` |

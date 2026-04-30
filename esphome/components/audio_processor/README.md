@@ -100,10 +100,11 @@ Invariants the caller must respect:
 
 ```cpp
 struct FrameSpec {
-  uint32_t sample_rate;       // 16000 in practice
-  uint8_t  mic_channels;      // 1 or 2 (BSS)
-  uint8_t  ref_channels;      // 0 or 1
-  uint16_t samples_per_chan;  // 512 for esp-sr, fixed
+  uint32_t sample_rate;     // 16000 in practice
+  uint8_t  mic_channels;    // 1 or 2 (BSS)
+  uint8_t  ref_channels;    // 0 or 1
+  size_t   input_samples;   // per-channel samples expected by process()
+  size_t   output_samples;  // per-channel samples produced by process()
 };
 ```
 
@@ -126,22 +127,36 @@ enum class FeatureControl {
 
 `esp_aec` reports `AEC = RESTART_REQUIRED` and everything else `NOT_SUPPORTED`.
 
-`esp_afe` reports `AEC / NS / SE / VAD / AGC = RESTART_REQUIRED`. The 70 ms gap during a rebuild is the cost.
+`esp_afe` reports `AEC = LIVE_TOGGLE` (handle stays initialised, the engine is enabled or disabled via the esp-sr vtable in microseconds). `NS / VAD / AGC = RESTART_REQUIRED` (each toggle rebuilds the AFE handle, ~70 ms gap). `SE` is `RESTART_REQUIRED` only when the device has at least 2 mic channels, otherwise `NOT_SUPPORTED`.
 
 ## Telemetry
 
 ```cpp
 struct ProcessorTelemetry {
-  uint32_t frames_in;
-  uint32_t frames_out;
-  uint32_t input_drops;
-  uint32_t output_drops;
-  uint8_t  ring_free_pct;
-  uint16_t feed_queue_frames;
+  // Audio activity (esp_afe only — esp_aec leaves these at defaults)
+  bool  voice_present;            // VAD raw state
+  float input_volume_dbfs;        // Mic RMS, dBFS
+  float output_rms_dbfs;          // Post-process RMS, dBFS
+  float ringbuf_free_pct;         // 0.0 to 1.0
+  // Aggregate counters
+  uint32_t frame_count;           // Frames processed since boot
+  uint32_t glitch_count;          // Passthrough fallbacks (fetch starvation)
+  // Feed/fetch ring statistics (esp_afe two-task pipeline)
+  uint32_t feed_ok, feed_rejected;
+  uint32_t fetch_ok, fetch_timeout;
+  uint32_t input_ring_drop, output_ring_drop;
+  uint32_t feed_queue_frames, feed_queue_peak;
+  uint32_t fetch_queue_frames, fetch_queue_peak;
+  // Per-stage timing (microseconds)
+  uint32_t process_us_last, process_us_max;
+  uint32_t feed_us_last,    feed_us_max;
+  uint32_t fetch_us_last,   fetch_us_max;
+  // Stack pressure
+  uint32_t feed_stack_high_water, fetch_stack_high_water;
 };
 ```
 
-Read with `processor->telemetry()` from any thread. Used by the diagnostic sensors (`Frame count`, `Ring free %`) that the AFE component exposes.
+Read with `processor->telemetry()` from any thread. Implementations write each field via atomics (relaxed ordering); the snapshot is racy across fields but each field is consistent. Used by the diagnostic sensors (`Frame count`, `Ring free %`, `Process µs max`, etc.) that `esp_afe` exposes; `esp_aec` leaves most fields at default.
 
 ## Ring-buffer helpers
 

@@ -63,8 +63,7 @@ i2s_audio_duplex:
 | `id` | ID | required | Component identifier referenced by `i2s_audio_duplex.processor_id` or `intercom_api.processor_id`. |
 | `sample_rate` | int | 16000 | Must match the sample rate of the consumer. esp-sr's AEC only accepts 16 kHz frames; the upstream component is expected to decimate from the I²S bus rate when needed. |
 | `filter_length` | int | 4 | AEC tail length in frames. Frame size depends on `mode`: **32 ms in SR modes, 16 ms in VOIP modes**. Range 1 to 8. Use **4** with SR modes (full-experience with MWW, ~128 ms tail), **8** with VOIP modes (intercom-only, ~128 ms tail). Higher values exit the esp-sr tested range and can trigger silent calloc failures on cross-engine switches. |
-| `mode` | string | `voip_low_cost` | AEC algorithm. Pick the engine to match the use case: **VOIP modes** for intercom-only (residual echo suppressor for human ears), **SR modes** for full-experience with MWW (linear-only, preserves spectral features). Public YAMLs in this repo restrict the runtime select to a single engine per tier — see "Runtime mode switching" below. |
-| `buffers_in_psram` | bool | inherited | Place the AEC working buffers in PSRAM. Defaults to whatever `i2s_audio_duplex.buffers_in_psram` is set to when the duplex component is the consumer. Required on ESP32-S3 in `sr_low_cost` mode (512-sample frames need more memory than internal RAM can usually spare). |
+| `mode` | string | `sr_low_cost` | AEC algorithm. Pick the engine to match the use case: **VOIP modes** for intercom-only (residual echo suppressor for human ears), **SR modes** for full-experience with MWW (linear-only, preserves spectral features). Public YAMLs in this repo restrict the runtime select to a single engine per tier — see "Runtime mode switching" below. |
 
 ## AEC modes
 
@@ -92,7 +91,7 @@ Why `sr_*` is recommended for VA + MWW: the SR engines use a linear-only adaptiv
 | `FeatureControl feature_control(AudioFeature)` | `AEC` is `RESTART_REQUIRED`; everything else is `NOT_SUPPORTED`. |
 | `bool set_feature(AudioFeature, bool enabled)` | Toggle AEC (rebuilds the handle, ~70 ms gap). |
 | `ProcessorTelemetry telemetry() const` | Frame count and ring-buffer free percent for diagnostics. |
-| `bool reconfigure(int type, int mode)` | Switch AEC mode by numeric code. `type` is unused (reserved for forward compatibility); `mode` maps to the underlying esp-sr modes: `1` = `sr_low_cost`, `2` = `sr_high_perf`, `3` = `voip_low_cost`, `4` = `voip_high_perf`. Prefer `reinit_by_name` from lambdas. |
+| `bool reconfigure(int type, int mode)` | Switch AEC mode by numeric code. `type` selects the engine (0 = SR / `esp_aec3`, non-zero = VC / `dios_ssp_aec`); `mode` selects the variant (0 = LOW_COST, 1 = HIGH_PERF). Combinations: (0,0) `sr_low_cost`, (0,1) `sr_high_perf`, (1,0) `voip_low_cost`, (1,1) `voip_high_perf`. Prefer `reinit_by_name` from lambdas. |
 | `bool reinit_by_name(const std::string &name)` | Switch AEC mode by name (`"sr_low_cost"` etc.). Recommended entry point. Returns false on rejection (for example, when `sr_high_perf` cannot allocate DMA). |
 | `std::string get_mode_name() const` | Current mode as a string. Read this after `reinit_by_name` to confirm the switch was accepted. |
 
@@ -149,8 +148,7 @@ None. `esp_aec::process()` runs synchronously on the caller's audio task. The ca
 | Item | Internal RAM | PSRAM |
 |------|--------------|-------|
 | Component overhead (handle, config) | ~4 KB | n/a |
-| Working buffers (`buffers_in_psram: true`) | minimal | ~40 KB |
-| Working buffers (`buffers_in_psram: false`) | ~40 KB | n/a |
+| Working buffers (esp-sr managed, prefers PSRAM) | minimal | ~40 KB |
 | `sr_high_perf` extra DMA block | ~40 KB contiguous internal | n/a |
 
 For comparison, `esp_afe` in MR LOW_COST mode costs ~72 KB internal + ~733 KB PSRAM, and in MMR (2-mic + BSS) ~77 KB + ~1.2 MB.

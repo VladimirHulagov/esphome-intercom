@@ -2215,8 +2215,7 @@ font:
       weight: 400
     id: font_debug
     size: 14
-    glyphsets:
-      - GF_Latin_Core
+    glyphs: "0123456789/"
 
 # =============================================================================
 # TOUCHSCREEN (CST816)

@@ -1,4 +1,5 @@
 #include "esp_afe.h"
+#include "../audio_processor/audio_utils.h"
 
 #ifdef USE_ESP32
 
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <numeric>
 #include <string>
 
 namespace esphome {
@@ -20,7 +22,7 @@ namespace esp_afe {
 static const char *const TAG = "esp_afe";
 static const TickType_t CONFIG_MUTEX_TIMEOUT = pdMS_TO_TICKS(250);
 // Max wait for process() to finish its current frame when a config change
-// needs to rebuild the AFE instance. ~2 frame periods at 16 kHz / 512 samples.
+// needs to rebuild the AFE instance. ~1.5 frame periods at 16 kHz / 512 samples.
 static const TickType_t DRAIN_WAIT_TIMEOUT = pdMS_TO_TICKS(50);
 
 // Validate function pointer using ESP-IDF's memory map knowledge.
@@ -66,23 +68,6 @@ static inline void copy_passthrough_frame(const int16_t *in, int input_samples,
   if (output_samples > static_cast<int>(copy_samples)) {
     memset(out + copy_samples, 0, (output_samples - copy_samples) * sizeof(int16_t));
   }
-}
-
-// 20*log10(sqrt(mean)/32768) = 10*log10(mean) - 20*log10(32768)
-static constexpr float RMS_DBFS_OFFSET = 90.30899870f;  // 20 * log10(32768)
-
-static inline float compute_rms_dbfs(const int16_t *data, int samples) {
-  if (data == nullptr || samples <= 0)
-    return -120.0f;
-  uint64_t sumsq = 0;
-  for (int i = 0; i < samples; i++) {
-    int32_t s = data[i];
-    sumsq += static_cast<uint64_t>(s * s);
-  }
-  float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
-  if (mean <= 0.0f)
-    return -120.0f;
-  return 10.0f * log10f(mean) - RMS_DBFS_OFFSET;
 }
 
 aec_mode_t EspAfe::derive_aec_mode_() const {
@@ -182,6 +167,8 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   cfg->memory_alloc_mode = static_cast<afe_memory_alloc_mode_t>(this->memory_alloc_mode_);
   cfg->afe_linear_gain = this->afe_linear_gain_;
   cfg->debug_init = false;
+  // After wake-word fires, channel 0 of fetch result returns raw mic audio
+  // (not AEC-processed). Required for VA's STT pipeline to receive clean input.
   cfg->fixed_first_channel = true;
 
   afe_config_check(cfg);
@@ -238,8 +225,6 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   instance->process_chunksize = process_chunksize;
   instance->total_channels = total_channels;
 
-  ESP_LOGI(TAG, "AFE ready: process=%d feed=%d fetch=%d ch=%d fmt=%s (transport_mics=%d)",
-           process_chunksize, feed_chunksize, fetch_chunksize, total_channels, fmt, this->mic_num_);
   return true;
 }
 
@@ -309,9 +294,6 @@ bool EspAfe::install_instance_(AfeInstance *instance) {
     this->afe_handle_->disable_aec(this->afe_data_);
   }
 
-  ESP_LOGI(TAG, "Active: AEC=%s NS=%s VAD=%s AGC=%s",
-           this->aec_enabled_ ? "on" : "off", this->ns_enabled_ ? "on" : "off",
-           this->vad_enabled_ ? "on" : "off", this->agc_enabled_ ? "on" : "off");
   if (this->afe_handle_->print_pipeline != nullptr) {
     this->afe_handle_->print_pipeline(this->afe_data_);
   }
@@ -453,7 +435,7 @@ bool EspAfe::recreate_instance_(bool require_same_frame_sizes) {
     // Release barrier ensures new frame_spec stores happen-before consumers
     // observe the bumped revision via acquire load.
     uint32_t new_rev = this->frame_spec_revision_.fetch_add(1, std::memory_order_release) + 1;
-    ESP_LOGD(TAG, "Frame spec changed: mic_ch=%d->%d, process=%d, fetch=%d (revision %u, audio task will restart)",
+    ESP_LOGI(TAG, "Frame spec changed: mic_ch=%d->%d, process=%d, fetch=%d (revision %u, audio task will restart)",
              old_mic_ch, new_mic_ch, this->process_chunksize_, this->fetch_chunksize_, (unsigned) new_rev);
   }
   this->warmup_remaining_ = 3;
@@ -523,7 +505,7 @@ bool EspAfe::set_aec_enabled_runtime_(bool enabled) {
   auto func = enabled ? this->afe_handle_->enable_aec : this->afe_handle_->disable_aec;
   if (!is_valid_func(reinterpret_cast<const void *>(func))) {
     xSemaphoreGive(this->config_mutex_);
-    ESP_LOGW(TAG, "%s_aec not available (ptr=%p)",
+    ESP_LOGW(TAG, "Cannot %s AEC: vtable function unavailable (ptr=%p)",
              enabled ? "enable" : "disable", reinterpret_cast<const void *>(func));
     return false;
   }
@@ -577,7 +559,7 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
   bool allow_frame_change = (&flag == &this->se_enabled_);
   bool old_value = flag;
   flag = enabled;
-  ESP_LOGD(TAG, "Applying %s=%s (rebuild, frame_size_change=%s)",
+  ESP_LOGI(TAG, "Applying %s=%s (rebuild, frame_size_change=%s)",
            name, enabled ? "true" : "false", allow_frame_change ? "allowed" : "locked");
   if (this->recreate_instance_(!allow_frame_change)) {
     return true;
@@ -592,7 +574,6 @@ bool EspAfe::set_reinit_flag_(bool &flag, bool enabled, const char *name) {
 }
 
 void EspAfe::setup() {
-  ESP_LOGI(TAG, "Initializing AFE...");
   if (!this->recreate_instance_(false)) {
     this->mark_failed();
   }
@@ -704,6 +685,9 @@ bool EspAfe::reconfigure(int type, int mode) {
   this->afe_type_ = type;
   this->afe_mode_ = mode;
   if (this->recreate_instance_(false)) {
+    ESP_LOGI(TAG, "AFE reconfigured: type=%s, mode=%s",
+             this->afe_type_ == AFE_TYPE_SR ? "SR" : "VC",
+             this->afe_mode_ == AFE_MODE_LOW_COST ? "LOW_COST" : "HIGH_PERF");
     return true;
   }
   // Rollback on failure: restore old config and rebuild to avoid leaving
@@ -779,7 +763,7 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   // Replaces data_volume (always 0 without WakeNet).
   if (this->input_volume_sensor_enabled_ && !this->warmup_remaining_) {
     this->input_volume_dbfs_.store(
-        compute_rms_dbfs(in_mic, qs * transport_mic_channels > 0 ? qs : 0),
+        compute_rms_dbfs_i16(in_mic, qs * transport_mic_channels > 0 ? qs : 0),
         std::memory_order_relaxed);
   }
 
@@ -861,9 +845,6 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   // decoupled feed/fetch topology mandated by esp-sr.
   size_t output_bytes = static_cast<size_t>(os) * sizeof(int16_t);
   bool processed = false;
-  bool vad_speech = false;
-  float input_vol = -120.0f;
-  float ringbuf_pct = this->ringbuf_free_pct_.load(std::memory_order_relaxed);
   if (this->fetch_output_ring_) {
     size_t got = this->fetch_output_ring_->read(reinterpret_cast<uint8_t *>(out), output_bytes, 0);
     if (got == output_bytes) {
@@ -880,14 +861,11 @@ bool EspAfe::process(const int16_t *in_mic, const int16_t *in_ref, int16_t *out,
   // only atomics on this and can safely race with a rebuild.
   this->process_busy_.store(false, std::memory_order_release);
 
-  // Output-side RMS depends on the samples handed to the caller. VAD / input
-  // volume / ringbuf_free_pct are written by fetch_task_loop_ when it pulls a
-  // frame from AFE, so this function only needs to refresh output RMS.
-  (void) vad_speech;
-  (void) input_vol;
-  (void) ringbuf_pct;
+  // Output-side RMS depends on the samples handed to the caller. VAD, input
+  // volume and ringbuf_free_pct are written by fetch_task_loop_ when it pulls
+  // a frame from AFE, so this function only needs to refresh output RMS.
   if (processed && this->output_rms_sensor_enabled_) {
-    this->output_rms_dbfs_.store(compute_rms_dbfs(out, os), std::memory_order_relaxed);
+    this->output_rms_dbfs_.store(compute_rms_dbfs_i16(out, os), std::memory_order_relaxed);
   }
   this->frame_count_.fetch_add(1, std::memory_order_relaxed);
   finish_process_timing();

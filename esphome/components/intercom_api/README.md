@@ -23,11 +23,11 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 │                      intercom_api Component                      │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐ │
 │  │   server_task   │  │    tx_task      │  │  speaker_task   │ │
-│  │   (Core 1, p7)  │  │   (Core 0, p6)  │  │   (Core 0, p4)  │ │
+│  │   (Core 1, p5)  │  │   (Core 0, p5)  │  │   (Core 0, p4)  │ │
 │  │                 │  │                 │  │                 │ │
 │  │ • TCP accept    │  │ • mic_buffer_   │  │ • speaker_buf   │ │
 │  │ • RX handling   │  │ • audio_proc.   │  │ • I2S write     │ │
-│  │ • Protocol FSM  │  │   process()     │  │ • Scheduled     │ │
+│  │ • Protocol FSM  │  │   process()     │  │ • AEC ref feed  │ │
 │  │                 │  │ • TCP send      │  │                 │ │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘ │
 │           │                    │                    │          │
@@ -109,7 +109,6 @@ intercom_api:
 | `speaker` | ID | Required | Reference to speaker component |
 | `processor_id` | ID | - | Reference to an audio processor. **Use `esp_aec` only** when `intercom_api` runs without `i2s_audio_duplex` in front of it (the standalone dual-bus MEMS + amp setup). `esp_afe` is type-compatible but its feed/fetch tasks need the fixed-cadence frames that only `i2s_audio_duplex` produces; pairing `esp_afe` with standalone `intercom_api` will silently fail to process audio. With `i2s_audio_duplex` in the chain both processors are valid. |
 | `aec_reference_delay_ms` | int | 80 | AEC ring buffer pre-fill delay (10-200ms). Tune for your hardware if echo cancellation is poor. |
-
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
 | `tasks_stack_in_psram` | bool | false | Place the server / tx / speaker task stacks in PSRAM (saves ~28 KB of internal heap on S3/P4 builds where AFE/MWW/LVGL compete for it). Requires PSRAM and `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"`. Leave default `false` on plain ESP32 boards without PSRAM, otherwise the tasks fail to start and the component is disabled. The full-experience S3/P4/Xiaozhi YAMLs in `yamls/full-experience/single-bus/` set this to `true`. |
@@ -456,7 +455,7 @@ id(intercom).set_auto_answer(false);
 - Sample rate: 16000 Hz
 - Bit depth: 16-bit signed PCM
 - Channels: Mono
-- Chunk size: 512 bytes (256 samples = 16ms)
+- Chunk size: 1024 bytes (512 samples = 32 ms)
 
 ## Auto-created Sensors
 

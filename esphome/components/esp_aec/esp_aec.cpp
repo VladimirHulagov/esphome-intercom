@@ -35,18 +35,17 @@ static bool is_high_perf_mode_(aec_mode_t m) {
   return m == AEC_MODE_SR_HIGH_PERF || static_cast<int>(m) == 4;  // 4 = VOIP_HIGH_PERF
 }
 
-static const char *mode_name_(aec_mode_t m) {
-  switch (static_cast<int>(m)) {
+const char *EspAec::get_mode_name(aec_mode_t mode) {
+  switch (static_cast<int>(mode)) {
     case AEC_MODE_SR_LOW_COST: return "sr_low_cost";
     case AEC_MODE_SR_HIGH_PERF: return "sr_high_perf";
     case 3: return "voip_low_cost";
     case 4: return "voip_high_perf";
-    default: return "?";
+    default: return "sr_low_cost";
   }
 }
 
 void EspAec::setup() {
-  ESP_LOGI(TAG, "Initializing AEC...");
   this->handle_mutex_ = xSemaphoreCreateMutex();
   if (this->handle_mutex_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create handle_mutex_");
@@ -62,9 +61,6 @@ void EspAec::setup() {
     return;
   }
   this->cached_frame_size_ = aec_get_chunksize(this->handle_);
-  ESP_LOGI(TAG, "AEC initialized: rate=%d, filter=%d, frame=%d (%dms)",
-           this->sample_rate_, this->filter_length_, this->cached_frame_size_,
-           this->cached_frame_size_ * 1000 / this->sample_rate_);
 }
 
 EspAec::~EspAec() {
@@ -87,7 +83,7 @@ void EspAec::dump_config() {
   ESP_LOGCONFIG(TAG, "  Sample Rate: %d Hz", this->sample_rate_);
   ESP_LOGCONFIG(TAG, "  Filter Length: %d", this->filter_length_);
   ESP_LOGCONFIG(TAG, "  Frame Size: %d samples", this->cached_frame_size_);
-  ESP_LOGCONFIG(TAG, "  Mode: %d", (int) this->mode_);
+  ESP_LOGCONFIG(TAG, "  Mode: %s", this->get_mode_name());
   ESP_LOGCONFIG(TAG, "  Initialized: %s", this->is_initialized() ? "YES" : "NO");
 }
 
@@ -156,7 +152,7 @@ bool EspAec::reconfigure(int type, int mode) {
 
 bool EspAec::reinit_(aec_mode_t new_mode) {
   ESP_LOGI(TAG, "Reinitializing AEC: mode %d -> %d (%s -> %s)",
-           (int) this->mode_, (int) new_mode, mode_name_(this->mode_), mode_name_(new_mode));
+           (int) this->mode_, (int) new_mode, get_mode_name(this->mode_), get_mode_name(new_mode));
   // L1 fix: serialize against process() and preserve rollback capability.
   if (this->handle_mutex_ == nullptr) {
     ESP_LOGE(TAG, "reinit_: handle_mutex_ not initialized");
@@ -177,10 +173,10 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
                "mode change to avoid silent fft calloc fail in aec_create. "
                "Keeping mode=%s. Free DRAM first (e.g. CONFIG_ESP_WIFI_IRAM_OPT=n) "
                "to use this mode.",
-               mode_name_(new_mode), this->filter_length_,
+               get_mode_name(new_mode), this->filter_length_,
                (unsigned) threshold,
                (unsigned) largest_internal,
-               mode_name_(this->mode_));
+               get_mode_name(this->mode_));
       return false;
     }
   }
@@ -188,11 +184,10 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
   xSemaphoreTake(this->handle_mutex_, portMAX_DELAY);
   aec_handle_t *old_handle = this->handle_;
   aec_mode_t old_mode = this->mode_;
-  int old_frame_size = this->cached_frame_size_;
   // Try to build new handle BEFORE destroying old (rollback if fails).
   aec_handle_t *new_handle = aec_create(this->sample_rate_, this->filter_length_, 1, new_mode);
   if (new_handle == nullptr) {
-    ESP_LOGE(TAG, "Failed to create new AEC instance, keeping old (mode=%s)", mode_name_(old_mode));
+    ESP_LOGE(TAG, "Failed to create new AEC instance, keeping old (mode=%s)", get_mode_name(old_mode));
     xSemaphoreGive(this->handle_mutex_);
     return false;
   }
@@ -206,7 +201,6 @@ bool EspAec::reinit_(aec_mode_t new_mode) {
     this->last_frame_size_ = this->cached_frame_size_;
     this->frame_spec_revision_.fetch_add(1, std::memory_order_release);
   }
-  (void) old_frame_size;
   ESP_LOGI(TAG, "AEC reinitialized: mode=%d, frame=%d (%dms)",
            (int) this->mode_, this->cached_frame_size_,
            this->cached_frame_size_ * 1000 / this->sample_rate_);

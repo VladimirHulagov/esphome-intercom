@@ -21,7 +21,6 @@
 
 #include <atomic>
 #include <memory>
-#include <numeric>
 
 namespace esphome {
 namespace esp_afe {

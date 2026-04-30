@@ -22,23 +22,6 @@ namespace i2s_audio_duplex {
 
 static const char *const TAG = "i2s_duplex";
 
-static inline float compute_rms_dbfs(const int16_t *data, size_t samples, size_t stride = 1) {
-  if (samples == 0) {
-    return -120.0f;
-  }
-  uint64_t sumsq = 0;
-  for (size_t i = 0; i < samples; i++) {
-    int32_t s = data[i * stride];
-    sumsq += static_cast<uint64_t>(s * s);
-  }
-  float mean = static_cast<float>(sumsq) / static_cast<float>(samples);
-  float rms = std::sqrt(mean) / 32768.0f;
-  if (rms < 1e-6f) {
-    rms = 1e-6f;
-  }
-  return 20.0f * std::log10(rms);
-}
-
 // Helper: get MCLK multiple enum from integer value
 static i2s_mclk_multiple_t get_mclk_multiple(uint32_t mult) {
   switch (mult) {
@@ -125,15 +108,18 @@ void I2SAudioDuplex::setup() {
 
   // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
   // Direct copy of previous TX frame, used for decimation on the next AEC pass.
+  // Respect buffers_in_psram_ like the rest of the audio buffers: strict
+  // placement, no PSRAM-first-then-fallback, so explicit user intent wins.
   if (this->processor_ != nullptr && !this->use_stereo_aec_ref_ && !this->use_tdm_ref_) {
     size_t bus_frame_size = this->sample_rate_ / 1000 * 32;
-    RAMAllocator<int16_t> alloc;
-    this->direct_aec_ref_ = alloc.allocate(bus_frame_size);
+    const uint32_t caps = this->buffers_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
+    this->direct_aec_ref_ = static_cast<int16_t *>(
+        heap_caps_malloc(bus_frame_size * sizeof(int16_t), caps));
     if (this->direct_aec_ref_ != nullptr) {
       memset(this->direct_aec_ref_, 0, bus_frame_size * sizeof(int16_t));
-    }
-    if (this->direct_aec_ref_) {
-      ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples)", (unsigned)bus_frame_size);
+      ESP_LOGD(TAG, "AEC reference: direct from TX (%u samples, %s)",
+               (unsigned)bus_frame_size,
+               this->buffers_in_psram_ ? "PSRAM" : "internal");
     } else {
       ESP_LOGE(TAG, "Failed to allocate direct AEC reference buffer");
     }
@@ -472,7 +458,7 @@ void I2SAudioDuplex::deinit_i2s_() {
     i2s_del_channel(this->rx_handle_);
     this->rx_handle_ = nullptr;
   }
-  ESP_LOGD(TAG, "I2S deinitialized");
+  ESP_LOGI(TAG, "I2S deinitialized");
 }
 
 void I2SAudioDuplex::start() {
@@ -567,9 +553,12 @@ void I2SAudioDuplex::start() {
 
   this->speaker_buffer_->reset();
 
-  // Reset FIR decimators for clean state
+  // Reset FIR decimators for clean state. rx_decimator_ is lazily initialised
+  // inside audio_session_, so reset only when its consumer path is active.
   this->mic_decimator_.reset();
-  this->rx_decimator_.reset();
+  if (this->use_tdm_ref_ || this->use_stereo_aec_ref_) {
+    this->rx_decimator_.reset();
+  }
   this->play_ref_decimator_.reset();
 
 #ifdef USE_AUDIO_PROCESSOR
@@ -645,7 +634,7 @@ void I2SAudioDuplex::register_mic_consumer(void *token) {
     needs_start = !this->duplex_running_.load(std::memory_order_relaxed);
   }
   if (first_consumer) {
-    ESP_LOGI(TAG, "Mic consumer registered (token=%p) — mic path active (consumers=%zu)",
+    ESP_LOGI(TAG, "Mic consumer registered (token=%p), mic path active (consumers=%zu)",
              token, count_after);
   } else {
     ESP_LOGD(TAG, "Mic consumer registered (token=%p, consumers=%zu)", token, count_after);
@@ -674,7 +663,7 @@ void I2SAudioDuplex::unregister_mic_consumer(void *token) {
     return;
   }
   if (last_consumer_gone) {
-    ESP_LOGI(TAG, "Last mic consumer removed (token=%p) — mic path idle", token);
+    ESP_LOGI(TAG, "Last mic consumer removed (token=%p), mic path idle", token);
   } else {
     ESP_LOGD(TAG, "Mic consumer unregistered (token=%p, consumers=%zu)", token, count_after);
   }
@@ -929,7 +918,7 @@ void I2SAudioDuplex::audio_session_() {
   }
 
 #ifdef USE_DUPLEX_TELEMETRY
-  ESP_LOGI(TAG, "Heap after audio init: internal=%u, PSRAM=%u",
+  ESP_LOGD(TAG, "Heap after audio init: internal=%u, PSRAM=%u",
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 #endif
@@ -977,7 +966,7 @@ void I2SAudioDuplex::audio_session_() {
     if (this->processor_ != nullptr) {
       uint32_t rev = this->processor_->frame_spec_revision();
       if (rev != ctx.processor_spec_revision) {
-        ESP_LOGD(TAG, "Processor frame_spec changed (rev %u -> %u), restarting session",
+        ESP_LOGI(TAG, "Processor frame_spec changed (rev %u -> %u), restarting session",
                  (unsigned) ctx.processor_spec_revision, (unsigned) rev);
         break;
       }
@@ -1158,6 +1147,8 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
   // Fused loop: DC offset + mic attenuation in one pass.
   // For dual-mic: mic1 is in mic_buffer, mic2 is in processor_mic_buffer[i*2+1]
   // (both filled by the multi-channel FIR). Apply DC+atten on both, update in-place.
+  // When neither DC nor attenuation is needed, processor_mic_buffer (dual_mic case)
+  // is left as-is: the multi-channel FIR has already produced correct values for both mics.
   const bool do_dc = ctx.correct_dc_offset;
   const bool do_atten = ctx.mic_attenuation != 1.0f;
   const bool dual_mic = ctx.processor_mic_channels > 1 && ctx.processor_mic_buffer != nullptr;
@@ -1198,11 +1189,8 @@ void I2SAudioDuplex::process_rx_path_(AudioTaskCtx &ctx) {
         ctx.processor_mic_buffer[i * 2 + 1] = s2;
       }
     }
-  } else if (dual_mic) {
-    // No DC or attenuation, but mic1 in processor_mic_buffer needs updating
-    // (FIR wrote raw values, mic_buffer has same raw values)
-    // processor_mic_buffer already has correct values from FIR, nothing to do
   }
+  // dual_mic with no DC/atten: processor_mic_buffer already correct from FIR (see top comment).
 }
 
 void I2SAudioDuplex::update_tdm_slot_levels_(const AudioTaskCtx &ctx) {
@@ -1233,16 +1221,9 @@ void I2SAudioDuplex::update_tdm_slot_levels_(const AudioTaskCtx &ctx) {
     if (ctx.i2s_bps == 4 && ctx.ratio > 1) {
       // 32-bit mode with decimation: rx_buffer has not been converted to 16-bit
       auto *src32 = reinterpret_cast<const int32_t *>(ctx.rx_buffer);
-      uint64_t sumsq = 0;
-      for (size_t j = 0; j < frame_samples; j++) {
-        int32_t s = src32[j * slot_stride + slot] >> 16;
-        sumsq += static_cast<uint64_t>(s * s);
-      }
-      float mean = static_cast<float>(sumsq) / static_cast<float>(frame_samples);
-      float rms = std::sqrt(mean) / 32768.0f;
-      dbfs = (rms < 1e-6f) ? -120.0f : 20.0f * std::log10(rms);
+      dbfs = compute_rms_dbfs_i32_top16(src32 + slot, frame_samples, slot_stride);
     } else {
-      dbfs = compute_rms_dbfs(ctx.rx_buffer + slot, frame_samples, slot_stride);
+      dbfs = compute_rms_dbfs_i16(ctx.rx_buffer + slot, frame_samples, slot_stride);
     }
     this->tdm_slot_level_dbfs_[slot].store(dbfs, std::memory_order_relaxed);
   }

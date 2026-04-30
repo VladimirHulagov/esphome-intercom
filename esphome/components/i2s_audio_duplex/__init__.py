@@ -388,7 +388,7 @@ async def to_code(config):
     # Telemetry: per-stage cycle counting and diagnostics
     if config[CONF_TELEMETRY]:
         cg.add_define("USE_DUPLEX_TELEMETRY")
-    cg.add(var.set_telemetry_log_interval_frames(config[CONF_TELEMETRY_LOG_INTERVAL_FRAMES]))
+        cg.add(var.set_telemetry_log_interval_frames(config[CONF_TELEMETRY_LOG_INTERVAL_FRAMES]))
 
     # Link audio processor if configured
     if CONF_PROCESSOR_ID in config:

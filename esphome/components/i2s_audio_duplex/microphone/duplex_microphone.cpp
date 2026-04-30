@@ -97,11 +97,13 @@ void I2SAudioDuplexMicrophone::on_audio_data_(const uint8_t *data, size_t len) {
   }
 
   if (this->mute_state_) {
-    // Send silence; keeps pipeline running but no real audio leaks
-    this->audio_buffer_.assign(len, 0);
-  } else {
-    this->audio_buffer_.assign(data, data + len);
+    // Mute: drop the frame entirely. Both MWW and VoiceAssistant write incoming
+    // data to a ring buffer with no watchdog on absence; skipping dispatch is
+    // equivalent to silence at the consumer (no detection, no STT) and saves
+    // a 2 KB memset plus the downstream inference cycles on the MWW task.
+    return;
   }
+  this->audio_buffer_.assign(data, data + len);
   this->data_callbacks_.call(this->audio_buffer_);
 }
 
@@ -130,7 +132,7 @@ void I2SAudioDuplexMicrophone::loop() {
       if (this->status_has_error()) {
         break;
       }
-      ESP_LOGD(TAG, "Microphone started");
+      ESP_LOGI(TAG, "Microphone started");
       this->parent_->register_mic_consumer(this);
       this->state_ = microphone::STATE_RUNNING;
       if (this->event_group_ != nullptr) {
@@ -142,7 +144,7 @@ void I2SAudioDuplexMicrophone::loop() {
       break;
 
     case microphone::STATE_STOPPING:
-      ESP_LOGD(TAG, "Microphone stopped");
+      ESP_LOGI(TAG, "Microphone stopped");
       this->parent_->unregister_mic_consumer(this);
       this->state_ = microphone::STATE_STOPPED;
       if (this->event_group_ != nullptr) {

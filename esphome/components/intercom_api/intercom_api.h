@@ -201,7 +201,6 @@ class IntercomApi : public Component {
 
   // Mode setting
   void set_full_mode(bool full) { this->full_mode_ = full; }
-  bool is_full_mode() const { return this->full_mode_; }
 
   // Sensor registration
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
@@ -259,6 +258,18 @@ class IntercomApi : public Component {
   // Only created when has_intercom_processor_() (AEC processing needs dedicated task)
   static void tx_task(void *param);
   void tx_task_();
+
+  // Build AUDIO message header + payload and send over the active client
+  // socket. Noops if not active or no socket. Used by both AEC and pass-through
+  // TX paths.
+  void send_chunk_(const uint8_t *data, size_t length);
+
+#ifdef USE_AUDIO_PROCESSOR
+  // Drain `audio_chunk` (AUDIO_CHUNK_SIZE bytes) into the AEC accumulator,
+  // process every complete AEC frame, and send each result via send_chunk_().
+  // Updates aec_mic_fill_ across calls.
+  void process_aec_chunk_(const uint8_t *audio_chunk);
+#endif
 
   // Speaker task - handles playback from speaker buffer (Core 0)
   // Only created when has_intercom_processor_() (needs to feed AEC reference buffer)
@@ -374,6 +385,9 @@ class IntercomApi : public Component {
   // Volume: atomic, shared between main/api thread and audio tasks
   std::atomic<float> volume_{1.0f};
 
+  // Diagnostic counters
+  uint32_t spk_overflow_count_{0};
+
   // Auto-answer (default true for backward compatibility)
   bool auto_answer_{true};
 
@@ -431,12 +445,6 @@ class IntercomApi : public Component {
   int16_t *aec_out_{nullptr};   // AEC output samples (frame_size)
   size_t aec_mic_fill_{0};      // Current fill level in aec_mic_
 #endif
-
-  // Internal triggers (TCP lifecycle)
-  Trigger<> connect_trigger_;
-  Trigger<> disconnect_trigger_;
-  Trigger<> start_trigger_;
-  Trigger<> stop_trigger_;
 
   // Call state triggers (exposed to YAML)
   Trigger<> ringing_trigger_;
