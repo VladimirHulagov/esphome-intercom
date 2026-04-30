@@ -2199,8 +2199,9 @@ font:
       weight: 500
     id: font_state
     size: 28
-    glyphsets:
-      - GF_Latin_Core
+    # Static IC labels only: IDLE, RINGING, CALLING, IN CALL.
+    # Explicit glyphs save ~150 KB flash vs GF_Latin_Core (319 glyphs).
+    glyphs: " ACDEGILNR"
   - file:
       type: gfonts
       family: Roboto

@@ -954,8 +954,9 @@ font:
       weight: 500
     id: font_state
     size: 28
-    glyphsets:
-      - GF_Latin_Core
+    # Static labels only: IDLE, RINGING, CALLING, IN CALL, No WiFi, No HA.
+    # Explicit glyphs save ~150 KB flash vs GF_Latin_Core (319 glyphs).
+    glyphs: " ACDEFGHILNRWio"
 
 # =============================================================================
 # LVGL display engine (intercom-only: 4 IC pages + no_wifi/no_ha + top status)
