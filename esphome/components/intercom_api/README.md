@@ -112,6 +112,7 @@ intercom_api:
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
 | `tasks_stack_in_psram` | bool | false | Place the server / tx / speaker task stacks in PSRAM (saves ~28 KB of internal heap on S3/P4 builds where AFE/MWW/LVGL compete for it). Requires PSRAM and `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"`. Leave default `false` on plain ESP32 boards without PSRAM, otherwise the tasks fail to start and the component is disabled. The full-experience S3/P4/Xiaozhi YAMLs in `yamls/full-experience/single-bus/` set this to `true`. |
+| `frame_buffers_in_psram` | bool | false | Place the working frame buffers (`aec_mic`, `aec_ref`, `aec_out`, ~3 KB total) in PSRAM. These buffers stage every audio frame fed to whichever processor (`esp_aec` or `esp_afe`) is wired via `processor_id`. Default `false` keeps them in internal RAM, saving ~20 us/frame on Core 0 (each buffer is written and read every AEC frame). Set `true` to save 3 KB of internal RAM at the cost of Core 0 PSRAM traffic; on systems without PSRAM the allocator falls back to internal automatically. The full-experience and intercom-only YAMLs ship with this `true` to replicate the historical behaviour. |
 
 ## Operating Modes
 

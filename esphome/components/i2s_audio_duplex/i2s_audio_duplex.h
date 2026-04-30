@@ -240,6 +240,7 @@ class I2SAudioDuplex : public Component {
   void set_audio_stack_in_psram(bool psram) { this->audio_stack_in_psram_ = psram; }
   void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
   void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
+  void set_aec_ref_ring_in_psram(bool psram) { this->aec_ref_ring_in_psram_ = psram; }
   void set_telemetry_log_interval_frames(uint16_t frames) { this->telemetry_log_interval_frames_ = frames; }
 
  protected:
@@ -444,6 +445,7 @@ class I2SAudioDuplex : public Component {
   uint32_t task_stack_size_{8192};
   bool buffers_in_psram_{false};  // Non-DMA buffers in PSRAM (saves ~15KB internal RAM)
   bool audio_stack_in_psram_{false};  // Audio task stack in PSRAM (saves ~8KB internal RAM)
+  bool aec_ref_ring_in_psram_{false};  // AEC reference ring in PSRAM (saves ~3-5 KB internal, costs ~13.6 us/frame Core 0)
   StackType_t *audio_task_stack_{nullptr};  // Owned when audio_stack_in_psram_ is true
   StaticTask_t audio_task_tcb_{};            // Static TCB for the permanent audio task
   uint16_t telemetry_log_interval_frames_{128};

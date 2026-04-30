@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
 
 #include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
@@ -16,7 +18,9 @@
 
 namespace {
 constexpr size_t MIC_CONVERTED_SAMPLES = 512;
-constexpr size_t SPK_REF_SCALED_SAMPLES = 1024;
+// speaker_task_ batches up to AUDIO_CHUNK_SIZE * 4 bytes per iteration (intercom_api.cpp speaker_task_),
+// scale loop writes one int16 per input byte/2, so the buffer must hold AUDIO_CHUNK_SIZE * 4 / 2 samples.
+constexpr size_t SPK_REF_SCALED_SAMPLES = (esphome::intercom_api::AUDIO_CHUNK_SIZE * 4) / sizeof(int16_t);
 }  // namespace
 
 namespace esphome {
@@ -69,10 +73,6 @@ void IntercomApi::setup() {
     if (this->mic_converted_ != nullptr) {
       psram_i16.deallocate(this->mic_converted_, MIC_CONVERTED_SAMPLES);
       this->mic_converted_ = nullptr;
-    }
-    if (this->audio_tx_buffer_ != nullptr) {
-      psram_u8.deallocate(this->audio_tx_buffer_, MAX_MESSAGE_SIZE);
-      this->audio_tx_buffer_ = nullptr;
     }
     if (this->rx_buffer_ != nullptr) {
       psram_u8.deallocate(this->rx_buffer_, MAX_MESSAGE_SIZE);
@@ -153,7 +153,13 @@ void IntercomApi::setup() {
   // Protocol/audio scratch buffers: PSRAM-first (RAMAllocator default falls
   // back to internal when PSRAM is absent). None are DMA-bound.
   RAMAllocator<uint8_t> psram_u8;
-  RAMAllocator<int16_t> psram_i16;
+  // Frame staging buffers (mic_converted_, spk_ref_scaled_): placement gated
+  // by frame_buffers_in_psram_ (same flag that controls aec_mic/ref/out below).
+  // Default false = internal RAM, saving ~14 us/frame on the mic path and up
+  // to ~54 us/iter on the speaker path when volume scaling is active.
+  RAMAllocator<int16_t> psram_i16 = this->frame_buffers_in_psram_
+      ? RAMAllocator<int16_t>()
+      : RAMAllocator<int16_t>(RAMAllocator<int16_t>::ALLOC_INTERNAL);
   this->tx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
   this->rx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
 
@@ -162,16 +168,6 @@ void IntercomApi::setup() {
     cleanup_partial();
     this->mark_failed();
     return;
-  }
-
-  if (use_intercom_aec) {
-    this->audio_tx_buffer_ = psram_u8.allocate(MAX_MESSAGE_SIZE);
-    if (!this->audio_tx_buffer_) {
-      ESP_LOGE(TAG, "Failed to allocate audio TX buffer");
-      cleanup_partial();
-      this->mark_failed();
-      return;
-    }
   }
 
   this->mic_converted_ = psram_i16.allocate(MIC_CONVERTED_SAMPLES);
@@ -616,7 +612,12 @@ void IntercomApi::set_aec_enabled(bool enabled) {
       const size_t ref_delay_bytes = (SAMPLE_RATE * this->aec_ref_delay_ms_ / 1000) * sizeof(int16_t);
       this->spk_ref_buffer_ = audio_processor::create_prefer_psram(
           ref_delay_bytes + RX_BUFFER_SIZE, "intercom.spk_ref");
-      RAMAllocator<int16_t> aec_alloc;
+      // Placement YAML-controlled: internal saves ~20 us/frame on Core 0 (3 KB R+W),
+      // PSRAM saves 3 KB internal RAM (set frame_buffers_in_psram). RAMAllocator's
+      // default-constructed instance uses INTERNAL|EXTERNAL (PSRAM-first).
+      RAMAllocator<int16_t> aec_alloc = this->frame_buffers_in_psram_
+          ? RAMAllocator<int16_t>()
+          : RAMAllocator<int16_t>(RAMAllocator<int16_t>::ALLOC_INTERNAL);
       this->aec_mic_ = aec_alloc.allocate(frame_samples);
       this->aec_ref_ = aec_alloc.allocate(frame_samples);
       this->aec_out_ = aec_alloc.allocate(frame_samples);
@@ -1062,10 +1063,18 @@ void IntercomApi::send_chunk_(const uint8_t *data, size_t length) {
   header.flags = static_cast<uint8_t>(MessageFlags::NONE);
   header.length = length;
 
-  memcpy(this->audio_tx_buffer_, &header, HEADER_SIZE);
-  memcpy(this->audio_tx_buffer_ + HEADER_SIZE, data, length);
+  // Scatter/gather: hand header + payload to lwIP without an intermediate
+  // memcpy into a staging buffer. Best effort, no retry on partial sends.
+  struct iovec iov[2];
+  iov[0].iov_base = &header;
+  iov[0].iov_len = HEADER_SIZE;
+  iov[1].iov_base = const_cast<uint8_t *>(data);
+  iov[1].iov_len = length;
+  struct msghdr msg{};
+  msg.msg_iov = iov;
+  msg.msg_iovlen = 2;
 
-  ssize_t sent = send(socket, this->audio_tx_buffer_, HEADER_SIZE + length, MSG_DONTWAIT);
+  ssize_t sent = sendmsg(socket, &msg, MSG_DONTWAIT);
   if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
     // Only log if still streaming - avoid noise during shutdown.
     if (this->client_.streaming.load(std::memory_order_acquire)) {

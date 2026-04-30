@@ -57,6 +57,9 @@ CONF_AFE_LINEAR_GAIN = "afe_linear_gain"
 CONF_TASK_CORE = "task_core"
 CONF_TASK_PRIORITY = "task_priority"
 CONF_RINGBUF_SIZE = "ringbuf_size"
+CONF_FEED_BUF_IN_PSRAM = "feed_buf_in_psram"
+CONF_FEED_RING_IN_PSRAM = "feed_ring_in_psram"
+CONF_FETCH_RING_IN_PSRAM = "fetch_ring_in_psram"
 
 AFE_TYPES = {
     "sr": 0,  # AFE_TYPE_SR: speech recognition, linear AEC
@@ -102,6 +105,14 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_TASK_CORE, default=1): cv.int_range(min=0, max=1),
             cv.Optional(CONF_TASK_PRIORITY, default=8): cv.int_range(min=1, max=24),
             cv.Optional(CONF_RINGBUF_SIZE, default=8): cv.int_range(min=2, max=32),
+            # Buffer placement knobs. Default false = internal RAM (fastest on
+            # Core 0); set true to free internal at the cost of PSRAM traffic.
+            #   feed_buf_in_psram   : ~3 KB scratch built then re-read every frame (~41 us/frame)
+            #   feed_ring_in_psram  : ~12 KB staging ring written every frame (~20 us/frame)
+            #   fetch_ring_in_psram : ~4 KB output ring read every frame (~6.8 us/frame)
+            cv.Optional(CONF_FEED_BUF_IN_PSRAM, default=False): cv.boolean,
+            cv.Optional(CONF_FEED_RING_IN_PSRAM, default=False): cv.boolean,
+            cv.Optional(CONF_FETCH_RING_IN_PSRAM, default=False): cv.boolean,
         }
     ).extend(cv.COMPONENT_SCHEMA),
     _validate_esp32_variant,
@@ -135,6 +146,9 @@ async def to_code(config):
     cg.add(var.set_task_core(config[CONF_TASK_CORE]))
     cg.add(var.set_task_priority(config[CONF_TASK_PRIORITY]))
     cg.add(var.set_ringbuf_size(config[CONF_RINGBUF_SIZE]))
+    cg.add(var.set_feed_buf_in_psram(config[CONF_FEED_BUF_IN_PSRAM]))
+    cg.add(var.set_feed_ring_in_psram(config[CONF_FEED_RING_IN_PSRAM]))
+    cg.add(var.set_fetch_ring_in_psram(config[CONF_FETCH_RING_IN_PSRAM]))
 
     cg.add_define("USE_AUDIO_PROCESSOR")
 

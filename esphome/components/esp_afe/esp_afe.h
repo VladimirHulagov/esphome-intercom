@@ -103,6 +103,9 @@ class EspAfe : public Component, public AudioProcessor {
   void set_task_core(int core) { this->task_core_ = core; }
   void set_task_priority(int prio) { this->task_priority_ = prio; }
   void set_ringbuf_size(int size) { this->ringbuf_size_ = size; }
+  void set_feed_buf_in_psram(bool psram) { this->feed_buf_in_psram_ = psram; }
+  void set_feed_ring_in_psram(bool psram) { this->feed_ring_in_psram_ = psram; }
+  void set_fetch_ring_in_psram(bool psram) { this->fetch_ring_in_psram_ = psram; }
   void set_input_volume_sensor_enabled(bool en) { this->input_volume_sensor_enabled_ = en; }
   void set_output_rms_sensor_enabled(bool en) { this->output_rms_sensor_enabled_ = en; }
 
@@ -262,6 +265,9 @@ class EspAfe : public Component, public AudioProcessor {
   int task_core_{1};
   int task_priority_{8};
   int ringbuf_size_{8};
+  bool feed_buf_in_psram_{false};   // ~3 KB scratch (default internal, ~41 us/frame faster on Core 0)
+  bool feed_ring_in_psram_{false};  // ~12 KB staging ring (default internal, ~20 us/frame faster on Core 0)
+  bool fetch_ring_in_psram_{false}; // ~4 KB output ring (default internal, ~6.8 us/frame faster on Core 0)
 
   // config_mutex_ serialises config-change paths (recreate_instance_,
   // set_aec_enabled_runtime_, destructor). It is NOT taken by process() on

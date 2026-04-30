@@ -203,8 +203,9 @@ bool EspAfe::build_instance_(AfeInstance *instance) {
   }
   size_t feed_bytes = static_cast<size_t>(feed_chunksize) * total_channels * sizeof(int16_t);
 
-  int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_SPIRAM));
-  if (feed_buf == nullptr) {
+  const uint32_t feed_buf_caps = this->feed_buf_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
+  int16_t *feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, feed_buf_caps));
+  if (feed_buf == nullptr && this->feed_buf_in_psram_) {
     ESP_LOGW(TAG, "feed_buf (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
              static_cast<unsigned>(feed_bytes));
     feed_buf = static_cast<int16_t *>(heap_caps_aligned_alloc(16, feed_bytes, MALLOC_CAP_INTERNAL));
@@ -959,9 +960,9 @@ bool EspAfe::start_feed_task_() {
     const size_t frame_bytes = static_cast<size_t>(this->feed_chunksize_) *
                                this->total_channels_ * sizeof(int16_t);
     const size_t ring_size = (frame_bytes + 8) * 4;
-    this->feed_input_ring_storage_ = static_cast<uint8_t *>(
-        heap_caps_malloc(ring_size, MALLOC_CAP_SPIRAM));
-    if (this->feed_input_ring_storage_ == nullptr) {
+    const uint32_t feed_ring_caps = this->feed_ring_in_psram_ ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
+    this->feed_input_ring_storage_ = static_cast<uint8_t *>(heap_caps_malloc(ring_size, feed_ring_caps));
+    if (this->feed_input_ring_storage_ == nullptr && this->feed_ring_in_psram_) {
       ESP_LOGW(TAG, "feed_input_ring (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
                (unsigned) ring_size);
       this->feed_input_ring_storage_ = static_cast<uint8_t *>(
@@ -1119,11 +1120,12 @@ bool EspAfe::start_fetch_task_() {
   if (!this->fetch_output_ring_) {
     // 4 frames of headroom (~128 ms at 16 kHz / 512-sample fetch) absorb
     // consumer-side jitter when process() is preempted by higher-priority
-    // tasks. Sizing it at 2 frames let transient drops accumulate; 4 keeps
-    // output_ring_drop at zero with a few KB of PSRAM.
+    // tasks. Placement is YAML-controlled: internal saves ~6.8 us/frame on
+    // Core 0 read, PSRAM saves ~4 KB internal RAM (set fetch_ring_in_psram).
     const size_t frame_bytes = static_cast<size_t>(this->fetch_chunksize_) * sizeof(int16_t);
-    this->fetch_output_ring_ = audio_processor::create_prefer_psram(
-        frame_bytes * 4, "esp_afe.fetch_output_ring");
+    this->fetch_output_ring_ = this->fetch_ring_in_psram_
+        ? audio_processor::create_prefer_psram(frame_bytes * 4, "esp_afe.fetch_output_ring")
+        : audio_processor::create_internal(frame_bytes * 4, "esp_afe.fetch_output_ring");
     if (!this->fetch_output_ring_) {
       ESP_LOGE(TAG, "Failed to allocate AFE fetch output ring buffer");
       return false;

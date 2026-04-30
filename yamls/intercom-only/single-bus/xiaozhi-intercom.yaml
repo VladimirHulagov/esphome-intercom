@@ -285,6 +285,7 @@ media_player:
 # =============================================================================
 intercom_api:
   tasks_stack_in_psram: true
+  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   id: intercom
   mode: full
   microphone: mic_main

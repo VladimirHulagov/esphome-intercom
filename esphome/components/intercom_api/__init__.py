@@ -19,6 +19,7 @@ AUTO_LOAD = ["switch", "number", "text_sensor"]
 CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
 CONF_TASKS_STACK_IN_PSRAM = "tasks_stack_in_psram"
+CONF_FRAME_BUFFERS_IN_PSRAM = "frame_buffers_in_psram"
 
 CONF_PROCESSOR_ID = "processor_id"
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
@@ -94,6 +95,10 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_PROCESSOR_ID): _processor_schema,
         # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
         cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
+        # Place AEC working frame buffers (mic/ref/out, ~3 KB total) in PSRAM.
+        # Default false = internal RAM (~20 us/frame faster on Core 0). Set true
+        # to save 3 KB internal RAM at the cost of Core 0 PSRAM traffic.
+        cv.Optional(CONF_FRAME_BUFFERS_IN_PSRAM, default=False): cv.boolean,
         # Ringing timeout: auto-decline call if not answered within this time
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
         # Trigger when incoming call (auto_answer OFF)
@@ -182,6 +187,7 @@ async def to_code(config):
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
     cg.add(var.set_tasks_stack_in_psram(config[CONF_TASKS_STACK_IN_PSRAM]))
+    cg.add(var.set_frame_buffers_in_psram(config[CONF_FRAME_BUFFERS_IN_PSRAM]))
 
     # Set device name (for full mode: exclude self from contacts list)
     from esphome.core import CORE

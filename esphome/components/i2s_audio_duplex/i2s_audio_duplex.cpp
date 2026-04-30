@@ -1113,7 +1113,11 @@ bool I2SAudioDuplex::allocate_audio_buffers_(AudioTaskCtx &ctx) {
         !this->aec_ref_ring_buffer_) {
       size_t rb_bytes = (this->sample_rate_ * this->aec_ref_buffer_ms_ / 1000) * sizeof(int16_t);
       if (rb_bytes < ctx.bus_frame_bytes * 4) rb_bytes = ctx.bus_frame_bytes * 4;
-      this->aec_ref_ring_buffer_ = audio_processor::create_prefer_psram(rb_bytes, "i2s_duplex.aec_ref");
+      // Placement YAML-controlled: internal saves ~13.6 us/frame on Core 0 (R+W ~1 KB each),
+      // PSRAM saves ~3-5 KB internal RAM (set aec_ref_ring_in_psram).
+      this->aec_ref_ring_buffer_ = this->aec_ref_ring_in_psram_
+          ? audio_processor::create_prefer_psram(rb_bytes, "i2s_duplex.aec_ref")
+          : audio_processor::create_internal(rb_bytes, "i2s_duplex.aec_ref");
       if (!this->aec_ref_ring_buffer_) {
         return false;
       }

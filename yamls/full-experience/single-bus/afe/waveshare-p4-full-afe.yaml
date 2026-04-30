@@ -268,6 +268,11 @@ esp_afe:
   se_enabled: true              # Beamforming (dual mic)
   task_core: 1
   task_priority: 19
+  # Buffer placement: PSRAM for the AFE staging triad (replicates pre-knob default).
+  # Toggle individual flags off to free Core 0 cycles at the cost of internal RAM.
+  feed_buf_in_psram: true       # ~3 KB scratch
+  feed_ring_in_psram: true      # ~12 KB staging ring
+  fetch_ring_in_psram: true     # ~4 KB output ring
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -457,6 +462,7 @@ voice_assistant:
 # =============================================================================
 intercom_api:
   tasks_stack_in_psram: true   # save ~28KB internal heap on S3/P4 by placing task stacks in PSRAM
+  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   id: intercom
   mode: full
   microphone: mic_aec          # Post-AEC: no echo in transmitted audio

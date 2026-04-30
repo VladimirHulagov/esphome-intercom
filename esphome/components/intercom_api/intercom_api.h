@@ -143,6 +143,7 @@ class IntercomApi : public Component {
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
   void set_tasks_stack_in_psram(bool enabled) { this->tasks_stack_in_psram_ = enabled; }
+  void set_frame_buffers_in_psram(bool enabled) { this->frame_buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
 
 #ifdef USE_AUDIO_PROCESSOR
@@ -356,7 +357,6 @@ class IntercomApi : public Component {
   // Pre-allocated frame buffers
   uint8_t *tx_buffer_{nullptr};      // Used by server_task for control messages
   uint8_t *rx_buffer_{nullptr};      // Used by server_task for receiving
-  uint8_t *audio_tx_buffer_{nullptr}; // Used by tx_task for audio (no mutex needed)
   SemaphoreHandle_t send_mutex_{nullptr};  // Protects tx_buffer_ during send
 
   // Task handles and static-task storage.
@@ -421,11 +421,12 @@ class IntercomApi : public Component {
 
   // Mic configuration
   bool dc_offset_removal_{false}; // Enable for mics with DC bias (SPH0645)
+  bool frame_buffers_in_psram_{false};  // Place aec_mic_/ref_/out_ (~3 KB) in PSRAM (default internal)
   int32_t dc_offset_{0};          // Running DC offset value
 
   // Pre-allocated processing buffers (avoid stack VLAs on FreeRTOS tasks)
   int16_t *mic_converted_{nullptr};     // Mic callback processing (MAX_SAMPLES = 512 samples)
-  int16_t *spk_ref_scaled_{nullptr};    // Speaker AEC ref scaling (AUDIO_CHUNK_SIZE*4/2 = 1024 samples)
+  int16_t *spk_ref_scaled_{nullptr};    // Speaker AEC ref scaling (AUDIO_CHUNK_SIZE*4/2 = 2048 samples)
 
 #ifdef USE_AUDIO_PROCESSOR
   // AEC (Acoustic Echo Cancellation)

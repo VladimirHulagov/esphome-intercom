@@ -156,6 +156,7 @@ speaker:
 # Intercom API: Device part (merged with package callbacks)
 # =============================================================================
 intercom_api:
+  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   mode: full
   microphone: mic_main
   speaker: intercom_speaker

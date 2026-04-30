@@ -129,6 +129,11 @@ esp_afe:
 | `task_core` | int | `1` | FreeRTOS task core affinity (0 or 1) |
 | `task_priority` | int | `8` | FreeRTOS task priority (1-24) |
 | `ringbuf_size` | int | `8` | Internal ring buffer size in frames (2-32). Larger = more latency tolerance, more memory |
+| `feed_buf_in_psram` | bool | `false` | Place the ~3 KB sample-interleave scratch buffer in PSRAM. Default internal saves ~41 us/frame on Core 0 (the buffer is written and re-read every audio frame). Set `true` on memory-constrained builds to free internal RAM at the cost of Core 0 PSRAM traffic. |
+| `feed_ring_in_psram` | bool | `false` | Place the ~12 KB feed staging ring (Core 0 → feed_task) in PSRAM. Default internal saves ~20 us/frame on Core 0 writes. Set `true` if internal RAM headroom is tight. |
+| `fetch_ring_in_psram` | bool | `false` | Place the ~4 KB fetch output ring (fetch_task → Core 0) in PSRAM. Default internal saves ~6.8 us/frame on Core 0 reads. Set `true` if internal RAM headroom is tight. |
+
+> **Buffer placement guidance**: defaults are tuned for fastest Core 0 audio path. Total internal cost when all three flags are `false` is ~19 KB. On S3/P4 builds where AFE/MWW/LVGL/TLS compete for internal RAM, set `feed_buf_in_psram`, `feed_ring_in_psram` and `fetch_ring_in_psram` to `true` (the YAMLs in `yamls/full-experience/single-bus/afe/` ship with all three set to `true`). Each flag is independent so you can fine-tune. Cumulative Core 0 cost when all `true` is ~68 us/frame on Octal PSRAM 80 MHz, lower bound.
 
 > **Defaults are designed so that a minimal config already enables AEC + NS + AGC.** You only need to declare options that differ from the defaults. In particular:
 > - `aec_enabled`, `ns_enabled`, `agc_enabled` are **true** by default. Only set them if you want to **disable** a feature.
