@@ -33,14 +33,8 @@ substitutions:
   name: waveshare-s3
   friendly_name: Waveshare S3 Audio
 
-  # ---- External components: Remote (release / users without local clone) ----
-  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
-  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
   ext_components_source: "../../../../esphome/components"
 
-  # ---- Media: Remote (release / users without local clone) ----
-  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
-  # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
   assets_base: "../../../../"
 
   # Wake word sensitivity (per-device tuning)
@@ -58,12 +52,6 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  # ---- Remote (release / users without local clone) ----
-  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@audio-core-v2
-  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
-  # audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@audio-core-v2
-  # es7210_tdm: github://n-IA-hane/esphome-intercom/packages/codec/es7210_tdm.yaml@audio-core-v2
-  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../../packages/va_intercom.yaml
   s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
   audio_mem: !include ../../../../packages/profile/audio_memory.yaml
