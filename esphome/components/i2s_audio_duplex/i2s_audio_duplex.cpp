@@ -4,8 +4,10 @@
 
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
+#include <dsps_fir.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
@@ -21,6 +23,334 @@ namespace esphome {
 namespace i2s_audio_duplex {
 
 static const char *const TAG = "i2s_duplex";
+
+// =============================================================================
+// FIR DECIMATOR (Pimpl)
+// =============================================================================
+// FIR coefficients: 32-tap (31 original + 1 zero pad), cutoff=7500Hz, fs=48kHz, Kaiser beta=8.0
+// ~35dB stopband, symmetric linear phase. Q15 fixed-point for dsps_fird_s16_aes3 SIMD.
+// Source float max |c| = 0.3125 -> q15 10238 (no overflow). DC gain ~0.975.
+static_assert(FIR_NUM_TAPS % 8 == 0, "FIR_NUM_TAPS must be divisible by 8 for dsps_fird_s16_aes3");
+
+namespace {
+constexpr int16_t FIR_COEFFS_Q15[FIR_NUM_TAPS] = {
+        1,     7,     4,   -33,   -88,   -61,   146,   415,
+      350,  -357, -1335, -1407,   583,  4507,  8528, 10238,
+     8528,  4507,   583, -1407, -1335,  -357,   350,   415,
+      146,   -61,   -88,   -33,     4,     7,     1,     0,
+};
+
+int16_t *alloc_fir_int16_preferred(size_t count, const char *who) {
+  const size_t bytes = count * sizeof(int16_t);
+  int16_t *p = static_cast<int16_t *>(
+      heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (p == nullptr) {
+    ESP_LOGW(who, "buffer (%u bytes) fell back to internal RAM (PSRAM full/unavailable)",
+             static_cast<unsigned>(bytes));
+    p = static_cast<int16_t *>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+  }
+  return p;
+}
+}  // namespace
+
+class FirDecimatorImpl {
+ public:
+  ~FirDecimatorImpl() {
+    dsps_fird_s16_aexx_free(&this->fir_);
+    if (this->scratch_ != nullptr)
+      heap_caps_free(this->scratch_);
+  }
+
+  void init(uint32_t ratio) {
+    this->ratio_ = ratio;
+    memcpy(this->coeffs_local_, FIR_COEFFS_Q15, sizeof(FIR_COEFFS_Q15));
+    dsps_fird_init_s16(&this->fir_, this->coeffs_local_, this->delay_,
+                       FIR_NUM_TAPS, static_cast<int16_t>(ratio), 0, 0);
+    dsps_16_array_rev(this->fir_.coeffs, this->fir_.coeffs_len);
+  }
+
+  void reset() {
+    memset(this->delay_, 0, sizeof(this->delay_));
+    this->fir_.pos = 0;
+    this->fir_.d_pos = 0;
+  }
+
+  void process(const int16_t *in, int16_t *out, size_t in_count) {
+    if (this->ratio_ <= 1) {
+      memcpy(out, in, in_count * sizeof(int16_t));
+      return;
+    }
+    dsps_fird_s16(&this->fir_, in, out, static_cast<int32_t>(in_count / this->ratio_));
+  }
+
+  void process_strided(const int16_t *in, int16_t *out, size_t out_count,
+                       size_t stride, size_t offset) {
+    if (this->ratio_ <= 1) {
+      for (size_t i = 0; i < out_count; i++)
+        out[i] = in[i * stride + offset];
+      return;
+    }
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_scratch_(in_count))
+      return;
+    for (size_t i = 0; i < in_count; i++)
+      this->scratch_[i] = in[i * stride + offset];
+    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+  }
+
+  void process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
+                          size_t stride, size_t offset) {
+    if (this->ratio_ <= 1) {
+      for (size_t i = 0; i < out_count; i++)
+        out[i] = static_cast<int16_t>(in[i * stride + offset] >> 16);
+      return;
+    }
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_scratch_(in_count))
+      return;
+    for (size_t i = 0; i < in_count; i++)
+      this->scratch_[i] = static_cast<int16_t>(in[i * stride + offset] >> 16);
+    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+  }
+
+ private:
+  bool ensure_scratch_(size_t count) {
+    if (this->scratch_size_ >= count)
+      return true;
+    if (this->scratch_ != nullptr)
+      heap_caps_free(this->scratch_);
+    this->scratch_ = alloc_fir_int16_preferred(count, "FirDecim");
+    this->scratch_size_ = (this->scratch_ != nullptr) ? count : 0;
+    return this->scratch_ != nullptr;
+  }
+
+  uint32_t ratio_{1};
+  fir_s16_t fir_{};
+  alignas(16) int16_t coeffs_local_[FIR_NUM_TAPS]{};
+  alignas(16) int16_t delay_[FIR_NUM_TAPS]{};
+  int16_t *scratch_{nullptr};
+  size_t scratch_size_{0};
+};
+
+class MultiChannelFirDecimatorImpl {
+ public:
+  ~MultiChannelFirDecimatorImpl() {
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      dsps_fird_s16_aexx_free(&this->fir_ch_[c]);
+      if (this->out_ch_[c] != nullptr)
+        heap_caps_free(this->out_ch_[c]);
+    }
+    if (this->scratch_ != nullptr)
+      heap_caps_free(this->scratch_);
+  }
+
+  void init(uint32_t ratio, uint8_t num_channels) {
+    this->ratio_ = ratio;
+    this->num_channels_ = num_channels > MC_FIR_MAX_CH ? MC_FIR_MAX_CH : num_channels;
+    for (uint8_t c = 0; c < this->num_channels_; c++) {
+      memcpy(this->coeffs_local_ch_[c], FIR_COEFFS_Q15, sizeof(FIR_COEFFS_Q15));
+      dsps_fird_init_s16(&this->fir_ch_[c], this->coeffs_local_ch_[c],
+                         this->delay_ch_[c], FIR_NUM_TAPS,
+                         static_cast<int16_t>(ratio), 0, 0);
+      dsps_16_array_rev(this->fir_ch_[c].coeffs, this->fir_ch_[c].coeffs_len);
+    }
+  }
+
+  void reset() {
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      memset(this->delay_ch_[c], 0, sizeof(this->delay_ch_[c]));
+      this->fir_ch_[c].pos = 0;
+      this->fir_ch_[c].d_pos = 0;
+    }
+  }
+
+  void process_multi(const int16_t *in, size_t out_count, size_t in_stride,
+                     const uint8_t *channel_offsets,
+                     int16_t *mic_interleaved, int16_t *mic_mono,
+                     int16_t *ref_out, uint8_t num_mic_ch) {
+    if (this->ratio_ <= 1) {
+      this->process_multi_passthrough_(in, out_count, in_stride, channel_offsets,
+                                       mic_interleaved, mic_mono, ref_out, num_mic_ch);
+      return;
+    }
+    const uint8_t nch = this->num_channels_;
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_buffers_(in_count, out_count, nch))
+      return;
+
+    for (uint8_t c = 0; c < nch; c++) {
+      const uint8_t off = channel_offsets[c];
+      for (size_t i = 0; i < in_count; i++)
+        this->scratch_[i] = in[i * in_stride + off];
+      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                    static_cast<int32_t>(out_count));
+    }
+    this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
+  }
+
+  void process_multi_32(const int32_t *in, size_t out_count, size_t in_stride,
+                        const uint8_t *channel_offsets,
+                        int16_t *mic_interleaved, int16_t *mic_mono,
+                        int16_t *ref_out, uint8_t num_mic_ch) {
+    if (this->ratio_ <= 1) {
+      for (size_t o = 0; o < out_count; o++) {
+        int16_t s0 = static_cast<int16_t>(in[o * in_stride + channel_offsets[0]] >> 16);
+        if (mic_mono)
+          mic_mono[o] = s0;
+        if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+          int16_t s1 = static_cast<int16_t>(in[o * in_stride + channel_offsets[1]] >> 16);
+          if (mic_interleaved) {
+            mic_interleaved[o * 2] = s0;
+            mic_interleaved[o * 2 + 1] = s1;
+          }
+          if (ref_out && this->num_channels_ >= 3)
+            ref_out[o] = static_cast<int16_t>(in[o * in_stride + channel_offsets[2]] >> 16);
+        } else {
+          if (ref_out && this->num_channels_ >= 2)
+            ref_out[o] = static_cast<int16_t>(in[o * in_stride + channel_offsets[1]] >> 16);
+        }
+      }
+      return;
+    }
+    const uint8_t nch = this->num_channels_;
+    size_t in_count = out_count * this->ratio_;
+    if (!this->ensure_buffers_(in_count, out_count, nch))
+      return;
+
+    for (uint8_t c = 0; c < nch; c++) {
+      const uint8_t off = channel_offsets[c];
+      for (size_t i = 0; i < in_count; i++)
+        this->scratch_[i] = static_cast<int16_t>(in[i * in_stride + off] >> 16);
+      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                    static_cast<int32_t>(out_count));
+    }
+    this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
+  }
+
+ private:
+  void process_multi_passthrough_(const int16_t *in, size_t out_count, size_t in_stride,
+                                  const uint8_t *channel_offsets,
+                                  int16_t *mic_interleaved, int16_t *mic_mono,
+                                  int16_t *ref_out, uint8_t num_mic_ch) {
+    for (size_t o = 0; o < out_count; o++) {
+      int16_t s0 = in[o * in_stride + channel_offsets[0]];
+      if (mic_mono)
+        mic_mono[o] = s0;
+      if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+        int16_t s1 = in[o * in_stride + channel_offsets[1]];
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && this->num_channels_ >= 3)
+          ref_out[o] = in[o * in_stride + channel_offsets[2]];
+      } else {
+        if (ref_out && this->num_channels_ >= 2)
+          ref_out[o] = in[o * in_stride + channel_offsets[1]];
+      }
+    }
+  }
+
+  void distribute_output_(size_t out_count, int16_t *mic_interleaved, int16_t *mic_mono,
+                          int16_t *ref_out, uint8_t num_mic_ch) {
+    for (size_t o = 0; o < out_count; o++) {
+      int16_t s0 = this->out_ch_[0][o];
+      if (mic_mono)
+        mic_mono[o] = s0;
+      if (num_mic_ch >= 2 && this->num_channels_ >= 2) {
+        int16_t s1 = this->out_ch_[1][o];
+        if (mic_interleaved) {
+          mic_interleaved[o * 2] = s0;
+          mic_interleaved[o * 2 + 1] = s1;
+        }
+        if (ref_out && this->num_channels_ >= 3)
+          ref_out[o] = this->out_ch_[2][o];
+      } else {
+        if (ref_out && this->num_channels_ >= 2)
+          ref_out[o] = this->out_ch_[1][o];
+      }
+    }
+  }
+
+  bool ensure_buffers_(size_t in_count, size_t out_count, uint8_t nch) {
+    if (this->scratch_size_ >= in_count && this->out_size_ >= out_count)
+      return true;
+    if (this->scratch_ != nullptr) {
+      heap_caps_free(this->scratch_);
+      this->scratch_ = nullptr;
+      this->scratch_size_ = 0;
+    }
+    for (uint8_t c = 0; c < MC_FIR_MAX_CH; c++) {
+      if (this->out_ch_[c] != nullptr) {
+        heap_caps_free(this->out_ch_[c]);
+        this->out_ch_[c] = nullptr;
+      }
+    }
+    this->out_size_ = 0;
+
+    this->scratch_ = alloc_fir_int16_preferred(in_count, "MCFirDecim");
+    if (this->scratch_ == nullptr)
+      return false;
+    this->scratch_size_ = in_count;
+    for (uint8_t c = 0; c < nch; c++) {
+      this->out_ch_[c] = alloc_fir_int16_preferred(out_count, "MCFirDecim");
+      if (this->out_ch_[c] == nullptr)
+        return false;
+    }
+    this->out_size_ = out_count;
+    return true;
+  }
+
+  uint32_t ratio_{1};
+  uint8_t num_channels_{0};
+  fir_s16_t fir_ch_[MC_FIR_MAX_CH]{};
+  alignas(16) int16_t coeffs_local_ch_[MC_FIR_MAX_CH][FIR_NUM_TAPS]{};
+  alignas(16) int16_t delay_ch_[MC_FIR_MAX_CH][FIR_NUM_TAPS]{};
+  int16_t *scratch_{nullptr};
+  int16_t *out_ch_[MC_FIR_MAX_CH]{};
+  size_t scratch_size_{0};
+  size_t out_size_{0};
+};
+
+// FirDecimator (outer) - thin Pimpl wrapper.
+FirDecimator::FirDecimator() : impl_(std::make_unique<FirDecimatorImpl>()) {}
+FirDecimator::~FirDecimator() = default;
+void FirDecimator::init(uint32_t ratio) { this->impl_->init(ratio); }
+void FirDecimator::reset() { this->impl_->reset(); }
+void FirDecimator::process(const int16_t *in, int16_t *out, size_t in_count) {
+  this->impl_->process(in, out, in_count);
+}
+void FirDecimator::process_strided(const int16_t *in, int16_t *out, size_t out_count,
+                                   size_t stride, size_t offset) {
+  this->impl_->process_strided(in, out, out_count, stride, offset);
+}
+void FirDecimator::process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
+                                      size_t stride, size_t offset) {
+  this->impl_->process_strided_32(in, out, out_count, stride, offset);
+}
+
+// MultiChannelFirDecimator (outer) - thin Pimpl wrapper.
+MultiChannelFirDecimator::MultiChannelFirDecimator()
+    : impl_(std::make_unique<MultiChannelFirDecimatorImpl>()) {}
+MultiChannelFirDecimator::~MultiChannelFirDecimator() = default;
+void MultiChannelFirDecimator::init(uint32_t ratio, uint8_t num_channels) {
+  this->impl_->init(ratio, num_channels);
+}
+void MultiChannelFirDecimator::reset() { this->impl_->reset(); }
+void MultiChannelFirDecimator::process_multi(const int16_t *in, size_t out_count, size_t in_stride,
+                                             const uint8_t *channel_offsets,
+                                             int16_t *mic_interleaved, int16_t *mic_mono,
+                                             int16_t *ref_out, uint8_t num_mic_ch) {
+  this->impl_->process_multi(in, out_count, in_stride, channel_offsets,
+                             mic_interleaved, mic_mono, ref_out, num_mic_ch);
+}
+void MultiChannelFirDecimator::process_multi_32(const int32_t *in, size_t out_count, size_t in_stride,
+                                                const uint8_t *channel_offsets,
+                                                int16_t *mic_interleaved, int16_t *mic_mono,
+                                                int16_t *ref_out, uint8_t num_mic_ch) {
+  this->impl_->process_multi_32(in, out_count, in_stride, channel_offsets,
+                                mic_interleaved, mic_mono, ref_out, num_mic_ch);
+}
 
 // Helper: get MCLK multiple enum from integer value
 static i2s_mclk_multiple_t get_mclk_multiple(uint32_t mult) {
@@ -67,6 +397,16 @@ static const uint32_t I2S_IO_TIMEOUT_MS = 50;
 
 void I2SAudioDuplex::setup() {
   ESP_LOGCONFIG(TAG, "Setting up I2S Audio Duplex...");
+
+  // Mutex for the mic consumer registry. Plain FreeRTOS mutex (used as lock,
+  // not as a counting semaphore); replaces std::mutex to keep the public
+  // header free of <mutex>.
+  this->mic_consumers_mutex_ = xSemaphoreCreateMutex();
+  if (this->mic_consumers_mutex_ == nullptr) {
+    ESP_LOGE(TAG, "Failed to create mic_consumers_mutex_");
+    this->mark_failed();
+    return;
+  }
 
   // Compute decimation ratio: only active when output_sample_rate is explicitly set
   // and differs from sample_rate. If not set, ratio stays 1 (no decimation, zero overhead).
@@ -621,17 +961,31 @@ void I2SAudioDuplex::register_mic_consumer(void *token) {
   bool needs_start = false;
   size_t count_after = 0;
   bool first_consumer = false;
-  {
-    std::lock_guard<std::mutex> lock(this->mic_consumers_mutex_);
-    auto it = std::find(this->mic_consumers_.begin(), this->mic_consumers_.end(), token);
-    if (it != this->mic_consumers_.end()) {
+  bool full = false;
+  if (this->mic_consumers_mutex_ == nullptr)
+    return;
+  xSemaphoreTake(this->mic_consumers_mutex_, portMAX_DELAY);
+  // Already registered?
+  for (size_t i = 0; i < this->mic_consumer_count_; i++) {
+    if (this->mic_consumers_[i] == token) {
+      xSemaphoreGive(this->mic_consumers_mutex_);
       return;
     }
-    first_consumer = this->mic_consumers_.empty();
-    this->mic_consumers_.push_back(token);
-    count_after = this->mic_consumers_.size();
+  }
+  if (this->mic_consumer_count_ >= MAX_LISTENERS) {
+    full = true;
+  } else {
+    first_consumer = (this->mic_consumer_count_ == 0);
+    this->mic_consumers_[this->mic_consumer_count_++] = token;
+    count_after = this->mic_consumer_count_;
     this->has_mic_consumers_.store(true, std::memory_order_relaxed);
     needs_start = !this->duplex_running_.load(std::memory_order_relaxed);
+  }
+  xSemaphoreGive(this->mic_consumers_mutex_);
+  if (full) {
+    ESP_LOGW(TAG, "Mic consumer registry full (max=%u), refusing token=%p",
+             (unsigned) MAX_LISTENERS, token);
+    return;
   }
   if (first_consumer) {
     ESP_LOGI(TAG, "Mic consumer registered (token=%p), mic path active (consumers=%zu)",
@@ -648,17 +1002,23 @@ void I2SAudioDuplex::unregister_mic_consumer(void *token) {
   size_t count_after = 0;
   bool removed = false;
   bool last_consumer_gone = false;
-  {
-    std::lock_guard<std::mutex> lock(this->mic_consumers_mutex_);
-    auto it = std::find(this->mic_consumers_.begin(), this->mic_consumers_.end(), token);
-    if (it != this->mic_consumers_.end()) {
-      this->mic_consumers_.erase(it);
+  if (this->mic_consumers_mutex_ == nullptr)
+    return;
+  xSemaphoreTake(this->mic_consumers_mutex_, portMAX_DELAY);
+  for (size_t i = 0; i < this->mic_consumer_count_; i++) {
+    if (this->mic_consumers_[i] == token) {
+      // Swap-and-pop: order in the array is not meaningful, swap with last.
+      this->mic_consumers_[i] = this->mic_consumers_[this->mic_consumer_count_ - 1];
+      this->mic_consumers_[this->mic_consumer_count_ - 1] = nullptr;
+      this->mic_consumer_count_--;
       removed = true;
+      break;
     }
-    count_after = this->mic_consumers_.size();
-    last_consumer_gone = removed && this->mic_consumers_.empty();
-    this->has_mic_consumers_.store(!this->mic_consumers_.empty(), std::memory_order_relaxed);
   }
+  count_after = this->mic_consumer_count_;
+  last_consumer_gone = removed && this->mic_consumer_count_ == 0;
+  this->has_mic_consumers_.store(this->mic_consumer_count_ != 0, std::memory_order_relaxed);
+  xSemaphoreGive(this->mic_consumers_mutex_);
   if (!removed) {
     return;
   }
