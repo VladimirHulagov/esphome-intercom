@@ -85,10 +85,10 @@ intercom, wake word, voice assistant, and display-driven devices:
 
 ```mermaid
 graph TD
-    HA[🏠 Home Assistant<br/>PBX hub]
-    ESP1[📻 ESP #1<br/>Kitchen]
-    ESP2[📻 ESP #2<br/>Bedroom]
-    Browser[🌐 Browser<br/>Phone]
+    HA[🏠 Home Assistant\nPBX hub]
+    ESP1[📻 ESP #1\nKitchen]
+    ESP2[📻 ESP #2\nBedroom]
+    Browser[🌐 Browser\nPhone]
 
     HA <--> ESP1
     HA <--> ESP2
@@ -130,22 +130,22 @@ graph TD
 graph TB
     subgraph HA[🏠 HOME ASSISTANT]
         subgraph Integration[intercom_native integration]
-            WS[WebSocket API<br/>/start /stop /audio]
-            TCP[TCP Client<br/>Port 6054<br/>Async queue]
-            Bridge[Auto-Bridge<br/>Full Mode<br/>ESP↔ESP relay]
+            WS[WebSocket API\n/start /stop /audio]
+            TCP[TCP Client\nPort 6054\nAsync queue]
+            Bridge[Auto-Bridge\nFull Mode\nESP↔ESP relay]
         end
     end
 
     subgraph Browser[🌐 Browser]
-        Card[Lovelace Card<br/>AudioWorklet<br/>getUserMedia]
+        Card[Lovelace Card\nAudioWorklet\ngetUserMedia]
     end
 
     subgraph ESP[📻 ESP32]
-        API[intercom_api<br/>FreeRTOS Tasks<br/>I2S mic/spk]
+        API[intercom_api\nFreeRTOS Tasks\nI2S mic/spk]
     end
 
-    Card <-->|WebSocket<br/>JSON+Base64| WS
-    API <-->|TCP :6054<br/>Binary PCM| TCP
+    Card <-->|WebSocket\nJSON+Base64| WS
+    API <-->|TCP :6054\nBinary PCM| TCP
 ```
 
 ### Intercom Audio Format (TCP Protocol)
@@ -459,8 +459,8 @@ Full mode includes everything from Simple mode (Browser ↔ ESP calls) **plus** 
 
 ```mermaid
 graph TB
-    ESP1[📻 ESP #1<br/>Kitchen] <-->|TCP 6054| HA[🏠 HA<br/>PBX hub]
-    ESP2[📻 ESP #2<br/>Bedroom] <-->|TCP 6054| HA
+    ESP1[📻 ESP #1\nKitchen] <-->|TCP 6054| HA[🏠 HA\nPBX hub]
+    ESP2[📻 ESP #2\nBedroom] <-->|TCP 6054| HA
     Browser[🌐 Browser/App] <-->|WebSocket| HA
 ```
 
@@ -516,7 +516,7 @@ sequenceDiagram
     B->>HA: WS: start {host: "esp.local"}
     HA->>E: TCP Connect :6054
     HA->>E: START {caller:"HA"}
-    Note right of E: State: Ringing<br/>(or auto-answer)
+    Note right of E: State: Ringing\n(or auto-answer)
     E-->>HA: PONG (answered)
     Note right of E: State: Streaming
 
@@ -540,7 +540,7 @@ sequenceDiagram
     participant HA as 🏠 Home Assistant
     participant E2 as 📻 ESP #2 (Callee)
 
-    Note left of E1: State: Outgoing<br/>(user pressed Call)
+    Note left of E1: State: Outgoing\n(user pressed Call)
     E1->>HA: ESPHome API state change
     HA->>E2: TCP Connect :6054
     HA->>E2: START {caller:"ESP1"}
