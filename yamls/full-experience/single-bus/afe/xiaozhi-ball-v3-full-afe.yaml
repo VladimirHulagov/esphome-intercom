@@ -38,7 +38,7 @@ substitutions:
   assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # AI avatar folder (${assets_base}assets/images/assistant/<ai_avatar>/)
-  ai_avatar: f_off
+  ai_avatar: troiaio
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
