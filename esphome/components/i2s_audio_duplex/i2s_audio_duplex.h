@@ -66,6 +66,9 @@ class FirDecimator {
 
   void init(uint32_t ratio);
   void reset();
+  // When true, process_* uses the pure-float scalar FIR (custom kernel).
+  // When false (default), uses dsps_fird_s16 (esp-dsp SIMD on supported chips).
+  void set_use_float_fir(bool b);
 
   // Contiguous int16 input.
   void process(const int16_t *in, int16_t *out, size_t in_count);
@@ -91,6 +94,7 @@ class MultiChannelFirDecimator {
 
   void init(uint32_t ratio, uint8_t num_channels);
   void reset();
+  void set_use_float_fir(bool b);
 
   // Decimate N channels from strided int16 TDM input, producing:
   //   - mic_interleaved: [mic1, mic2, mic1, mic2, ...] (num_mic_ch interleaved, for AFE)
@@ -171,6 +175,15 @@ class I2SAudioDuplex : public Component {
 
   // ES8311 Digital Feedback mode: RX is stereo with L=DAC(ref), R=ADC(mic)
   void set_use_stereo_aec_reference(bool use) { this->use_stereo_aec_ref_ = use; }
+
+  // YAML `fir_decimator: custom | dsps_fird_s16` (default dsps_fird_s16).
+  // When custom, the FIR decimators run a pure-float scalar kernel instead of
+  // the SIMD dsps_fird_s16. Workaround for chips where the SIMD kernel is
+  // unreliable (notably ESP32-P4 RISC-V: esp-dsp issues #117/#102 produce
+  // rect-wave artifacts, which then propagate quantization noise into esp_aec
+  // adaptive filter -> musical noise on the wire). Boards that don't suffer
+  // the bug should leave this on the default for the SIMD throughput.
+  void set_fir_decimator_custom(bool b) { this->fir_decimator_custom_ = b; }
 
   // Reference channel selection: false=left (default), true=right
   void set_reference_channel_right(bool right) { this->ref_channel_right_ = right; }
@@ -423,6 +436,7 @@ class I2SAudioDuplex : public Component {
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
+  bool fir_decimator_custom_{false}; // YAML fir_decimator: custom (vs default dsps_fird_s16)
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
 
   // TDM hardware reference (ES7210 in TDM mode)

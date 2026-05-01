@@ -29,7 +29,7 @@
 # Audio pipeline (i2s_audio_duplex at 48kHz, TDM + FIR decimation to 16kHz):
 #
 #   ES7210 TDM [mic1, mic2, ref, nc] → FIR x3 ──┐
-#                                               └── esp_afe (AEC + SE[BSS] + NS + AGC) → mic_afe → VA / Intercom TX / MWW
+#                                               └── AEC (SR linear) → mic_aec → VA / Intercom TX / MWW
 #
 #   Music/radio → media_speaker (resampler) ───────────┐
 #   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → ES8311
@@ -43,14 +43,13 @@
 # =============================================================================
 
 substitutions:
-  # Hardware-shared identity: all Waveshare P4 firmware variants share the same
-  # name so HA reuses the device entity and ESPHome reuses the build cache.
-  name: waveshare-p4
+  name: waveshare-p4-touch
   friendly_name: Waveshare P4 Touch
   mic_id: mic_aec
 
+  # Toggled by scripts/yaml_paths.sh between local (../../../../...) and remote
+  # (github://n-IA-hane/esphome-intercom@<branch>) modes.
   ext_components_source: "../../../../esphome/components"
-
   assets_base: "../../../../"
 
   # Display dimensions (portrait)
@@ -75,10 +74,6 @@ substitutions:
 
 packages:
   core: !include ../../../../packages/va_intercom.yaml
-  p4_base: !include ../../../../packages/platform/esp32p4_base.yaml
-  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
-  p4_c6: !include ../../../../packages/board/waveshare_p4_c6.yaml
-  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -92,9 +87,26 @@ esphome:
         - output.turn_on: speaker_enable
     - priority: 200
       then:
-        # ES7210 TDM configuration (shared with waveshare-s3 via
-        # packages/codec/es7210_tdm.yaml).
-        - script.execute: es7210_tdm_init
+        # === ES7210 TDM Configuration ===
+        # Enable all 4 ADC clocks, TDM mode, and set MIC3 gain.
+        # MIC3 is wired to ES8311 DAC output via analog path (AEC reference).
+        # Gain reference: Espressif Korvo-2 AEC example uses GAIN_30DB for MIC3.
+        - lambda: |-
+            // 1. Enable ALL ADC clocks (ESPHome driver only enables ADC1+2)
+            uint8_t reg01;
+            id(es7210_adc).read_byte(0x01, &reg01);
+            reg01 &= ~0x3F;  // Clear bits 0-5: enable ADC1-4 clocks + CP + BCLK
+            id(es7210_adc).write_byte(0x01, reg01);
+
+            // 2. Enable TDM I2S mode: all 4 ADC channels multiplexed on SDOUT1
+            id(es7210_adc).write_byte(0x12, 0x02);
+
+            // 3. MIC3 gain = 30dB (Espressif Korvo-2 reference: GAIN_30DB for AEC ref)
+            //    MIC1/MIC2 keep 24dB from ESPHome driver (MEMS mic preamp)
+            id(es7210_adc).write_byte(0x45, 0x1A);  // MIC3: PGA_ON + 30dB
+            id(es7210_adc).write_byte(0x46, 0x10);  // MIC4: PGA_ON + 0dB (unused, keep tidy)
+
+            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, sdp2=0x02, MIC3 gain=30dB", reg01);
         # Restore ES8311 volume and sync AEC reference
         - lambda: |-
             float vol = 0.15 + (id(speaker_volume).state / 100.0) * 0.60;
@@ -121,11 +133,20 @@ esp32:
     type: esp-idf
     advanced:
       enable_idf_experimental_features: true
-      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); P4 RISC-V untested.
-      compiler_optimization: PERF
     sdkconfig_options:
-      # Allow mbedtls to allocate its working buffers in PSRAM.
+      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_CACHE_L2_CACHE_256KB: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "30"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      # SDIO stability: larger queues prevent overflow during concurrent WiFi traffic
+      # (music streaming + VA API). Default 20 is too small. See esp-hosted#597.
+      CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE: "50"
+      CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE: "50"
+      # Reserve 64KB internal DRAM for DMA-only allocations (WiFi/SDIO buffers)
+      # Prevents heap fragmentation from starving SDIO copy_payload alloc.
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
 
 psram:
   mode: hex
@@ -142,10 +163,8 @@ preferences:
 # =============================================================================
 # CONNECTIVITY
 # =============================================================================
-# WiFi via ESP32-C6 co-processor (SDIO).
-# Upstream tracks stability work for esp32_hosted on P4 in
-# https://github.com/esphome/esphome/issues/10956 — keep an eye on that
-# issue when bumping ESPHome.
+# WiFi via ESP32-C6 co-processor (SDIO)
+# Known stability issues: see https://github.com/esphome/esphome/issues/10956
 esp32_hosted:
   variant: ESP32C6
   reset_pin: GPIO54
@@ -184,7 +203,7 @@ ota:
 
 logger:
   hardware_uart: UART0
-  level: INFO
+  level: CONFIG
 
 debug:
   update_interval: 60s
@@ -204,7 +223,7 @@ time:
 # =============================================================================
 external_components:
   - source: ${ext_components_source}
-    components: [intercom_api, i2s_audio_duplex, esp_afe, audio_processor]
+    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
 # I2C Bus (shared: ES8311, ES7210, GT9271)
@@ -241,27 +260,11 @@ audio_adc:
     sample_rate: 48000           # Match I2S bus rate
     mic_gain: 24dB       # 0-37.5dB. Increase if too quiet.
 
-esp_afe:
-  id: afe_processor
-  type: sr
-  mode: low_cost
-  mic_num: 2
-  aec_enabled: true
-  aec_filter_length: 4
-  ns_enabled: true
-  # MWW covers wake detection; AFE VAD is redundant and its interaction with
-  # the 2-mic BSS/SE path under load has not been verified (the 1-mic stall
-  # audit only covered MR). Keep off until a BSS-specific verification is done.
-  vad_enabled: false
-  agc_enabled: true
-  se_enabled: true              # Beamforming (dual mic)
-  task_core: 1
-  task_priority: 19
-  # Buffer placement: PSRAM for the AFE staging triad (replicates pre-knob default).
-  # Toggle individual flags off to free Core 0 cycles at the cost of internal RAM.
-  feed_buf_in_psram: true       # ~3 KB scratch
-  feed_ring_in_psram: true      # ~12 KB staging ring
-  fetch_ring_in_psram: true     # ~4 KB output ring
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000       # AEC always at 16kHz (= output_sample_rate)
+  mode: sr_low_cost        # Linear AEC, preserves spectral features for MWW
+  filter_length: 4         # 64ms tail, sufficient for integrated codec path
 
 i2s_audio_duplex:
   id: i2s_duplex
@@ -272,13 +275,13 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO9          # To ES8311 DAC (BSP_I2S_DOUT)
   sample_rate: 48000           # I2S bus at ES8311/ES7210 native rate
   output_sample_rate: 16000    # Mic/AEC/MWW/VA decimated to 16kHz via FIR x3
-  processor_id: afe_processor
+  processor_id: aec_processor
+  fir_decimator: custom        # P4: bypassa dsps_fird_s16 SIMD (esp-dsp #117/#102 RISC-V)
   use_tdm_reference: true
   tdm_total_slots: 4
-  tdm_mic_slots: [0, 2]        # Slot 0 = mic1, slot 2 = mic2
-  tdm_ref_slot: 1              # Slot 1 = DAC feedback reference
-  buffers_in_psram: true
-  telemetry: true              # Per-stage counters in logs (feed/fetch us, queue depths)
+  tdm_mic_slot: 0              # ES7210 TDM slot 0 = ADC1 (MIC1, voice)
+  tdm_ref_slot: 1              # ES7210 TDM slot 1 = ADC3 (MIC3, ES8311 DAC feedback)
+  buffers_in_psram: true       # All audio buffers in PSRAM; required for sr_low_cost
 
 # mic_aec: post-AEC for VA STT, intercom TX, AND MWW
 # SR linear AEC preserves spectral features for neural wake word detection.
@@ -412,10 +415,10 @@ micro_wake_word:
   microphone: mic_aec
   stop_after_detection: false
   models:
-    - model: alexa
     - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
+    - model: alexa
 
 # =============================================================================
 # Voice Assistant
@@ -450,8 +453,6 @@ voice_assistant:
 # Intercom API
 # =============================================================================
 intercom_api:
-  tasks_stack_in_psram: true   # save ~28KB internal heap on S3/P4 by placing task stacks in PSRAM
-  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   id: intercom
   mode: full
   microphone: mic_aec          # Post-AEC: no echo in transmitted audio
@@ -2511,10 +2512,11 @@ select:
     options:
       - "sr_low_cost"
       - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
     initial_option: "sr_low_cost"
-    # Non-optimistic: see waveshare-s3-full-afe.yaml for rationale.
-    optimistic: false
-    restore_value: false
+    optimistic: true
+    restore_value: true
     set_action:
       - if:
           condition:
@@ -2538,8 +2540,8 @@ select:
                       args: ['x.c_str()']
                   - micro_wake_word.stop:
                   - i2s_audio_duplex.stop: i2s_duplex
-                  - esp_afe.set_mode:
-                      id: afe_processor
+                  - esp_aec.set_mode:
+                      id: aec_processor
                       mode: !lambda 'return x;'
                   - i2s_audio_duplex.start: i2s_duplex
                   - delay: 300ms
@@ -2548,8 +2550,6 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
-      - lambda: |-
-          id(aec_mode_select).publish_state(id(afe_processor).get_mode_name());
 
 # =============================================================================
 # TEXT SENSORS

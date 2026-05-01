@@ -149,6 +149,7 @@ speaker:
 | `i2s_dout_pin` | pin | -1 | Data output to codec (speaker) |
 | `sample_rate` | int | 16000 | I2S bus sample rate (8000-48000) |
 | `output_sample_rate` | int | - | Mic/AEC output rate. If set, enables FIR decimation (must divide `sample_rate` evenly, max ratio 6) |
+| `fir_decimator` | string | `dsps_fird_s16` | FIR kernel for the mic decimation. `dsps_fird_s16` uses the esp-dsp SIMD kernel (`_aes3` on ESP32-S3); `custom` uses a pure-float scalar implementation. See [FIR Decimator Kernel](#fir-decimator-kernel) below. |
 | `processor_id` | ID | - | Reference to audio processor component (`esp_aec` or `esp_afe`) for echo cancellation and audio processing |
 | `mic_attenuation` | float | 1.0 | Pre-AEC mic gain/attenuation (0.01-32.0). <1.0 attenuates hot mics, >1.0 amplifies weak mics. Use `mic_gain_pre_aec` number platform for runtime control. |
 | `slot_bit_width` | int | auto | I2S slot width in bits (16 or 32). Set to 32 for MEMS mics without codec (INMP441, MSM261, SPH0645). |
@@ -192,6 +193,41 @@ These options expose the underlying I2S driver controls. Defaults are tuned for 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `pre_aec` | bool | false | If true, receives raw mic audio (before AEC). Mainly for diagnostics; with `sr_low_cost` AEC, MWW works on post-AEC mic. |
+
+### FIR Decimator Kernel
+
+When `output_sample_rate` is set, the component runs a 32-tap Kaiser FIR low-pass before downsampling the mic stream. The YAML option `fir_decimator` selects which kernel does the math:
+
+| Value | Implementation | When to use |
+|-------|----------------|-------------|
+| `dsps_fird_s16` (default) | `dsps_fird_s16` from esp-dsp. On ESP32-S3 this resolves to the `_aes3` SIMD kernel for high throughput. Q15 fixed-point. | All chips where the SIMD kernel is known to produce clean output (S3 confirmed). |
+| `custom` | Pure-float scalar FIR implemented in this component. DC gain unitario, identical coefficient set to `dsps_fird_s16` (single-precision instead of Q15). Slightly slower but numerically clean on every chip variant. | ESP32-P4. The RISC-V `dsps_fird_s16` kernel produces rect-wave artifacts (esp-dsp issues [#117](https://github.com/espressif/esp-dsp/issues/117), [#102](https://github.com/espressif/esp-dsp/issues/102)) that bleed quantization noise into the AEC adaptive filter and surface as musical noise on the wire. The custom kernel sidesteps the SIMD path entirely. |
+
+The selected kernel is logged at boot in `dump_config()`:
+
+```
+[C][i2s_audio_duplex:...]:   FIR Decimator: custom (float scalar, 32-tap Kaiser)
+```
+
+#### Example: P4 yaml selecting the custom kernel
+
+```yaml
+i2s_audio_duplex:
+  id: i2s_duplex
+  sample_rate: 48000
+  output_sample_rate: 16000
+  fir_decimator: custom        # ESP32-P4: bypass dsps_fird_s16 SIMD bug
+  processor_id: aec_processor
+  # ... other options ...
+```
+
+S3 yamls leave `fir_decimator` unset (or set it explicitly to `dsps_fird_s16`) to keep the SIMD throughput.
+
+#### Notes
+
+- Both kernels are compiled into every build; the choice is a single boolean checked once per `process()` call (branch is predicted, effectively free in the audio task hot path).
+- The custom kernel allocates ~256 bytes per decimator instance for the float delay line and per-channel position counter; total overhead on a 3-channel TDM setup is ~1 KB.
+- If/when esp-dsp upstream resolves issues #117/#102 on RISC-V, the P4 yaml can be flipped back to `dsps_fird_s16` without further code changes.
 
 ### AEC with Voice Assistant + MWW
 

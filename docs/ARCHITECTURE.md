@@ -83,7 +83,10 @@ One frame = 32 ms = 512 samples @ 16 kHz per channel.
 ```
   ES7210 (2 mic + ref TDM) ─DMA─▶ i2s_audio_task (core 0, prio 19)
                                     │
-                                    │ decimate 48k→16k (FIR esp-dsp)
+                                    │ decimate 48k→16k (FIR, kernel selectable
+                                    │                   via fir_decimator yaml:
+                                    │                   dsps_fird_s16 SIMD or
+                                    │                   custom float scalar)
                                     │ build interleaved frame
                                     │ raw_mic_callback (intercom_tx_passthrough,
                                     │                   diagnostics)

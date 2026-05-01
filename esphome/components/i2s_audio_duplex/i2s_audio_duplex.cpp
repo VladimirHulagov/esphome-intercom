@@ -40,6 +40,44 @@ constexpr int16_t FIR_COEFFS_Q15[FIR_NUM_TAPS] = {
       146,   -61,   -88,   -33,     4,     7,     1,     0,
 };
 
+// Float-precision FIR coefficients (32-tap Kaiser, cutoff 7500 Hz, fs 48 kHz,
+// DC gain unitario). Used by the optional `fir_decimator: custom` kernel.
+// Selected per-yaml: ESP32-P4 needs this to bypass the dsps_fird_s16 ASM kernel
+// bug on RISC-V (esp-dsp issues #117/#102, rect-wave artifacts that propagate
+// quantization noise into esp_aec adaptive filter -> musical noise on the wire).
+constexpr float FIR_COEFFS_FLOAT[FIR_NUM_TAPS] = {
+    4.1270231666e-05f, 2.1633893589e-04f, 1.2531119530e-04f, -9.9999988238e-04f,
+    -2.6821920740e-03f, -1.8518117881e-03f, 4.4563387256e-03f, 1.2653483833e-02f,
+    1.0683467077e-02f, -1.0893520506e-02f, -4.0743026823e-02f, -4.2934182572e-02f,
+    1.7799016112e-02f, 1.3755146771e-01f, 2.6031620059e-01f, 3.1252367847e-01f,
+    2.6031620059e-01f, 1.3755146771e-01f, 1.7799016112e-02f, -4.2934182572e-02f,
+    -4.0743026823e-02f, -1.0893520506e-02f, 1.0683467077e-02f, 1.2653483833e-02f,
+    4.4563387256e-03f, -1.8518117881e-03f, -2.6821920740e-03f, -9.9999988238e-04f,
+    1.2531119530e-04f, 2.1633893589e-04f, 4.1270231666e-05f, 0.0f,
+};
+
+// Scalar float FIR decimator. Drop-in replacement for dsps_fird_s16, used when
+// the YAML selects `fir_decimator: custom`. Slower than the SIMD kernel but
+// numerically clean on every chip variant.
+inline void fir_decimate_float(const int16_t *in, int16_t *out, int32_t out_count,
+                               uint32_t ratio, float *delay_line, uint32_t *delay_pos) {
+  for (int32_t o = 0; o < out_count; o++) {
+    for (uint32_t r = 0; r < ratio; r++) {
+      delay_line[*delay_pos] = static_cast<float>(*in++);
+      *delay_pos = (*delay_pos + 1) & (FIR_NUM_TAPS - 1);
+    }
+    float acc = 0.0f;
+    uint32_t idx = *delay_pos;
+    for (size_t t = 0; t < FIR_NUM_TAPS; t++) {
+      acc += delay_line[idx] * FIR_COEFFS_FLOAT[t];
+      idx = (idx + 1) & (FIR_NUM_TAPS - 1);
+    }
+    if (acc > 32767.0f) acc = 32767.0f;
+    if (acc < -32768.0f) acc = -32768.0f;
+    out[o] = static_cast<int16_t>(acc);
+  }
+}
+
 int16_t *alloc_fir_int16_preferred(size_t count, const char *who) {
   const size_t bytes = count * sizeof(int16_t);
   int16_t *p = static_cast<int16_t *>(
@@ -73,14 +111,23 @@ class FirDecimatorImpl {
     memset(this->delay_, 0, sizeof(this->delay_));
     this->fir_.pos = 0;
     this->fir_.d_pos = 0;
+    memset(this->fdelay_, 0, sizeof(this->fdelay_));
+    this->fdelay_pos_ = 0;
   }
+
+  void set_use_float_fir(bool b) { this->use_float_fir_ = b; }
 
   void process(const int16_t *in, int16_t *out, size_t in_count) {
     if (this->ratio_ <= 1) {
       memcpy(out, in, in_count * sizeof(int16_t));
       return;
     }
-    dsps_fird_s16(&this->fir_, in, out, static_cast<int32_t>(in_count / this->ratio_));
+    int32_t out_count = static_cast<int32_t>(in_count / this->ratio_);
+    if (this->use_float_fir_) {
+      fir_decimate_float(in, out, out_count, this->ratio_, this->fdelay_, &this->fdelay_pos_);
+    } else {
+      dsps_fird_s16(&this->fir_, in, out, out_count);
+    }
   }
 
   void process_strided(const int16_t *in, int16_t *out, size_t out_count,
@@ -95,7 +142,12 @@ class FirDecimatorImpl {
       return;
     for (size_t i = 0; i < in_count; i++)
       this->scratch_[i] = in[i * stride + offset];
-    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+    if (this->use_float_fir_) {
+      fir_decimate_float(this->scratch_, out, static_cast<int32_t>(out_count),
+                         this->ratio_, this->fdelay_, &this->fdelay_pos_);
+    } else {
+      dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+    }
   }
 
   void process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
@@ -110,7 +162,12 @@ class FirDecimatorImpl {
       return;
     for (size_t i = 0; i < in_count; i++)
       this->scratch_[i] = static_cast<int16_t>(in[i * stride + offset] >> 16);
-    dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+    if (this->use_float_fir_) {
+      fir_decimate_float(this->scratch_, out, static_cast<int32_t>(out_count),
+                         this->ratio_, this->fdelay_, &this->fdelay_pos_);
+    } else {
+      dsps_fird_s16(&this->fir_, this->scratch_, out, static_cast<int32_t>(out_count));
+    }
   }
 
  private:
@@ -130,6 +187,11 @@ class FirDecimatorImpl {
   alignas(16) int16_t delay_[FIR_NUM_TAPS]{};
   int16_t *scratch_{nullptr};
   size_t scratch_size_{0};
+  // Custom float FIR state (used when use_float_fir_ is true).
+  // Always present; init/reset are cheap (memset + 1 word).
+  bool use_float_fir_{false};
+  alignas(16) float fdelay_[FIR_NUM_TAPS]{};
+  uint32_t fdelay_pos_{0};
 };
 
 class MultiChannelFirDecimatorImpl {
@@ -161,8 +223,12 @@ class MultiChannelFirDecimatorImpl {
       memset(this->delay_ch_[c], 0, sizeof(this->delay_ch_[c]));
       this->fir_ch_[c].pos = 0;
       this->fir_ch_[c].d_pos = 0;
+      memset(this->fdelay_ch_[c], 0, sizeof(this->fdelay_ch_[c]));
+      this->fdelay_pos_ch_[c] = 0;
     }
   }
+
+  void set_use_float_fir(bool b) { this->use_float_fir_ = b; }
 
   void process_multi(const int16_t *in, size_t out_count, size_t in_stride,
                      const uint8_t *channel_offsets,
@@ -182,8 +248,13 @@ class MultiChannelFirDecimatorImpl {
       const uint8_t off = channel_offsets[c];
       for (size_t i = 0; i < in_count; i++)
         this->scratch_[i] = in[i * in_stride + off];
-      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
-                    static_cast<int32_t>(out_count));
+      if (this->use_float_fir_) {
+        fir_decimate_float(this->scratch_, this->out_ch_[c], static_cast<int32_t>(out_count),
+                           this->ratio_, this->fdelay_ch_[c], &this->fdelay_pos_ch_[c]);
+      } else {
+        dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                      static_cast<int32_t>(out_count));
+      }
     }
     this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
   }
@@ -221,8 +292,13 @@ class MultiChannelFirDecimatorImpl {
       const uint8_t off = channel_offsets[c];
       for (size_t i = 0; i < in_count; i++)
         this->scratch_[i] = static_cast<int16_t>(in[i * in_stride + off] >> 16);
-      dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
-                    static_cast<int32_t>(out_count));
+      if (this->use_float_fir_) {
+        fir_decimate_float(this->scratch_, this->out_ch_[c], static_cast<int32_t>(out_count),
+                           this->ratio_, this->fdelay_ch_[c], &this->fdelay_pos_ch_[c]);
+      } else {
+        dsps_fird_s16(&this->fir_ch_[c], this->scratch_, this->out_ch_[c],
+                      static_cast<int32_t>(out_count));
+      }
     }
     this->distribute_output_(out_count, mic_interleaved, mic_mono, ref_out, num_mic_ch);
   }
@@ -310,6 +386,9 @@ class MultiChannelFirDecimatorImpl {
   int16_t *out_ch_[MC_FIR_MAX_CH]{};
   size_t scratch_size_{0};
   size_t out_size_{0};
+  bool use_float_fir_{false};
+  alignas(16) float fdelay_ch_[MC_FIR_MAX_CH][FIR_NUM_TAPS]{};
+  uint32_t fdelay_pos_ch_[MC_FIR_MAX_CH]{};
 };
 
 // FirDecimator (outer) - thin Pimpl wrapper.
@@ -317,6 +396,7 @@ FirDecimator::FirDecimator() : impl_(std::make_unique<FirDecimatorImpl>()) {}
 FirDecimator::~FirDecimator() = default;
 void FirDecimator::init(uint32_t ratio) { this->impl_->init(ratio); }
 void FirDecimator::reset() { this->impl_->reset(); }
+void FirDecimator::set_use_float_fir(bool b) { this->impl_->set_use_float_fir(b); }
 void FirDecimator::process(const int16_t *in, int16_t *out, size_t in_count) {
   this->impl_->process(in, out, in_count);
 }
@@ -337,6 +417,7 @@ void MultiChannelFirDecimator::init(uint32_t ratio, uint8_t num_channels) {
   this->impl_->init(ratio, num_channels);
 }
 void MultiChannelFirDecimator::reset() { this->impl_->reset(); }
+void MultiChannelFirDecimator::set_use_float_fir(bool b) { this->impl_->set_use_float_fir(b); }
 void MultiChannelFirDecimator::process_multi(const int16_t *in, size_t out_count, size_t in_stride,
                                              const uint8_t *channel_offsets,
                                              int16_t *mic_interleaved, int16_t *mic_mono,
@@ -425,6 +506,8 @@ void I2SAudioDuplex::setup() {
     }
     this->mic_decimator_.init(this->decimation_ratio_);
     this->play_ref_decimator_.init(this->decimation_ratio_);
+    this->mic_decimator_.set_use_float_fir(this->fir_decimator_custom_);
+    this->play_ref_decimator_.set_use_float_fir(this->fir_decimator_custom_);
     // rx_decimator_ is lazily initialized inside audio_session_ once the
     // processor has reported its frame_spec and we know how many channels
     // the RX stream carries (mono / stereo-AEC / TDM-with-or-without-second-mic).
@@ -501,6 +584,9 @@ void I2SAudioDuplex::dump_config() {
   if (this->decimation_ratio_ > 1) {
     ESP_LOGCONFIG(TAG, "  Output Rate: %u Hz (decimation x%u)",
                   (unsigned)this->get_output_sample_rate(), (unsigned)this->decimation_ratio_);
+    ESP_LOGCONFIG(TAG, "  FIR Decimator: %s",
+                  this->fir_decimator_custom_ ? "custom (float scalar, 32-tap Kaiser)"
+                                              : "dsps_fird_s16 (esp-dsp SIMD)");
   }
   ESP_LOGCONFIG(TAG, "  Speaker Buffer: %u bytes", (unsigned)this->speaker_buffer_size_);
   if (this->use_stereo_aec_ref_) {
@@ -1235,6 +1321,7 @@ void I2SAudioDuplex::audio_session_() {
         ? (ctx.processor_mic_channels > 1 ? 3 : 2)  // MMR or MR
         : 2;  // stereo: mic + ref
     this->rx_decimator_.init(ctx.ratio, rx_ch);
+    this->rx_decimator_.set_use_float_fir(this->fir_decimator_custom_);
   }
 
   // ── Frame sizing ──
