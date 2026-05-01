@@ -228,14 +228,10 @@ external_components:
 # =============================================================================
 i2c:
   - id: internal_i2c
-    sda:
-      number: GPIO39
-      allow_other_uses: true
-    scl:
-      number: GPIO40
-      allow_other_uses: true
-    scan: false
-    frequency: 400kHz
+    sda: GPIO24
+    scl: GPIO25
+    scan: true
+    frequency: 100kHz
 
 # TCA9554 IO Expander (display CS/RST + speaker amp control)
 tca9555:
