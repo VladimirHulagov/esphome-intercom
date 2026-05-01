@@ -1742,7 +1742,7 @@ switch:
       id: vad_switch
       name: "Voice Activity Detection"
       icon: mdi:account-voice
-      restore_mode: RESTORE_DEFAULT_ON
+      restore_mode: RESTORE_DEFAULT_OFF
 
 # =============================================================================
 # NUMBERS
@@ -1833,6 +1833,11 @@ text_sensor:
     on_value:
       - lambda: id(peer_name) = id(intercom).get_current_destination();
       - script.execute: update_ic_idle_labels
+
+  - platform: debug
+    reset_reason:
+      name: Reset Reason
+      entity_category: diagnostic
 
   - id: text_request
     platform: template
