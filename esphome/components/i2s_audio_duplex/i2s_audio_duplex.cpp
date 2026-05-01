@@ -530,11 +530,11 @@ void I2SAudioDuplex::setup() {
   }
 
   // AEC reference (mono mode only; stereo/TDM get ref from I2S RX).
-  // direct_aec_ref_ is allocated lazily in process_aec_and_callbacks_setup_()
-  // once the decimation ratio is known: storage size matches output_frame_bytes
-  // (decimated reference at the processor rate, e.g. 16 kHz mono = 1024 B at
-  // 32 ms / 512 samples), not the bus rate. This mirrors the canonical
-  // Espressif AEC pipeline (esp-gmf aec_rec) which decimates before AEC.
+  // direct_aec_ref_ is allocated lazily in allocate_audio_buffers_() once the
+  // processor frame spec is known. Storage matches input_frame_bytes because
+  // AudioProcessor::process consumes in_ref at input_samples length; the TX-side
+  // decimator writes one input-side reference frame here at the processor rate,
+  // not at the bus rate.
 
   // Audio task is created lazily on the first start() and kept alive for the
   // rest of the component's lifetime. Creating it here would hold ~8KB of
@@ -547,7 +547,8 @@ void I2SAudioDuplex::setup() {
 void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
   this->processor_ = processor;
   this->processor_enabled_.store(processor != nullptr, std::memory_order_relaxed);
-  // Note: direct_aec_ref_ is allocated in setup() after decimation_ratio_ is computed
+  // Note: direct_aec_ref_ is allocated later in allocate_audio_buffers_() once
+  // the processor frame spec is known for the current audio session.
 }
 
 void I2SAudioDuplex::loop() {
