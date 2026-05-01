@@ -1,0 +1,940 @@
+# =============================================================================
+# Waveshare ESP32-S3-Touch-LCD-4B (Smart 86 Box): VA + Intercom + LVGL Display
+# =============================================================================
+#
+# Hardware:
+#   - ESP32-S3-WROOM-1-N16R8 (16MB Flash, 8MB PSRAM octal)
+#   - ST7701 4" RGB 480x480 display
+#   - GT911 capacitive touch (I2C 0x14, INT=EXIO6, RST=EXIO5)
+#   - ES8311 Audio DAC (0x18) + ES7210 Audio ADC (0x40)
+#   - TCA9554PWR IO expander (0x20):
+#       EXIO0 = ST7701 SPI CS
+#       EXIO1 = ST7701 SPI MOSI (init commands)
+#       EXIO2 = ST7701 SPI SCK
+#       EXIO3 = NS4150B speaker amp CTRL
+#       EXIO5 = GT911 TP_RST
+#       EXIO6 = GT911 TP_INT
+#       EXIO7 = ST7701 LCD RST
+#   - AXP2101 PMIC, QMI8658 IMU, PCF85063 RTC
+#   - Backlight: GPIO4 (LEDC PWM)
+#   - Speaker: MX1.25 2P 8Ω 2W
+#   - Buttons: BOOT (GPIO0), PWRKEY (TCA9554)
+#
+# I2C:  SDA=GPIO39, SCL=GPIO40
+# I2S:  MCLK=GPIO5, DIN=GPIO6, LRCLK=GPIO7, DOUT=GPIO15, BCLK=GPIO18
+#
+# Audio pipeline (i2s_audio_duplex at 48kHz, ES7210 TDM + AEC):
+#
+#   ES7210 TDM slot 0 (MIC1)         -> FIR x3 --+
+#   ES7210 TDM slot 1 (MIC3=DAC ref) -> FIR x3 --+-- AEC -> mic_main -> VA / Intercom TX / MWW
+#
+#   Music/radio -> media_speaker ----------+
+#   VA TTS      -> tts_speaker ------------+-- mixer -> hw_speaker -> ES8311 DAC
+#   Intercom RX -> intercom_speaker -------+
+#
+# =============================================================================
+
+substitutions:
+  name: waveshare-86box
+  friendly_name: Waveshare 86 Box
+
+  # ---- Remote mode (for users, just download and flash) ----
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Local mode (for development, clone repo first) ----
+  # assets_base: ""
+
+  # Wake word sensitivity (per-device tuning)
+  wake_word_probability_cutoff: "0.60"
+  wake_word_sliding_window_size: "6"
+
+  # ES8311 DAC volume mapping (0-100% -> min-max float)
+  volume_min: "0.15"
+  volume_max: "0.75"
+
+  mic_id: mic_main
+
+  # Display constants
+  display_width: "480"
+  display_height: "480"
+
+  # IC layout proportions
+  ic_btn_size: "25%"
+  ic_btn_offset: "2%"
+  ic_btn_below_center: "17%"
+  ic_peer_width: "58%"
+
+  voice_assist_idle_phase_id: "1"
+  voice_assist_listening_phase_id: "2"
+  voice_assist_thinking_phase_id: "3"
+  voice_assist_replying_phase_id: "4"
+  voice_assist_not_ready_phase_id: "10"
+  voice_assist_error_phase_id: "11"
+  voice_assist_muted_phase_id: "12"
+  voice_assist_timer_finished_phase_id: "20"
+
+  font_glyphsets: "GF_Latin_Core"
+  font_family: Figtree
+
+# =============================================================================
+# Package: shared VA + Intercom state machine, callbacks, switches, buttons
+# =============================================================================
+packages:
+  core:
+    url: https://github.com/n-IA-hane/esphome-intercom
+    file: packages/va_intercom.yaml
+    ref: main
+
+# =============================================================================
+# ESPHome Base
+# =============================================================================
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  includes:
+    - includes/st7701_init.h
+  platformio_options:
+    board_build.flash_mode: dio
+  on_boot:
+    priority: 600
+    then:
+      # === ST7701 display init via TCA9554 bit-bang SPI ===
+      # Runs at priority 600 (after I2C bus at 1000, before display at 500)
+      - lambda: |-
+          ST7701Init st7701_init;
+          st7701_init.set_i2c_bus(id(internal_i2c));
+          st7701_init.set_i2c_address(0x20);
+          st7701_init.setup();
+
+      # Backlight ON
+      - output.turn_on: backlight_output
+
+      # Enable speaker amplifier via TCA9554
+      # NS4150B amplifier CTRL pin = EXIO3 on TCA9554
+      - switch.turn_on: speaker_enable
+      - delay: 200ms
+
+      # === ES7210 TDM Configuration ===
+      - lambda: |-
+          uint8_t reg01;
+          if (!id(es7210_adc).read_byte(0x01, &reg01)) {
+            ESP_LOGE("es7210_tdm", "Failed to read reg 0x01, TDM config aborted");
+            return;
+          }
+          reg01 &= ~0x3F;
+          if (!id(es7210_adc).write_byte(0x01, reg01) ||
+              !id(es7210_adc).write_byte(0x12, 0x02)) {
+            ESP_LOGE("es7210_tdm", "Failed to write clock/TDM registers");
+            return;
+          }
+          if (!id(es7210_adc).write_byte(0x45, 0x1A) ||
+              !id(es7210_adc).write_byte(0x46, 0x10)) {
+            ESP_LOGE("es7210_tdm", "Failed to write MIC gain registers");
+            return;
+          }
+          ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, MIC3 gain=30dB", reg01);
+
+      # Restore ES8311 volume
+      - lambda: |-
+          float vol = ${volume_min} + (id(speaker_volume).state / 100.0) * (${volume_max} - ${volume_min});
+          id(es8311_dac).set_volume(vol);
+
+      - delay: 1s
+      - micro_wake_word.stop:
+      - delay: 1s
+      - micro_wake_word.start:
+      - delay: 30s
+      - if:
+          condition:
+            lambda: return id(init_in_progress);
+          then:
+            - globals.set:
+                id: init_in_progress
+                value: 'false'
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+api:
+
+ota:
+  - platform: esphome
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+  logs:
+    i2c: INFO
+    display: INFO
+    spi: INFO
+
+network:
+  enable_high_performance: true
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "86Box Hotspot"
+
+captive_portal:
+
+# =============================================================================
+# Dummy SPI bus for st7701s (init done by custom ST7701Init via on_boot).
+# GPIO47/48 are strapping pins, free after boot. Not used by PSRAM.
+# =============================================================================
+spi:
+  - id: dummy_spi
+    clk_pin: GPIO47
+    mosi_pin: GPIO48
+
+time:
+  - platform: sntp
+    id: my_time
+    timezone: Europe/Moscow
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+
+# =============================================================================
+# External Components
+# =============================================================================
+external_components:
+  - source:
+      type: git
+      url: https://github.com/n-IA-hane/esphome-intercom
+      ref: main
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
+
+# =============================================================================
+# I2C Bus
+# Confirmed: SDA=GPIO39, SCL=GPIO40 (shared with LCD RGB G4/B0 — standard
+# Espressif reference design with open-drain I2C on RGB data pins)
+# =============================================================================
+i2c:
+  - id: internal_i2c
+    sda:
+      number: GPIO39
+      allow_other_uses: true
+    scl:
+      number: GPIO40
+      allow_other_uses: true
+    scan: false
+    frequency: 400kHz
+
+# TCA9554 IO Expander (display CS/RST + speaker amp control)
+tca9555:
+  - id: io_expander
+    address: 0x20
+    i2c_id: internal_i2c
+
+# =============================================================================
+# Audio: Codec + AEC + I2S Duplex
+# Confirmed I2S pins (Espressif reference design):
+#   MCLK=GPIO5, DIN(mic)=GPIO6, LRCLK=GPIO7, DOUT(spkr)=GPIO15, BCLK=GPIO18
+# =============================================================================
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: internal_i2c
+    address: 0x18
+    bits_per_sample: 16bit
+    sample_rate: 48000
+    use_mclk: true
+    mic_gain: 24DB
+
+audio_adc:
+  - platform: es7210
+    id: es7210_adc
+    i2c_id: internal_i2c
+    address: 0x40
+    bits_per_sample: 16bit
+    sample_rate: 48000
+    mic_gain: 24dB
+
+esp_aec:
+  id: aec_processor
+  sample_rate: 16000
+  mode: sr_low_cost
+  filter_length: 4
+
+i2s_audio_duplex:
+  id: i2s_duplex
+  i2s_lrclk_pin: GPIO7
+  i2s_bclk_pin:
+    number: GPIO18
+    allow_other_uses: true
+  i2s_mclk_pin: GPIO5
+  i2s_din_pin: GPIO6
+  i2s_dout_pin: GPIO15
+  sample_rate: 48000
+  output_sample_rate: 16000
+  aec_id: aec_processor
+  use_tdm_reference: true
+  tdm_total_slots: 4
+  tdm_mic_slot: 0
+  tdm_ref_slot: 1
+  buffers_in_psram: true
+
+# =============================================================================
+# Microphone
+# =============================================================================
+microphone:
+  - platform: i2s_audio_duplex
+    id: mic_main
+    i2s_audio_duplex_id: i2s_duplex
+
+# =============================================================================
+# Speaker Pipeline
+# =============================================================================
+speaker:
+  - platform: i2s_audio_duplex
+    id: hw_speaker
+    i2s_audio_duplex_id: i2s_duplex
+    sample_rate: 48000
+
+  - platform: mixer
+    id: audio_mixer
+    output_speaker: hw_speaker
+    num_channels: 1
+    task_stack_in_psram: true
+    source_speakers:
+      - id: media_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: tts_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+      - id: intercom_speaker_mix
+        timeout: 10s
+        buffer_duration: 100ms
+
+  - platform: resampler
+    id: media_speaker
+    output_speaker: media_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: tts_speaker
+    output_speaker: tts_speaker_mix
+    task_stack_in_psram: true
+
+  - platform: resampler
+    id: intercom_speaker
+    output_speaker: intercom_speaker_mix
+    task_stack_in_psram: true
+
+# =============================================================================
+# Media Player
+# =============================================================================
+media_player:
+  - platform: speaker
+    id: speaker_media_player
+    name: None
+    internal: false
+    task_stack_in_psram: true
+    media_pipeline:
+      speaker: media_speaker
+      sample_rate: 48000
+      format: FLAC
+    announcement_pipeline:
+      speaker: tts_speaker
+      sample_rate: 48000
+      format: FLAC
+    files:
+      - id: timer_finished_sound
+        file: ${assets_base}sounds/timer_finished.flac
+      - id: intercom_ringing_sound
+        file: ${assets_base}sounds/ringtone.flac
+    on_announcement:
+      - script.execute: update_status
+    on_play:
+      - script.execute: update_status
+    on_pause:
+      - media_player.stop:
+      - delay: 500ms
+      - script.execute: update_status
+    on_idle:
+      - delay: 200ms
+      - script.execute: update_status
+
+# =============================================================================
+# Micro Wake Word
+# =============================================================================
+micro_wake_word:
+  microphone: mic_main
+  models:
+    - model: "${assets_base}wakewords/hey_trowyayoh.json"
+      probability_cutoff: ${wake_word_probability_cutoff}
+      sliding_window_size: ${wake_word_sliding_window_size}
+    - model: alexa
+
+# =============================================================================
+# Voice Assistant
+# =============================================================================
+voice_assistant:
+  microphone: mic_main
+  media_player: speaker_media_player
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+
+# =============================================================================
+# Intercom API
+# =============================================================================
+intercom_api:
+  id: intercom
+  mode: full
+  microphone: mic_main
+  speaker: intercom_speaker
+  ringing_timeout: 30s
+
+# =============================================================================
+# Globals
+# =============================================================================
+globals:
+  - id: voice_assistant_phase
+    type: int
+    restore_value: false
+    initial_value: ${voice_assist_not_ready_phase_id}
+  - id: current_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: previous_mode
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: peer_name
+    type: std::string
+    restore_value: no
+    initial_value: '"Home Assistant"'
+  - id: reply_page_index
+    type: int
+    restore_value: false
+    initial_value: "0"
+  - id: reply_total_pages
+    type: int
+    restore_value: false
+    initial_value: "1"
+  - id: wrapped_lines_reply
+    type: std::vector<std::string>
+    restore_value: false
+  - id: chord_widths_cache
+    type: std::vector<int>
+    restore_value: false
+  - id: text_row_y
+    type: std::vector<int>
+    restore_value: false
+  - id: y_metrics
+    type: std::vector<int>
+    restore_value: false
+
+# =============================================================================
+# Scripts (reuse display logic from xiaozhi-ball-v3, adapted for 480x480)
+# =============================================================================
+script:
+  - id: !extend va_end_cleanup
+    then:
+      - lambda: |-
+          id(wrapped_lines_reply).clear();
+          id(reply_total_pages) = 1;
+          id(reply_page_index) = 0;
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_idle_phase_id}'
+
+  - id: !extend update_led
+    then:
+      - lambda: |-
+          // No WS2812 LED on this board by default.
+          // If you add one (e.g. on GPIO48), configure light here.
+
+  - id: !extend ui_state_changed
+    then:
+      - lambda: |-
+          int led = id(g_applied_led);
+          if (led == 0 && id(current_mode) == 1 && id(intercom).get_state_str() == "Idle") {
+            id(peer_name) = id(intercom).get_current_destination();
+            if (id(previous_mode) == 0) {
+              id(current_mode) = 0;
+            }
+          }
+          switch (led) {
+            case 0:
+              if (!api::global_api_server->is_connected()) {
+                id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+              } else if (id(mute).state) {
+                id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+              } else {
+                id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+              }
+              break;
+            case 1: case 2:
+              id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+              break;
+            case 4: case 5:
+              id(current_mode) = 0;
+              id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+              break;
+            case 6:
+              id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
+              break;
+            case 7:
+              id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
+              break;
+            case 11:
+              id(voice_assistant_phase) = ${voice_assist_error_phase_id};
+              break;
+            default: break;
+          }
+
+  - id: !extend ui_tts_started
+    then:
+      - globals.set:
+          id: voice_assistant_phase
+          value: '${voice_assist_replying_phase_id}'
+
+  - id: !extend ui_stt_ended
+    then: []
+
+  - id: !extend ui_ic_call
+    then:
+      - lambda: |-
+          id(peer_name) = peer;
+          id(previous_mode) = id(current_mode);
+          id(current_mode) = 1;
+
+  - id: compute_layout_metrics
+    then:
+      - lambda: |-
+          const int w = ${display_width};
+          const int h = ${display_height};
+          const int r = w / 2;
+          const int cy = h / 2;
+          const int side_margin = w / 30;
+          const int line_h = h / 20;
+          const int line_spacing = h / 80;
+          const int top_pad = h / 16;
+          const int bottom_pad = h / 16;
+          id(y_metrics).clear();
+          id(y_metrics).reserve(14);
+          id(y_metrics).push_back(0);
+          id(y_metrics).push_back(h / 2);
+          id(y_metrics).push_back(h);
+          id(y_metrics).push_back(h / 8);
+          id(y_metrics).push_back(h * 7 / 24);
+          id(y_metrics).push_back(h * 5 / 12);
+          id(y_metrics).push_back(h * 13 / 24);
+          id(y_metrics).push_back(h * 5 / 8);
+          id(y_metrics).push_back(h * 37 / 48);
+          id(y_metrics).push_back(h * 5 / 6);
+          id(y_metrics).push_back(h * 41 / 48);
+          id(y_metrics).push_back(h - h / 16);
+          id(y_metrics).push_back(h - 2);
+          id(y_metrics).push_back(h * 3 / 20);
+          id(text_row_y).clear();
+          id(chord_widths_cache).clear();
+          int y = top_pad;
+          while (y + line_h <= h - bottom_pad) {
+            id(text_row_y).push_back(y);
+            int mid_y = y + line_h / 2;
+            int dy = abs(mid_y - cy);
+            int chord_w = 0;
+            if (dy < r) {
+              chord_w = (int)(2.0f * sqrtf((float)(r * r - dy * dy))) - side_margin * 2;
+              if (chord_w < 0) chord_w = 0;
+            }
+            id(chord_widths_cache).push_back(chord_w);
+            y += (line_h + line_spacing);
+          }
+
+# =============================================================================
+# Binary Sensors
+# =============================================================================
+binary_sensor:
+  - platform: status
+    name: Status
+
+  - platform: gpio
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    id: main_button
+    name: "Main Button"
+    icon: "mdi:gesture-tap-button"
+    on_multi_click:
+      - timing:
+          - ON for 10ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                not:
+                  voice_assistant.is_running:
+              then:
+                - voice_assistant.start:
+              else:
+                - voice_assistant.stop:
+      - timing:
+          - ON for 50ms to 500ms
+          - OFF for 50ms to 400ms
+          - ON for 50ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                lambda: |-
+                  return id(current_mode) == 1 && id(intercom).get_state_str() == "Idle";
+              then:
+                - intercom_api.next_contact: intercom
+      - timing:
+          - ON for 1s to 3s
+        then:
+          - switch.toggle: mute
+
+# =============================================================================
+# Outputs
+# =============================================================================
+output:
+  # NS4150B amplifier CTRL via TCA9554 EXIO3
+  - platform: gpio
+    id: speaker_enable_output
+    pin:
+      tca9555: io_expander
+      number: 3
+      mode:
+        output: true
+
+  # Display backlight (GPIO4, LEDC PWM)
+  # Confirmed from working Arduino main.ino: #define LCD_BL_PIN 4
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO4
+    frequency: 5000Hz
+
+# =============================================================================
+# Lights
+# =============================================================================
+light:
+  - platform: monochromatic
+    id: backlight
+    name: "Display Backlight"
+    icon: "mdi:brightness-6"
+    output: backlight_output
+    restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
+
+# =============================================================================
+# Switches
+# =============================================================================
+switch:
+  - id: !remove mute
+  - id: !remove speaker_mute
+
+  # Speaker amp enable
+  - platform: template
+    id: speaker_enable
+    internal: true
+    optimistic: true
+    restore_mode: ALWAYS_ON
+    turn_on_action:
+      - output.turn_on: speaker_enable_output
+    turn_off_action:
+      - output.turn_off: speaker_enable_output
+
+  # Mic Mute
+  - platform: template
+    name: Mic Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    entity_category: config
+    on_turn_on:
+      - voice_assistant.stop:
+      - micro_wake_word.stop:
+      - microphone.mute: mic_main
+      - script.execute: update_status
+    on_turn_off:
+      - microphone.unmute: mic_main
+      - if:
+          condition:
+            not:
+              micro_wake_word.is_running:
+          then:
+            - micro_wake_word.start:
+      - script.execute: update_status
+
+  # Speaker Mute
+  - platform: template
+    name: Speaker Mute
+    id: speaker_mute
+    icon: mdi:volume-off
+    entity_category: config
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - speaker.mute_on: hw_speaker
+      - delay: 50ms
+      - switch.turn_off: speaker_enable
+      - script.execute: update_status
+    on_turn_off:
+      - switch.turn_on: speaker_enable
+      - delay: 50ms
+      - speaker.mute_off: hw_speaker
+      - script.execute: update_status
+
+  # Intercom switches
+  - platform: intercom_api
+    intercom_api_id: intercom
+    auto_answer:
+      id: auto_answer_switch
+      name: Auto Answer
+      icon: mdi:phone-in-talk
+      restore_mode: RESTORE_DEFAULT_OFF
+
+  # AEC switch
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
+    aec:
+      id: aec_switch
+      name: Echo Cancellation
+      icon: mdi:ear-hearing
+      restore_mode: RESTORE_DEFAULT_ON
+
+# =============================================================================
+# Numbers
+# =============================================================================
+number:
+  - platform: i2s_audio_duplex
+    i2s_audio_duplex_id: i2s_duplex
+    mic_gain:
+      name: Mic Gain
+
+  - platform: template
+    id: speaker_volume
+    name: "Speaker Volume"
+    icon: "mdi:volume-high"
+    min_value: 0
+    max_value: 100
+    step: 5
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    unit_of_measurement: "%"
+    set_action:
+      - lambda: |-
+          float es8311_vol = ${volume_min} + (x / 100.0) * (${volume_max} - ${volume_min});
+          id(es8311_dac).set_volume(es8311_vol);
+
+# =============================================================================
+# Selects
+# =============================================================================
+select:
+  - platform: template
+    name: AEC Mode
+    id: aec_mode_select
+    icon: mdi:tune-vertical
+    options:
+      - "sr_low_cost"
+      - "sr_high_perf"
+      - "voip_low_cost"
+      - "voip_high_perf"
+    initial_option: "sr_low_cost"
+    optimistic: true
+    restore_value: true
+    set_action:
+      - if:
+          condition:
+            lambda: 'return id(init_in_progress);'
+          then:
+            - logger.log: "AEC mode select: skipping during boot"
+          else:
+            - if:
+                condition:
+                  or:
+                    - voice_assistant.is_running:
+                    - not:
+                        intercom_api.is_idle: intercom
+                then:
+                  - logger.log:
+                      level: WARN
+                      format: "Cannot switch AEC mode during active VA/intercom"
+                else:
+                  - logger.log:
+                      format: "Switching AEC mode to %s"
+                      args: ['x.c_str()']
+                  - micro_wake_word.stop:
+                  - i2s_audio_duplex.stop: i2s_duplex
+                  - esp_aec.set_mode:
+                      id: aec_processor
+                      mode: !lambda 'return x;'
+                  - i2s_audio_duplex.start: i2s_duplex
+                  - delay: 300ms
+                  - if:
+                      condition:
+                        switch.is_off: mute
+                      then:
+                        - micro_wake_word.start:
+
+# =============================================================================
+# Sensors
+# =============================================================================
+sensor:
+  - platform: wifi_signal
+    name: WiFi Signal
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: Uptime
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: internal_temperature
+    name: CPU Temperature
+    update_interval: 60s
+    entity_category: diagnostic
+
+# =============================================================================
+# Text Sensors
+# =============================================================================
+text_sensor:
+  - id: text_request
+    platform: template
+  - id: text_response
+    platform: template
+
+# =============================================================================
+# Font
+# =============================================================================
+font:
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 300
+    id: font_text
+    size: 20
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 600
+    id: font_title
+    size: 30
+    glyphsets:
+      - ${font_glyphsets}
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_state
+    size: 36
+    glyphsets:
+      - GF_Latin_Core
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_info
+    size: 24
+    glyphsets:
+      - GF_Latin_Core
+
+# =============================================================================
+# Touchscreen (GT911)
+# =============================================================================
+touchscreen:
+  - platform: gt911
+    id: touch
+    i2c_id: internal_i2c
+    interrupt_pin:
+      tca9555: io_expander
+      number: 6
+    reset_pin:
+      tca9555: io_expander
+      number: 5
+    on_touch:
+      - lambda: |-
+          ESP_LOGD("touch", "Touch: x=%d y=%d", touch.x, touch.y);
+    update_interval: 20ms
+
+# =============================================================================
+# Display (ST7701 RGB 480x480)
+#
+# Strategy: ST7701Init custom component sends init commands via TCA9554
+# bit-bang SPI (CS=EXIO0, MOSI=EXIO1, SCK=EXIO2, RST=EXIO7) in on_boot
+# lambda at priority 600. Then st7701s takes over the RGB DPI peripheral —
+# its SPI goes to dummy pins (GPIO47/48) so the real display isn't disturbed.
+# cs_pin not needed (st7701s allows cs_pin_required=False).
+# init_sequence: [] — no SPI init commands, our custom init already done.
+# =============================================================================
+display:
+  - platform: st7701s
+    id: main_display
+    spi_id: dummy_spi
+    init_sequence: []
+    color_order: RGB
+    dimensions:
+      width: 480
+      height: 480
+    de_pin: GPIO17
+    hsync_pin: GPIO46
+    vsync_pin: GPIO3
+    pclk_pin: GPIO9
+    pclk_frequency: 12MHz
+    data_rate: 20MHz
+    data_pins:
+      - number: 40
+        allow_other_uses: true
+      - number: 41
+      - number: 42
+      - number: 2
+      - number: 1
+      - number: 21
+      - number: 8
+      - number: 18
+        allow_other_uses: true
+      - number: 45
+      - number: 38
+      - number: 39
+        allow_other_uses: true
+      - number: 10
+      - number: 11
+      - number: 12
+      - number: 13
+      - number: 14
+    update_interval: never
+    auto_clear_enabled: false
+
+lvgl:
+  displays:
+    - main_display
+  touchscreens:
+    - touch
+  buffer_size: 25%
+  color_depth: 16
+  log_level: WARN
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
