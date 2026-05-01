@@ -209,7 +209,9 @@ class IntercomAudio : public Component {
   std::atomic<bool> streaming_{false};       // True = actively streaming
   std::atomic<uint32_t> session_{0};         // Incremented on start/stop to invalidate in-flight ops
 
-  // Task handle (task created once in setup, runs forever)
+  // Task handle (task created once in setup, runs forever).
+  // Dynamic task with internal-heap stack (8KB) so the legacy component
+  // stays compatible with plain ESP32 boards without PSRAM.
   TaskHandle_t audio_task_handle_{nullptr};
 
   // Separate mutexes to reduce contention

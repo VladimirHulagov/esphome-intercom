@@ -54,11 +54,13 @@ async def to_code(config):
     parent = await cg.get_variable(config[CONF_ESP_AFE_ID])
 
     if CONF_INPUT_VOLUME in config:
+        cg.add(parent.set_input_volume_sensor_enabled(True))
         var = await sensor.new_sensor(config[CONF_INPUT_VOLUME])
         await cg.register_component(var, config[CONF_INPUT_VOLUME])
         cg.add(var.set_parent(parent))
 
     if CONF_OUTPUT_RMS in config:
+        cg.add(parent.set_output_rms_sensor_enabled(True))
         var = await sensor.new_sensor(config[CONF_OUTPUT_RMS])
         await cg.register_component(var, config[CONF_OUTPUT_RMS])
         cg.add(var.set_parent(parent))

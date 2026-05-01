@@ -37,11 +37,12 @@ intercom_api:
 
   on_outgoing_call:
     - script.execute: update_status
+    - script.execute:
+        id: ui_ic_call
+        peer: !lambda 'return id(intercom).get_current_destination();'
     - if:
         condition:
-          intercom_api.destination_is:
-            id: intercom
-            destination: "Home Assistant"
+          intercom_api.is_ha_destination: intercom
         then:
           - homeassistant.event:
               event: esphome.intercom_call
@@ -52,9 +53,17 @@ intercom_api:
 
   on_ringing:
     - script.execute: update_status
+    - script.execute:
+        id: ui_ic_call
+        peer: !lambda 'return id(intercom).get_caller();'
 
   on_streaming:
     - script.execute: update_status
+    - script.execute:
+        id: ui_ic_call
+        peer: !lambda |-
+          auto c = id(intercom).get_caller();
+          return c.empty() ? id(intercom).get_current_destination() : c;
 
   on_idle:
     - script.execute: update_status
@@ -124,6 +133,13 @@ script:
               led->turn_off().perform();
               break;
           }
+
+  # Hook placeholder: devices with a display can !extend to update intercom UI
+  # widgets (peer name, page transitions, etc.) when a call starts/changes.
+  - id: ui_ic_call
+    parameters:
+      peer: string
+    then: []
 
 # =============================================================================
 # Buttons
@@ -216,7 +232,21 @@ text_sensor:
   - platform: homeassistant
     id: ha_active_devices
     entity_id: sensor.intercom_active_devices
+    # ESPHome's TextSensor::publish_state always fires on_value, even when the
+    # value is identical to the previous one. HA also re-emits the current state
+    # on every reconnect/subscribe. Drop unchanged CSV here so set_contacts() and
+    # any device-side on_value extensions only fire on real change.
+    filters:
+      - lambda: |-
+          static std::string last;
+          if (x == last) return optional<std::string>{};
+          last = x;
+          return optional<std::string>(x);
     on_value:
       - intercom_api.set_contacts:
           id: intercom
           contacts_csv: !lambda 'return x;'
+
+# No CONFIG_LWIP_MAX_SOCKETS override: intercom_api reserves its socket
+# quota through socket.consume_sockets() in its Python validation path,
+# so ESPHome sizes the setting automatically.

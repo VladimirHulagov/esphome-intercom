@@ -5,10 +5,11 @@
 # For ESP32 boards where mic and speaker share the SAME I2S bus.
 #
 # Audio pipeline:
-#   MEMS mic -> i2s_audio_duplex (48kHz) -> FIR decimation (16kHz) -> AEC -> intercom TX
-#   Media       -> media_speaker (resampler) -------+
-#   Intercom RX -> intercom_speaker (resampler) ----+-- mixer (48kHz) -> hw_speaker -> amp
-#   TTS         -> tts_speaker (resampler) ---------+
+#   MEMS mic → i2s_audio_duplex (48kHz) → FIR x3 → esp_aec (AEC SR linear) → mic_main → VA / Intercom TX / MWW
+#
+#   Media       → media_speaker (resampler) ───────────┐
+#   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → class-D amp
+#   Intercom RX → intercom_speaker (resampler) ────────┘
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
@@ -24,8 +25,14 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3-duplex-va
-  friendly_name: Generic Esp32-s3 Duplex VA
+  # Hardware-shared identity: dropping firmware-variant suffix keeps build cache
+  # and HA device entity stable across rebuilds.
+  name: generic-s3
+  friendly_name: Generic S3
+
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
+
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # Wake word sensitivity
   wake_word_probability_cutoff: "0.60"
@@ -38,10 +45,9 @@ substitutions:
 # Package: shared VA + Intercom state machine
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/va_intercom.yaml
-    ref: main
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@main
 
 esphome:
   name: ${name}
@@ -54,13 +60,17 @@ esp32:
   variant: esp32s3
   framework:
     type: esp-idf
+    advanced:
+      compiler_optimization: PERF
     sdkconfig_options:
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
+      # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      # Route ESP-IDF stdout (and ESPHome logger when hardware_uart=USB_SERIAL_JTAG)
+      # to the built-in USB-Serial-JTAG peripheral. Required on boards where the
+      # USB-C connector is wired to the S3's native USB-Serial-JTAG (e.g. Freenove,
+      # bare ESP32-S3-DevKitC-1) rather than to an external USB-UART chip.
+      CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG: "y"
+      CONFIG_ESP_CONSOLE_SECONDARY_NONE: "y"
 
 psram:
   mode: quad
@@ -75,19 +85,43 @@ ota:
   - platform: esphome
 
 logger:
-  hardware_uart: USB_CDC
+  hardware_uart: USB_SERIAL_JTAG
   level: INFO
+  logs:
+    # Silence high-volume tags to keep the console readable during normal use
+    i2s_duplex: INFO
+    esp_aec: INFO
+    component: INFO
+    api: INFO
+    api.connection: INFO
+    api.service: INFO
+    sensor: INFO
+    light: INFO
+    switch: INFO
+    number: INFO
+    select: INFO
+    binary_sensor: INFO
+    text_sensor: INFO
+    speaker: INFO
+    audio: INFO
+    micro_wake_word: INFO
+    voice_assistant: INFO
+    media_player: INFO
+    resampler: INFO
+    mixer_speaker: INFO
+    mdns: INFO
+    wifi: INFO
+    json: INFO
+    intercom_api: INFO
+    audio_processor: INFO
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+  - source: ${ext_components_source}
+    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
 # AEC
@@ -111,7 +145,7 @@ i2s_audio_duplex:
   output_sample_rate: 16000
   slot_bit_width: 32
   correct_dc_offset: true
-  aec_id: aec_processor
+  processor_id: aec_processor
   buffers_in_psram: true
 
 # =============================================================================
@@ -170,6 +204,7 @@ media_player:
     id: speaker_media_player
     name: None
     internal: false
+    task_stack_in_psram: true
     media_pipeline:
       speaker: media_speaker
       sample_rate: 48000
@@ -179,13 +214,21 @@ media_player:
       sample_rate: 48000
       format: FLAC
     files:
+      - id: timer_finished_sound
+        file: ${assets_base}assets/sounds/timer_finished.flac
       - id: intercom_ringing_sound
-        file: https://github.com/n-IA-hane/esphome-intercom/raw/main/sounds/ringtone.flac
+        file: ${assets_base}assets/sounds/ringtone.flac
+    on_announcement:
+      - script.execute: update_status
     on_play:
       - script.execute: update_status
     on_pause:
+      # Must stop (paused pipeline blocks audio). Display handled here (on_idle won't fire).
       - media_player.stop:
+      - delay: 500ms
+      - script.execute: update_status
     on_idle:
+      - delay: 200ms
       - script.execute: update_status
 
 # =============================================================================
@@ -194,7 +237,8 @@ media_player:
 micro_wake_word:
   microphone: mic_main
   models:
-    - model: hey_jarvis
+    - model: alexa
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
 
@@ -213,10 +257,11 @@ voice_assistant:
 # Intercom API: Device part
 # =============================================================================
 intercom_api:
+  tasks_stack_in_psram: true   # save ~28KB internal heap on S3 by placing task stacks in PSRAM
+  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   mode: full
   microphone: mic_main
   speaker: intercom_speaker
-  dc_offset_removal: false
   ringing_timeout: 30s
 
 # =============================================================================
@@ -247,14 +292,21 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Full-experience standard: stay inside the esp_aec3 engine. MWW
+    # requires SR modes (the VOIP residual echo suppressor distorts the
+    # spectral features, dropping wake-word detection from 10/10 to 2/10).
+    # Both SR options share the same engine, so a runtime switch never
+    # triggers a dios_ssp tail-buffer alloc.
     options:
       - "sr_low_cost"
       - "sr_high_perf"
-      - "voip_low_cost"
-      - "voip_high_perf"
     initial_option: "sr_low_cost"
-    optimistic: true
-    restore_value: true
+    # Non-optimistic: HA reflects the live component mode, not the value the
+    # user clicked. If the switch is rejected (e.g. internal RAM fragmented)
+    # or the component falls back to the previous mode, the select shows the
+    # actual mode rather than a fictitious one.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -288,6 +340,9 @@ select:
                         switch.is_off: mute
                       then:
                         - micro_wake_word.start:
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());
 
 # =============================================================================
 # Numbers
@@ -295,6 +350,8 @@ select:
 number:
   - platform: i2s_audio_duplex
     i2s_audio_duplex_id: i2s_duplex
+    speaker_volume:
+      name: Speaker Volume
     mic_gain:
       name: Mic Gain
     mic_gain_pre_aec:
@@ -369,8 +426,8 @@ script:
             case 5:  // VA Listening: red solid
               led->turn_on().set_rgb(1.0f, 0.0f, 0.0f).set_brightness(0.7f).set_effect("None").perform();
               break;
-            case 6:  // VA Thinking: yellow solid
-              led->turn_on().set_rgb(1.0f, 0.55f, 0.0f).set_brightness(0.7f).set_effect("None").perform();
+            case 6:  // VA Thinking: yellow solid (pure, max contrast vs red)
+              led->turn_on().set_rgb(1.0f, 1.0f, 0.0f).set_brightness(1.0f).set_effect("None").perform();
               break;
             case 7:  // VA Speaking: blue solid
               led->turn_on().set_rgb(0.3f, 0.3f, 0.7f).set_brightness(0.6f).set_effect("None").perform();
@@ -417,3 +474,48 @@ sensor:
 binary_sensor:
   - platform: status
     name: Status
+
+  # BOOT button (GPIO0), multi-click
+  - platform: gpio
+    name: Boot Button
+    id: boot_button
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_multi_click:
+      # Single click: call toggle if intercom active, otherwise VA start/stop
+      - timing:
+          - ON for at most 500ms
+          - OFF for at least 400ms
+        then:
+          - if:
+              condition:
+                not:
+                  - intercom_api.is_idle: intercom
+              then:
+                - intercom_api.call_toggle: intercom
+              else:
+                - if:
+                    condition:
+                      voice_assistant.is_running:
+                    then:
+                      - voice_assistant.stop:
+                    else:
+                      - voice_assistant.start:
+      # Double click: next contact
+      - timing:
+          - ON for 50ms to 500ms
+          - OFF for at most 300ms
+          - ON for 50ms to 500ms
+          - OFF for at least 400ms
+        then:
+          - intercom_api.next_contact: intercom
+      # Long press (1-3s): toggle mute
+      - timing:
+          - ON for 1s to 3s
+          - OFF for at least 300ms
+        then:
+          - switch.toggle: mute

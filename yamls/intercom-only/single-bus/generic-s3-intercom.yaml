@@ -5,8 +5,17 @@
 # For ESP32 boards where mic and speaker share the SAME I2S bus.
 #
 # Audio pipeline:
-#   MEMS mic -> i2s_audio_duplex (48kHz) -> FIR decimation (16kHz) -> AEC -> intercom TX
-#   Intercom RX (16kHz) -> resampler (48kHz) -> hw_speaker -> amp
+#   MEMS mic → i2s_audio_duplex (48kHz) → FIR x3 → esp_aec → mic_main → intercom TX
+#   Intercom RX (16kHz) → resampler → hw_speaker (48kHz) → class-D amp
+#
+# AEC defaults validated for single-bus MEMS+amp (intercom-only, no MWW):
+#   mode: voip_high_perf            residual echo suppressor for human ears
+#   filter_length: 8                ~128 ms tail at voip 16 ms/frame
+#   aec_reference: previous_frame   default, ~16 ms latency, no extra buffer
+#
+# 48kHz bus + FIR decimation is required on no-codec MEMS+amp setups; 16kHz
+# native gives significantly worse AEC. Codec devices with hardware digital
+# loopback (ES8311 stereo / ES7210 TDM) can run at 16kHz native instead.
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
@@ -22,17 +31,20 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3-duplex
-  friendly_name: Generic Esp32-s3 Duplex
+  # Hardware-shared identity: any firmware variant for this generic S3 board
+  # uses the same name so HA reuses the device entity and ESPHome reuses the
+  # build cache (.esphome/build/${name}).
+  name: generic-s3
+  friendly_name: Generic S3
+
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
 # =============================================================================
 # Package: shared intercom state machine
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/intercom_only.yaml
-    ref: main
+  core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
 
 esphome:
   name: ${name}
@@ -45,13 +57,17 @@ esp32:
   variant: esp32s3
   framework:
     type: esp-idf
+    advanced:
+      compiler_optimization: PERF
     sdkconfig_options:
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
+      # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      # Route ESP-IDF stdout (and ESPHome logger when hardware_uart=USB_SERIAL_JTAG)
+      # to the built-in USB-Serial-JTAG peripheral. Required on boards where the
+      # USB-C connector is wired to the S3's native USB-Serial-JTAG (e.g. Freenove,
+      # bare ESP32-S3-DevKitC-1) rather than to an external USB-UART chip.
+      CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG: "y"
+      CONFIG_ESP_CONSOLE_SECONDARY_NONE: "y"
 
 psram:
   mode: quad
@@ -73,7 +89,7 @@ ota:
   - platform: esphome
 
 logger:
-  hardware_uart: USB_CDC
+  hardware_uart: USB_SERIAL_JTAG
   level: INFO
 
 wifi:
@@ -81,11 +97,8 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, i2s_audio_duplex, esp_aec]
+  - source: ${ext_components_source}
+    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
 # =============================================================================
 # AEC
@@ -93,8 +106,8 @@ external_components:
 esp_aec:
   id: aec_processor
   sample_rate: 16000
-  filter_length: 4
-  mode: sr_low_cost
+  filter_length: 8
+  mode: voip_high_perf
 
 # =============================================================================
 # I2S Audio Duplex
@@ -109,7 +122,7 @@ i2s_audio_duplex:
   output_sample_rate: 16000
   slot_bit_width: 32
   correct_dc_offset: true
-  aec_id: aec_processor
+  processor_id: aec_processor
   buffers_in_psram: true
 
 # =============================================================================
@@ -138,6 +151,7 @@ speaker:
 # Intercom API: Device part (merged with package callbacks)
 # =============================================================================
 intercom_api:
+  frame_buffers_in_psram: true # Processor frame buffers (mic/ref/out, ~3 KB) in PSRAM
   mode: full
   microphone: mic_main
   speaker: intercom_speaker
@@ -172,14 +186,21 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Intercom-only standard: stay inside the dios_ssp_aec engine. The two
+    # VOIP modes share the same engine, so a runtime switch never triggers
+    # an esp_aec3 FFT alloc and avoids the silent calloc-fail bug observed
+    # at filter_length>4 on cross-engine transitions. SR modes are not
+    # offered here because no MWW is present in this configuration.
     options:
-      - "sr_low_cost"
-      - "sr_high_perf"
       - "voip_low_cost"
       - "voip_high_perf"
-    initial_option: "sr_low_cost"
-    optimistic: true
-    restore_value: true
+    initial_option: "voip_high_perf"
+    # Non-optimistic: HA reflects the live component mode, not the value the
+    # user clicked. If the switch is rejected (e.g. internal RAM fragmented)
+    # or the component falls back to the previous mode, the select shows the
+    # actual mode rather than a fictitious one.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -198,6 +219,9 @@ select:
                 id: aec_processor
                 mode: !lambda 'return x;'
             - i2s_audio_duplex.start: i2s_duplex
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());
 
 # =============================================================================
 # Numbers
