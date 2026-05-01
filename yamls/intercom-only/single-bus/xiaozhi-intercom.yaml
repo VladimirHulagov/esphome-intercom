@@ -28,9 +28,9 @@ substitutions:
   name: xiaozhi
   friendly_name: Xiaozhi
 
-  ext_components_source: "../../../esphome/components"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
-  assets_base: "../../../"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # IC layout proportions (relative to display_height)
   ic_btn_size: "25%"
@@ -47,10 +47,10 @@ substitutions:
 # Packages
 # =============================================================================
 packages:
-  core: !include ../../../packages/intercom_only.yaml
-  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
-  audio_mem: !include ../../../packages/profile/audio_memory.yaml
-  es8311_stereo_ref: !include ../../../packages/codec/es8311_stereo_ref.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@main
+  es8311_stereo_ref: github://n-IA-hane/esphome-intercom/packages/codec/es8311_stereo_ref.yaml@main
 
 # =============================================================================
 # Core
@@ -85,7 +85,6 @@ esp32:
   framework:
     type: esp-idf
     advanced:
-      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
       compiler_optimization: PERF
 
 psram:

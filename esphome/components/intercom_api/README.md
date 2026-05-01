@@ -11,7 +11,8 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 - **TCP Server** on port 6054 for audio streaming
 - **FreeRTOS Tasks** for non-blocking audio processing
 - **Finite State Machine** for call states (Idle → Ringing → Streaming)
-- **Audio Processor Integration** via `esp_aec` (AEC only) or `esp_afe` (AEC + NS + VAD + AGC) components
+- **Audio Processor Integration** via `esp_aec`, or `esp_afe` when the
+  microphone path is fed by `i2s_audio_duplex`
 - **Contact Management** for ESP↔ESP calls (Full mode)
 - **Persistent Settings** saved to flash
 - **ESPHome Native Platforms** for switches, numbers, sensors

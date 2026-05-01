@@ -269,7 +269,7 @@ Questions a fresh designer would ask, and the current answer.
 
 **Alternative**: processor owns a task, transport posts frames to a queue. Cleaner separation.
 
-**Why not today**: the intercom-only build has no processor task to own anything. Two of four use cases would have an empty abstraction.
+**Why not in the current design**: the intercom-only build has no processor task to own anything. Two of four use cases would have an empty abstraction.
 
 **Revisit if**: a new use case emerges where the processor is always present and the transport is pluggable.
 
@@ -279,7 +279,7 @@ Questions a fresh designer would ask, and the current answer.
 
 **Alternative**: Protobuf, with a Home Assistant native integration on top.
 
-**Why not today**: no current client justifies a breaking wire change. The hand-packed header is stable, 4 bytes of overhead per frame, and easy to parse in any language.
+**Why not in the current design**: no current client justifies a breaking wire change. The hand-packed header is stable, 4 bytes of overhead per frame, and easy to parse in any language.
 
 **Revisit if**: a native Home Assistant intercom integration becomes a requirement and the binary protocol blocks it.
 
@@ -289,13 +289,13 @@ Questions a fresh designer would ask, and the current answer.
 
 **Alternative**: `xEventGroupWaitBits` / `xEventGroupSetBits` on the config side.
 
-**Why not today**: atomics are lock-free on the hot path, EventGroup is not. EventGroup gives a blocking wait on the config side for free, which atomics simulate with a bounded spin. For asymmetric workloads (31 Hz hot path vs ~1 Hz config) the atomic implementation wins.
+**Why not in the current design**: atomics are lock-free on the hot path, EventGroup is not. EventGroup gives a blocking wait on the config side for free, which atomics simulate with a bounded spin. For asymmetric workloads (31 Hz hot path vs ~1 Hz config) the atomic implementation wins.
 
 ### 8.4 Should there be a test-matrix of real YAMLs for every topology?
 
 **Current**: "intercom only" and "full AFE" have YAMLs under `yamls/`. "intercom + AEC standalone" and "duplex standalone" are verified only by code review.
 
-**Why not today**: no shipping device uses those intermediate topologies, so the maintenance surface is not justified.
+**Why not in the current design**: no shipping device uses those intermediate topologies, so the maintenance surface is not justified.
 
 **Revisit if**: a user asks for one of those configurations, or a reconfigure bug that only those paths would catch lands on a shipping device.
 

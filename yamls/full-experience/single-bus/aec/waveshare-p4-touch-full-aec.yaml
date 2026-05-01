@@ -49,8 +49,8 @@ substitutions:
 
   # Toggled by scripts/yaml_paths.sh between local (../../../../...) and remote
   # (github://n-IA-hane/esphome-intercom@<branch>) modes.
-  ext_components_source: "../../../../esphome/components"
-  assets_base: "../../../../"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # Display dimensions (portrait)
   display_width: "800"
@@ -73,8 +73,8 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
 packages:
-  core: !include ../../../../packages/va_intercom.yaml
-  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  es7210_tdm: github://n-IA-hane/esphome-intercom/packages/codec/es7210_tdm.yaml@main
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION

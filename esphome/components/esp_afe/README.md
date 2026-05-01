@@ -2,7 +2,7 @@
 
 > ⚠ **Important: `esp_afe` requires `i2s_audio_duplex` in front of it.** It is **not** a drop-in alternative to `esp_aec` for `intercom_api` standalone setups (dual-bus MEMS + amp without a codec). The AFE pipeline expects fixed 512-sample 16 kHz frames at a steady cadence, which only `i2s_audio_duplex` produces. If you use `intercom_api` without `i2s_audio_duplex`, set `processor_id:` to an `esp_aec` component, not `esp_afe`. See [docs/reference.md](../../../docs/reference.md#audio-processing-components) for the full topology matrix.
 
-ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline (**AEC + Beamforming (BSS) + Noise Suppression + VAD + AGC**) in a single component, with runtime control switches and diagnostic sensors. Supports single-mic (MR) and dual-mic (MMR) configurations.
+ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framework. Provides a complete audio processing pipeline (**AEC + spatial source separation (BSS) + Noise Suppression + VAD + AGC**) in a single component, with runtime control switches and diagnostic sensors. Supports single-mic (MR) and dual-mic (MMR) configurations.
 
 ## Overview
 
@@ -18,7 +18,7 @@ ESPHome component wrapping Espressif's **ESP-SR AFE** (Audio Front End) framewor
 [mic1 + mic2 + ref] -> |AEC| -> |SE(BSS)| -> [clean output]
 ```
 
-> **Note**: When beamforming (SE/BSS) is active, esp-sr replaces NS and AGC with spatial source separation. BSS suppresses directional noise better than NS but does not normalize volume (no AGC). NS and AGC switches have no effect while SE is active.
+> **Note**: When SE/BSS is active, esp-sr replaces NS and AGC with spatial source separation. BSS suppresses directional noise better than NS but does not normalize volume (no AGC). NS and AGC switches have no effect while SE is active.
 
 Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full signal processing pipeline. Both components implement the `AudioProcessor` interface, but they are **only** drop-in replacements behind `i2s_audio_duplex`. With standalone `intercom_api` (no duplex driver), use `esp_aec`: the AFE feed/fetch task model needs the steady producer that `i2s_audio_duplex` provides and that the standalone intercom path does not.
 
@@ -27,7 +27,7 @@ Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full 
 | Feature | esp_aec | esp_afe |
 |---------|---------|---------|
 | Echo Cancellation | Yes | Yes |
-| Beamforming (BSS) | No | Yes (dual-mic) |
+| Spatial voice isolation (BSS) | No | Yes (dual-mic) |
 | Noise Suppression | No | Yes (WebRTC, single-mic mode) |
 | Voice Activity Detection | No | Yes (WebRTC) |
 | Automatic Gain Control | No | Yes (WebRTC, single-mic mode) |
@@ -44,7 +44,8 @@ Unlike `esp_aec` (standalone echo cancellation only), `esp_afe` provides a full 
 
 - **ESP32-S3** or **ESP32-P4** with PSRAM
 - ESP-IDF framework
-- `i2s_audio_duplex` or `intercom_api` as audio consumer
+- `i2s_audio_duplex` in front of the processor. `intercom_api` can use the
+  processed mic only when it sits behind the duplex driver.
 
 ## Installation
 
@@ -53,7 +54,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+      ref: main
     components: [audio_processor, i2s_audio_duplex, esp_afe]
 ```
 
@@ -83,7 +84,7 @@ esp_afe:
   type: sr                    # sr (speech recognition) or vc (voice communication)
   mode: low_cost              # low_cost or high_perf
   mic_num: 2                  # Number of microphones (1 or 2)
-  se_enabled: true            # Beamforming (BSS), requires mic_num: 2
+  se_enabled: true            # BSS spatial voice isolation, requires mic_num: 2
   aec_enabled: true           # Echo cancellation
   aec_filter_length: 4        # Echo tail in frames (4 = 64ms)
   ns_enabled: true            # Noise suppression (WebRTC)
@@ -109,12 +110,12 @@ esp_afe:
 | `id` | ID | Required | Component ID |
 | `type` | string | `sr` | AFE type: `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
 | `mode` | string | `low_cost` | AFE mode: `low_cost` or `high_perf` |
-| `mic_num` | int | `1` | Number of microphones (1 or 2). Set to 2 for dual-mic beamforming with `se_enabled: true` |
+| `mic_num` | int | `1` | Number of microphones (1 or 2). Set to 2 for dual-mic BSS voice isolation with `se_enabled: true` |
 | `aec_enabled` | bool | **true** | Enable acoustic echo cancellation |
 | `aec_filter_length` | int | `4` | AEC filter length in frames (1-8). 4 = 64ms tail, sufficient for most setups |
 | `ns_enabled` | bool | **true** | Enable noise suppression (WebRTC engine) |
 | `agc_enabled` | bool | **true** | Enable automatic gain control (WebRTC engine) |
-| `se_enabled` | bool | **false** | Enable beamforming (BSS). Requires `mic_num: 2`. Replaces NS and AGC with spatial source separation |
+| `se_enabled` | bool | **false** | Enable spatial source separation (BSS). Requires `mic_num: 2`. Replaces NS and AGC with spatial source separation |
 | `vad_enabled` | bool | **false** | Enable voice activity detection |
 | `vad_mode` | int | `3` | VAD aggressiveness (0-4). Higher = rejects more noise but may miss quiet speech |
 | `vad_min_speech_ms` | int | `128` | Minimum speech duration to trigger voice detection (32-60000 ms) |
@@ -148,7 +149,7 @@ esp_afe:
 >   mode: low_cost
 > ```
 >
-> **Minimal dual-mic** (adds beamforming):
+> **Minimal dual-mic** (adds BSS voice isolation):
 > ```yaml
 > esp_afe:
 >   id: afe_processor
@@ -334,15 +335,15 @@ external_components:
   - source:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
-      ref: audio-core-v2
+      ref: main
     components: [audio_processor, intercom_api, i2s_audio_duplex, esp_afe]
 
 esp_afe:
   id: afe_processor
   type: sr
   mode: low_cost
-  mic_num: 2                  # 2 for dual-mic beamforming (default: 1)
-  se_enabled: true            # Beamforming (requires mic_num: 2, default: false)
+  mic_num: 2                  # 2 for dual-mic BSS voice isolation (default: 1)
+  se_enabled: true            # BSS voice isolation (requires mic_num: 2, default: false)
   vad_enabled: true           # Voice activity detection (default: false)
   # aec_enabled, ns_enabled, agc_enabled are true by default - no need to repeat
 

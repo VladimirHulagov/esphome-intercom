@@ -33,9 +33,9 @@ substitutions:
   friendly_name: Xiaozhi
   mic_id: mic_afe
 
-  ext_components_source: "../../../../esphome/components"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
-  assets_base: "../../../../"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # AI avatar folder (${assets_base}assets/images/assistant/<ai_avatar>/)
   ai_avatar: f_off
@@ -69,10 +69,10 @@ substitutions:
   display_height: "240"
 
 packages:
-  core: !include ../../../../packages/va_intercom.yaml
-  s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
-  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
-  es8311_stereo_ref: !include ../../../../packages/codec/es8311_stereo_ref.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@main
+  es8311_stereo_ref: github://n-IA-hane/esphome-intercom/packages/codec/es8311_stereo_ref.yaml@main
 
 # =============================================================================
 # ESP32 BASE CONFIGURATION
@@ -174,6 +174,10 @@ logger:
     binary_sensor: WARN
     switch: WARN
 
+# Required by text_sensor: platform: debug (Reset Reason)
+debug:
+  update_interval: 60s
+
 network:
   enable_high_performance: true
 
@@ -235,11 +239,9 @@ esp_afe:
   aec_enabled: true
   aec_filter_length: 4
   ns_enabled: true
-  # esp-sr 2.3.1 1-mic sr_low_cost stalls with VAD enabled together with AEC
-  # (JTAG audit 2026-04-18 binary call-graph: afe_fetch_with_delay runs
-  # sr_rb_read -> afe_vad_run_single_mic -> afe_wn_run_single_mic, so VAD is
-  # on the fetch side; with VAD active fetch never produces output and rb_in
-  # fills). MWW covers wake detection, AFE VAD is redundant.
+  # On this 1-mic sr_low_cost preset, enabling VAD together with AEC can
+  # stall AFE fetch output. MWW already covers wake detection here, so VAD
+  # stays off by default.
   vad_enabled: false
   agc_enabled: true
   se_enabled: false
@@ -253,7 +255,8 @@ esp_afe:
 # =============================================================================
 # I2S AUDIO DUPLEX (single bus for ES8311)
 # Full-duplex I2S: mic + speaker on same bus, managed by one FreeRTOS task.
-# audio_task runs on Core 1 at priority 9, processes AEC inline.
+# Audio task defaults come from the component; this preset keeps the
+# single-bus ES8311 path simple and relies on stereo loopback reference.
 # Bus runs at 48kHz (ES8311 native rate, better DAC quality).
 # Internal FIR decimation x3 produces 16kHz for mic/AEC/MWW/VA/intercom.
 # =============================================================================
@@ -273,7 +276,6 @@ i2s_audio_duplex:
   use_stereo_aec_reference: true
   buffers_in_psram: true       # All audio buffers in PSRAM; required for sr_low_cost (512-sample frames)
   audio_stack_in_psram: false  # Xiaozhi runs 1-mic sr_low_cost: no BSS, no concurrent TLS, internal RAM budget is fine.
-  telemetry: true              # Per-stage counters in logs (feed/fetch us, queue depths) per l'audit 1-mic
 
 # =============================================================================
 # MICROPHONE
@@ -846,13 +848,6 @@ script:
             id(chord_widths_cache).push_back(chord_w);
             y += (line_h + line_spacing);
           }
-          ESP_LOGI("layout", "y_metrics: title=%d sub=%d state=%d info=%d contacts=%d",
-                   id(y_metrics)[3], id(y_metrics)[4], id(y_metrics)[5],
-                   id(y_metrics)[7], id(y_metrics)[8]);
-          ESP_LOGI("layout", "Computed %d text rows, first chord=%d, max chord=%d",
-                   (int)id(chord_widths_cache).size(),
-                   id(chord_widths_cache).empty() ? 0 : id(chord_widths_cache).front(),
-                   id(chord_widths_cache).empty() ? 0 : *std::max_element(id(chord_widths_cache).begin(), id(chord_widths_cache).end()));
 
   # Reposition all widgets using computed y_metrics, text_row_y, chord_widths_cache
   # Called once at boot after compute_layout_metrics. All YAML y/width are placeholders.
@@ -903,7 +898,6 @@ script:
           lv_obj_set_height(id(timer_bar), ym[13] - 4);
           lv_obj_set_width(id(timer_bar), ym[2] - 4);
 
-          ESP_LOGI("layout", "Repositioned all widgets from computed metrics");
 
   # Main display rendering: single lambda for page routing + animation control
   - id: draw_display
@@ -969,9 +963,6 @@ script:
           // Skip page load if already showing (avoids redundant SPI transfer)
           bool page_changed = (target != lv_disp_get_scr_act(nullptr));
           if (page_changed) {
-            ESP_LOGI("display", "draw_display: %s -> %s (mode=%d phase=%d)",
-                     lv_disp_get_scr_act(nullptr) == id(idle_page)->obj ? "idle" : "other",
-                     page_name, id(current_mode), id(voice_assistant_phase));
             // Stop animation before page switch to prevent split-screen glitch
             lv_anim_del(id(idle_anim), nullptr);
             // Honour swipe-driven animation hint, otherwise instant load.
@@ -1403,7 +1394,7 @@ sensor:
       if (dbm <= -100) return 0.0f;
       return 2.0f * (dbm + 100.0f);
 
-  # Heap diagnostics for memory-budget audits
+  # Heap diagnostics
   - platform: template
     name: "Free Heap"
     update_interval: 10s

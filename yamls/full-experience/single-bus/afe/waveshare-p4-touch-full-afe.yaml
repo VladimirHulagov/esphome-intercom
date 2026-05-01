@@ -49,8 +49,8 @@ substitutions:
 
   # Toggled by scripts/yaml_paths.sh between local (../../../../...) and remote
   # (github://n-IA-hane/esphome-intercom@<branch>) modes.
-  ext_components_source: "../../../../esphome/components"
-  assets_base: "../../../../"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # Display dimensions (portrait)
   display_width: "800"
@@ -73,8 +73,8 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
 packages:
-  core: !include ../../../../packages/va_intercom.yaml
-  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  es7210_tdm: github://n-IA-hane/esphome-intercom/packages/codec/es7210_tdm.yaml@main
 
 # =============================================================================
 # ESP32-P4 BASE CONFIGURATION
@@ -289,7 +289,6 @@ i2s_audio_duplex:
   tdm_mic_slots: [0, 2]        # ES7210 TDM: slot 0 + slot 2 = the two real mics
   tdm_ref_slot: 1              # ES7210 TDM: slot 1 = ES8311 DAC feedback (AEC reference)
   buffers_in_psram: true       # All audio buffers in PSRAM
-  telemetry: true              # Per-stage counters in logs (feed/fetch us, queue depths)
 
 # mic_afe: post-AFE (BSS+AEC+NS+AGC) for VA STT, intercom TX, AND MWW.
 # Same beamformed/cleaned stream feeds every consumer.
@@ -2577,9 +2576,9 @@ select:
     id: aec_mode_select
     icon: mdi:tune-vertical
     # Full-experience standard: SR modes only. The VOIP residual echo
-    # suppressor distorts spectral features and drops MWW detection from
-    # 10/10 to 2/10 (validated on xiaozhi-afe). Both SR options share the
-    # same engine, so a runtime switch never triggers a tail-buffer alloc.
+    # suppressor distorts spectral features and hurts wake-word accuracy.
+    # Both SR options share the same engine, so a runtime switch never
+    # triggers a tail-buffer allocation.
     options:
       - "sr_low_cost"
       - "sr_high_perf"

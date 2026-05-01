@@ -40,7 +40,7 @@ Follow the first branch that matches your hardware and intent.
 | Device | Chip | Mics | Config | YAML |
 |---|---|---|---|---|
 | Waveshare S3 Audio board | ESP32-S3 | 2 (ES7210 TDM) | full + afe | `full-experience/single-bus/afe/waveshare-s3-full-afe.yaml` |
-| Waveshare P4 touch panel | ESP32-P4 | 2 (ES7210 TDM) | full + afe | `full-experience/single-bus/afe/waveshare-p4-full-afe.yaml` |
+| Waveshare P4 touch panel | ESP32-P4 | 2 (ES7210 TDM) | full + afe | `full-experience/single-bus/afe/waveshare-p4-touch-full-afe.yaml` |
 | Xiaozhi Ball V3 | ESP32-S3 | 1 (ES8311 ADC) | full + afe (SR low-cost) | `full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml` |
 | Xiaozhi intercom-only | ESP32-S3 | 1 | intercom + single | `intercom-only/single-bus/xiaozhi-intercom.yaml` |
 | Generic S3 speaker + MEMS | ESP32-S3 | 1 | intercom + dual | `intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml` |
@@ -100,13 +100,23 @@ Each public YAML carries one line per external resource. Three knobs:
 - `packages:` entries — each one is either `!include ../../../packages/<name>.yaml`
   (local) or `github://OWNER/REPO/packages/<name>.yaml@BRANCH` (remote).
 
-The repository ships YAMLs in **local mode** on development branches:
-clone the repo, run `esphome compile`, and your changes to
-`esphome/components/` and `packages/` are picked up immediately.
+The public YAMLs on `main` ship in **remote mode** so they compile
+directly from GitHub without manual path edits.
 
-To deploy from a fork or a release tag without cloning, edit those
-three resources to point at `github://your-fork/repo@your-tag`. ESPHome
-fetches the components and assets from there at compile time.
+If you are developing inside a local clone and want the YAMLs to point
+back at your working tree, run:
+
+```bash
+./scripts/yaml_paths.sh local
+```
+
+To switch them back to release mode, point them at `main`, a release
+branch, or your own fork:
+
+```bash
+./scripts/yaml_paths.sh remote --branch main
+./scripts/yaml_paths.sh remote --url github://YOUR-USER/esphome-intercom --branch YOUR-BRANCH
+```
 
 For one-off local tweaks (wifi credentials, GPIO swaps, board-specific
 sdkconfig), create a sibling `<board>-local.yaml` (gitignored via
@@ -130,5 +140,5 @@ overrides that the defaults do not cover:
 
 - Per-component docs: `esphome/components/<name>/README.md`.
 - Architecture overview: `docs/ARCHITECTURE.md`.
-- Component pattern audit: `docs/PATTERN_AUDIT.md`.
-- Library alternatives (why we kept what we kept): `docs/LIBRARY_ALTERNATIVES.md`.
+- Troubleshooting: `docs/troubleshooting.md`.
+- YAML path toggle helper: `scripts/yaml_paths.sh`.

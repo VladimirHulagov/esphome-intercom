@@ -44,9 +44,9 @@ substitutions:
   name: waveshare-s3
   friendly_name: Waveshare S3 Audio
 
-  ext_components_source: "../../../../esphome/components"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
-  assets_base: "../../../../"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
@@ -63,10 +63,10 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  core: !include ../../../../packages/va_intercom.yaml
-  s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
-  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
-  es7210_tdm: !include ../../../../packages/codec/es7210_tdm.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@main
+  es7210_tdm: github://n-IA-hane/esphome-intercom/packages/codec/es7210_tdm.yaml@main
 
 # =============================================================================
 # ESPHome Base
@@ -110,7 +110,6 @@ esp32:
   framework:
     type: esp-idf
     advanced:
-      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
       compiler_optimization: PERF
     sdkconfig_options:
       # mbedtls extras (still inline pending benchmark vs tls_external_mem.yaml).
@@ -237,7 +236,6 @@ i2s_audio_duplex:
   tdm_mic_slots: [0, 2]  # Verified right-side mic, left-side mic
   tdm_ref_slot: 1        # Verified playback reference for AEC
   buffers_in_psram: true
-  telemetry: true
 
 # =============================================================================
 # Microphone (ES7210 ADC, 16kHz output after FIR decimation + AEC)

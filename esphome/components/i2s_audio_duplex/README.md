@@ -609,7 +609,7 @@ binary_sensor:
 
 ### Audio task lifecycle
 
-The audio task is an internal FreeRTOS task with three properties worth knowing about, all stable since the audio-core-v2 audit:
+The audio task is an internal FreeRTOS task with three properties worth knowing about in the current design:
 
 - **Lazy creation**. The task is created on the first `i2s_audio_duplex.start` call, not at component setup. Boards that never start the audio path (rare) save ~8 KB of RAM at boot.
 - **Permanent**. Once created, the task lives for the rest of the device's uptime. `i2s_audio_duplex.stop` flips an internal `duplex_running_` flag and stops the I²S peripheral, but does not destroy the task. A subsequent `start` reuses the same TCB and stack.

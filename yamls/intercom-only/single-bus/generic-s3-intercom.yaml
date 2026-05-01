@@ -37,14 +37,14 @@ substitutions:
   name: generic-s3
   friendly_name: Generic S3
 
-  ext_components_source: "../../../esphome/components"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
 # =============================================================================
 # Package: shared intercom state machine
 # =============================================================================
 packages:
-  core: !include ../../../packages/intercom_only.yaml
-  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
 
 esphome:
   name: ${name}
@@ -58,7 +58,6 @@ esp32:
   framework:
     type: esp-idf
     advanced:
-      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
       compiler_optimization: PERF
     sdkconfig_options:
       # Allow mbedtls to allocate its working buffers in PSRAM.

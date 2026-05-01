@@ -10,7 +10,7 @@ Ready-to-flash ESPHome YAML configurations for tested hardware.
    wifi_ssid: "your_network"
    wifi_password: "your_password"
    ```
-3. Compile with ESPHome (all components and assets are fetched from GitHub automatically)
+3. Compile with ESPHome. The public YAMLs on `main` point at the GitHub copy of this repository, so components, packages, and assets are fetched automatically.
 
 ## Structure
 
@@ -21,7 +21,9 @@ yamls/
     dual-bus/            Devices with separate I2S buses for mic and speaker
 
   full-experience/       VA + MWW + Intercom (complete voice assistant hub)
-    single-bus/          i2s_audio_duplex + esp_afe (full audio pipeline)
+    single-bus/
+      aec/               i2s_audio_duplex + esp_aec
+      afe/               i2s_audio_duplex + esp_afe
     dual-bus/            Separate I2S buses + esp_aec
 ```
 
@@ -34,7 +36,23 @@ yamls/
 ## Audio processor: esp_aec vs esp_afe
 
 - **esp_aec**: Lightweight echo cancellation only (~40 KB). Recommended for intercom-only and single-mic setups.
-- **esp_afe**: Full Espressif AFE pipeline (AEC + NS + VAD + AGC + optional beamforming). Experimental, significant RAM cost. See the [esp_afe component README](../esphome/components/esp_afe/README.md) for details.
+- **esp_afe**: Full Espressif AFE pipeline (AEC + NS + VAD + AGC + optional dual-mic BSS voice isolation). Higher RAM cost, but adds the full frontend and runtime diagnostics. See the [esp_afe component README](../esphome/components/esp_afe/README.md) for details.
+
+## Local development vs release mode
+
+The public YAMLs in `main` are stored in **remote mode** so they compile
+straight from GitHub. If you are working inside a local clone and want
+them to point back at your checkout, run:
+
+```bash
+./scripts/yaml_paths.sh local
+```
+
+When you are ready to switch them back to the published form:
+
+```bash
+./scripts/yaml_paths.sh remote --branch main
+```
 
 ## Not sure which one to pick?
 

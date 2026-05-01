@@ -33,12 +33,12 @@ substitutions:
   friendly_name: ESP32-S3 Mini
 
   # ---- External components: Remote (release / users without local clone) ----
-  # ext_components_source: "github://n-IA-hane/esphome-intercom@audio-core-v2"
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@main"
   # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
   ext_components_source: "../../../esphome/components"
 
   # ---- Media: Remote (release / users without local clone) ----
-  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/audio-core-v2/"
+  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
   # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
   assets_base: "../../../"
 
@@ -54,8 +54,8 @@ substitutions:
 # =============================================================================
 packages:
   # ---- Remote (release / users without local clone) ----
-  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@audio-core-v2
-  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@audio-core-v2
+  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
   # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
   core: !include ../../../packages/va_intercom.yaml
   s3_base: !include ../../../packages/platform/esp32s3_base.yaml

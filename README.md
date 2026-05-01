@@ -1,4 +1,4 @@
-# ESPHome Intercom: full-duplex voice, AEC and wake word on ESP32
+# ESPHome Intercom and Full-Duplex Voice for ESP32
 
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3%20%7C%20ESP32--P4-blue)](#hardware-support)
 [![ESPHome](https://img.shields.io/badge/ESPHome-2026.4-%23008cd0)](https://esphome.io)
@@ -7,7 +7,7 @@
 
 From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom over Home Assistant, all the way to a complete Voice Assistant setup with wake word detection, echo cancellation and an LVGL touchscreen UI. Each tier is a standalone configuration, and ready-to-flash YAML files are provided for the ESP32-S3 and ESP32-P4 hardware that has actually been tested.
 
-Under the hood: full-duplex I²S on a single bus, ESP-SR echo cancellation, optional dual-mic beamforming, audio mixer with ducking, native Home Assistant integration and a Lovelace card.
+Under the hood: full-duplex I2S on a single bus, ESP-SR echo cancellation, optional dual-mic BSS voice isolation, FIR decimation, audio mixing with ducking, native Home Assistant integration and a Lovelace card.
 
 ![Dashboard Preview](docs/images/dashboard.png)
 
@@ -48,64 +48,31 @@ Under the hood: full-duplex I²S on a single bus, ESP-SR echo cancellation, opti
 
 ## What's New
 
-### Audio core round 3 (2026-04-30, branch `audio-core-v2`)
+This release brings the reworked audio core onto `main` and keeps the
+public YAML presets aligned with it.
 
-This update is a substantial rework of the audio path. **It is fully
-backward-compatible** with existing YAMLs (no API or config break) but
-needs hardware-side validation across the device matrix. Please flash, run
-your usual workload, and open an issue if you observe any regression.
-
-What changed:
-
-- **AEC reference pipeline** (`i2s_audio_duplex`) now decimates the speaker
-  reference on the TX side before storage, matching the Espressif
-  [`esp-gmf aec_rec`](https://github.com/espressif/esp-gmf/blob/main/elements/gmf_ai_audio/examples/aec_rec/main/main.c)
-  reference pipeline. Effect on the `previous_frame` and `ring_buffer`
-  paths (the `Generic S3` builds): cleaner echo cancellation (no residual
-  "ghost" tail), 2-5 KB internal RAM freed, ~13 us/frame Core 0 saved.
-  No effect on `use_stereo_aec_reference` / `use_tdm_reference` builds
-  (Xiaozhi / Waveshare): they take the reference from the codec hardware
-  feedback path, not from this code.
-- **`-O2` codegen** enabled on every audio YAML
-  (`compiler_optimization: PERF`). Validated on `xiaozhi-ball-v3-full-afe`
-  under simultaneous music + MWW + intercom call + TTS: **intercom audio
-  latency dropped from ~500 ms to near-instant**, internal heap minimum
-  improved 35.7 KB → 39.2 KB. Firmware grows ~200 KB.
-- **Granular PSRAM placement knobs** for hot-path audio buffers
-  (`feed_buf_in_psram`, `feed_ring_in_psram`, `fetch_ring_in_psram` on
-  `esp_afe`; `frame_buffers_in_psram` on `intercom_api`;
-  `aec_ref_ring_in_psram` on `i2s_audio_duplex`). Defaults are internal
-  RAM (~80 us/frame faster on Core 0); the shipped YAMLs declare the
-  flags `true` to keep the previous PSRAM placement, so existing builds
-  see no behaviour change. See each component's README for the
-  trade-offs and per-device tuning guidance.
-- **`intercom_api` socket TX** now uses `sendmsg()` scatter/gather: one
-  fewer memcpy per audio chunk, ~2 KB of PSRAM freed.
-- **Bug fix**: `intercom_api` `spk_ref_scaled_` buffer was undersized
-  for the maximum batched speaker iteration (1024 samples allocated,
-  up to 2048 sample loop). Could corrupt the next heap block during
-  loud speaker volume scaling. No reported crash but worth a flash.
-
-How to help:
-
-1. Flash your device with the latest `audio-core-v2` build of the YAML
-   you use today. No YAML edit needed.
-2. Run a representative session: a phone call via the intercom, a TTS
-   announcement, music playback if applicable.
-3. Open an issue or start a discussion if you see anything off:
-   echo coming back, audio glitches, latency, reboots, or sensor numbers
-   (`Free Internal`, `Free Heap`, `Internal Heap Minimum`,
-   `Internal Largest Block`) drifting compared with your previous build.
-
-The `Generic S3 (full AEC)` configuration was validated on the author's
-hardware on 2026-04-30 and shows a clear AEC quality improvement; help
-us confirm it on your hardware too.
+- **TX-side AEC reference decimation** in `i2s_audio_duplex` for mono
+  MEMS/I2S builds, reducing residual echo and avoiding RX-side
+  ghost-tail artifacts.
+- **Granular PSRAM placement knobs** across `i2s_audio_duplex`,
+  `esp_afe`, and `intercom_api`, with component-level trade-off
+  guidance for internal RAM versus Core 0 load.
+- **`intercom_api` socket TX scatter/gather** via `sendmsg()`, removing
+  one assembly copy from the audio transmit path.
+- **Consistent `-O2` audio builds** through `compiler_optimization: PERF`
+  on the published presets.
+- **Public YAMLs published in remote mode** and pointing at `main`, so
+  end users can compile directly from GitHub without rewriting package,
+  asset, or component paths.
+- **Release-focused cleanup** across docs, YAML comments, and preset
+  defaults to keep the repository aligned with the shipped behavior.
 
 ---
 
 ## Overview
 
-**Intercom API** is a scalable full-duplex ESPHome intercom framework that grows with your needs:
+**ESPHome Intercom** is a scalable ESPHome audio stack for full-duplex
+intercom, wake word, voice assistant, and display-driven devices:
 
 | Use Case | Configuration | Description |
 |----------|---------------|-------------|
@@ -138,9 +105,9 @@ graph TD
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
 - **Full Audio Front-End (AFE)** - Complete ESP-SR AFE pipeline via `esp_afe`:
   - **Single-mic (MR)**: AEC + Noise Suppression + VAD + AGC
-  - **Dual-mic (MMR)**: AEC + Beamforming (BSS) for spatial voice isolation
+  - **Dual-mic (MMR)**: AEC + spatial source separation (BSS) for voice isolation
   - Runtime switches and diagnostic sensors in Home Assistant
-  - Automatic pipeline switching: SE(BSS) replaces NS/AGC when beamforming is active
+  - Automatic pipeline switching: SE(BSS) replaces NS/AGC when spatial separation is active
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Ready-to-flash YAML configs** - Optimized configurations for real, tested hardware that combine Voice Assistant, Micro Wake Word, and Intercom running simultaneously, creating the most complete hub possible for a full Voice Assistant experience
 - **Auto Answer** - Configurable automatic call acceptance (ESP-side switch + browser card checkbox)
@@ -253,12 +220,13 @@ Add the external component to your ESPHome device configuration:
 # Lightweight (single-mic, echo cancellation only):
 external_components:
   - source: github://n-IA-hane/esphome-intercom
+    ref: main
     components: [audio_processor, intercom_api, esp_aec]
 
-# Full AFE pipeline (AEC + NS + VAD + AGC, optional beamforming):
+# Full AFE pipeline (AEC + NS + VAD + AGC, optional dual-mic BSS):
 external_components:
   - source: github://n-IA-hane/esphome-intercom
-    ref: audio-core-v2
+    ref: main
     components: [audio_processor, intercom_api, esp_afe, i2s_audio_duplex]
 ```
 
@@ -610,8 +578,8 @@ sequenceDiagram
 | **Xiaozhi Ball V3 (AEC)** | [`xiaozhi-ball-v3-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | VA + MWW + Intercom + LVGL |
 | **Xiaozhi Ball V3 (AFE)** | [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | ES8311 | ES8311 | Single bus | `esp_afe` (AEC + NS + AGC + VAD) | VA + MWW + Intercom + LVGL |
 | **Xiaozhi Ball V3 (intercom)** | [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | Intercom only |
-| **Waveshare S3-Audio (AFE)** | [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
-| **Waveshare P4-Touch (AFE)** | [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS beamforming + NS + AGC) | VA + MWW + Intercom + LVGL touch |
+| **Waveshare S3-Audio (AFE)** | [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS voice isolation + NS + AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
+| **Waveshare P4-Touch (AFE)** | [`waveshare-p4-touch-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-touch-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS voice isolation + NS + AGC) | VA + MWW + Intercom + LVGL touch |
 | **ESP32-S3 Mini** | [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
 | **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 | **Generic S3 (full AEC)** | [`generic-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/generic-s3-full-aec.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (TX-side decimated ref, see [What's New](#whats-new)) | VA + MWW + Intercom |
@@ -642,9 +610,9 @@ Full-duplex I2S driver that lets mic and speaker share one I2S bus (ES8311, ES83
 
 Standalone ESP-SR echo cancellation (~80 KB internal RAM). Four modes (`sr_low_cost` recommended for VA+MWW, `voip_*` for pure VoIP). See the mode table in [docs/reference.md](docs/reference.md#esp_aec-component) before changing defaults.
 
-### [`esp_afe`](esphome/components/esp_afe/README.md) (experimental)
+### [`esp_afe`](esphome/components/esp_afe/README.md)
 
-Full ESP-SR audio front-end: AEC + NS + VAD + AGC, optionally BSS beamforming with dual mics. Runtime toggles for every feature, diagnostic sensors (input volume, output RMS, voice presence), and mode switching in Home Assistant. Memory and CPU cost is substantial (see the [AFE README](esphome/components/esp_afe/README.md) for the exact numbers). Use only when you actually need noise suppression, AGC, VAD, or beamforming; prefer `esp_aec` for plain intercom-only setups.
+Full ESP-SR audio front-end: AEC + NS + VAD + AGC, optionally dual-mic BSS voice isolation. Runtime toggles for every feature, diagnostic sensors (input volume, output RMS, voice presence), and mode switching in Home Assistant. Memory and CPU cost is substantial (see the [AFE README](esphome/components/esp_afe/README.md) for the exact numbers). Use only when you actually need noise suppression, AGC, VAD, or BSS voice isolation; prefer `esp_aec` for plain intercom-only setups.
 
 ---
 
@@ -748,7 +716,7 @@ micro_wake_word:
 
 ### LVGL Display
 
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-full-aec.yaml` and `waveshare-p4-full-afe.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 or ESP32-P4 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-full-aec.yaml` and `waveshare-p4-touch-full-afe.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -772,7 +740,7 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 - **Adjust `mic_gain`** (-20 to +30 dB): higher gain helps voice detection but can introduce noise
 - **Test MWW during TTS** with your specific wake word, some words are more robust than others
 - **Compare `voip_low_cost` vs `voip_high_perf`**: the difference may be subtle in your environment
-- **Monitor ESP logs**: AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
+- **Monitor ESP logs**: use `INFO` for normal operation, and temporarily switch to `DEBUG` plus `telemetry: true` when you need timing diagnostics
 
 ---
 
@@ -820,8 +788,8 @@ Working configs tested on real hardware, organized by use case. Not sure which o
 | File | Device | Audio |
 |------|--------|-------|
 | [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, AFE (AEC + NS + AGC + VAD) |
-| [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + BSS beamforming |
-| [`waveshare-p4-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-full-afe.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + BSS beamforming, LVGL touch |
+| [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + BSS voice isolation |
+| [`waveshare-p4-touch-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-touch-full-afe.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + BSS voice isolation, LVGL touch |
 
 ### Intercom Only (no VA, no MWW)
 

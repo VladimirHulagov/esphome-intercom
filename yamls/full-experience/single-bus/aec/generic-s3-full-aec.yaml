@@ -30,9 +30,9 @@ substitutions:
   name: generic-s3
   friendly_name: Generic S3
 
-  ext_components_source: "../../../../esphome/components"
+  ext_components_source: "github://n-IA-hane/esphome-intercom@main"
 
-  assets_base: "../../../../"
+  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
 
   # Wake word sensitivity
   wake_word_probability_cutoff: "0.60"
@@ -45,9 +45,9 @@ substitutions:
 # Package: shared VA + Intercom state machine
 # =============================================================================
 packages:
-  core: !include ../../../../packages/va_intercom.yaml
-  s3_base: !include ../../../../packages/platform/esp32s3_base.yaml
-  audio_mem: !include ../../../../packages/profile/audio_memory.yaml
+  core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  audio_mem: github://n-IA-hane/esphome-intercom/packages/profile/audio_memory.yaml@main
 
 esphome:
   name: ${name}
@@ -61,7 +61,6 @@ esp32:
   framework:
     type: esp-idf
     advanced:
-      # -O2 codegen: validated on xiaozhi-afe (commit d94b649); same chip family.
       compiler_optimization: PERF
     sdkconfig_options:
       # Allow mbedtls to allocate its working buffers in PSRAM.
@@ -87,9 +86,9 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
   logs:
-    # Silence high-volume tags to keep VA/MWW debug readable
+    # Silence high-volume tags to keep the console readable during normal use
     i2s_duplex: INFO
     esp_aec: INFO
     component: INFO

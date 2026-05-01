@@ -79,7 +79,7 @@ Two audio processing components are available, both implementing the `AudioProce
 - **`esp_aec`**: Standalone echo cancellation. Lightweight (~80 KB internal RAM). Use when you only need AEC.
 - **`esp_afe`**: Full AFE pipeline with two modes:
   - **Single-mic (MR)**: AEC + NS + VAD + AGC (~100 KB internal RAM)
-  - **Dual-mic (MMR)**: AEC + Beamforming/BSS (~120 KB internal RAM). Spatial voice isolation using 2 microphones
+  - **Dual-mic (MMR)**: AEC + spatial source separation (BSS) (~120 KB internal RAM). Spatial voice isolation using 2 microphones
   - Runtime toggle switches, diagnostic sensors, and mode switching in Home Assistant
 
 They are drop-in replacements **only behind `i2s_audio_duplex`**, which feeds the processor with the fixed 512-sample 16 kHz frames that `esp_afe` requires. When `intercom_api` talks to the processor directly (no `i2s_audio_duplex`, typical of dual-bus MEMS + I2S amp setups), use `esp_aec` only. The AFE pipeline needs a stable producer task that `intercom_api`'s standalone mic path does not provide.
@@ -125,15 +125,15 @@ CPU figures measured on ESP32-S3 at 240 MHz feeding one 16 kHz mic channel (S3 r
 
 ## esp_afe component
 
-Full audio front-end pipeline with runtime control, diagnostics, and dual-mic beamforming.
+Full audio front-end pipeline with runtime control, diagnostics, and dual-mic BSS voice isolation.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `id` | ID | Required | Component ID |
 | `type` | string | `sr` | `sr` (speech recognition, linear AEC) or `vc` (voice communication, nonlinear AEC) |
 | `mode` | string | `low_cost` | `low_cost` or `high_perf` |
-| `mic_num` | int | 1 | Number of microphones (1 or 2). Set to 2 for beamforming |
-| `se_enabled` | bool | false | Beamforming (BSS). Requires `mic_num: 2`. When active, replaces NS and AGC with spatial source separation |
+| `mic_num` | int | 1 | Number of microphones (1 or 2). Set to 2 for BSS voice isolation |
+| `se_enabled` | bool | false | Spatial source separation (BSS). Requires `mic_num: 2`. When active, replaces NS and AGC with spatial source separation |
 | `aec_enabled` | bool | true | Echo cancellation |
 | `aec_filter_length` | int | 4 | AEC filter length in frames (1-8) |
 | `ns_enabled` | bool | true | Noise suppression (WebRTC). No effect when SE is active |
@@ -148,7 +148,7 @@ esp_afe:
   type: sr
   mode: low_cost
 
-# Dual-mic mode (AEC + Beamforming):
+# Dual-mic mode (AEC + BSS voice isolation):
 esp_afe:
   id: afe_processor
   type: sr

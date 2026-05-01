@@ -47,7 +47,7 @@ Common symptoms and fixes when setting up ESPHome Intercom.
 1. Check WiFi signal strength (should be > -70 dBm)
 2. Verify Home Assistant is not overloaded
 3. Check for network congestion
-4. Reduce ESP log level to `WARN`
+4. Reduce ESP log level to `INFO` or `WARN`, and disable audio telemetry if you enabled it for tuning
 
 ## ESP shows "Ringing" but browser doesn't connect
 
