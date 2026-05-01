@@ -195,12 +195,12 @@ captive_portal:
 
 # =============================================================================
 # Dummy SPI bus for st7701s (init done by custom ST7701Init via on_boot).
-# GPIO47/48 are strapping pins, free after boot. Not used by PSRAM.
+# Using unused GPIO35/36 since GPIO47/48 are I2C bus.
 # =============================================================================
 spi:
   - id: dummy_spi
-    clk_pin: GPIO47
-    mosi_pin: GPIO48
+    clk_pin: GPIO35
+    mosi_pin: GPIO36
 
 time:
   - platform: sntp
@@ -228,8 +228,8 @@ external_components:
 # =============================================================================
 i2c:
   - id: internal_i2c
-    sda: GPIO24
-    scl: GPIO25
+    sda: GPIO47
+    scl: GPIO48
     scan: true
     frequency: 100kHz
 
