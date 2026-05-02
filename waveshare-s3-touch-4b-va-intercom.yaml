@@ -330,6 +330,7 @@ i2s_audio_duplex:
   i2s_mclk_pin: GPIO5
   i2s_din_pin: GPIO6
   i2s_dout_pin: GPIO15
+  i2s_num: 1
   sample_rate: 48000
   output_sample_rate: 16000
   processor_id: aec_processor
