@@ -195,7 +195,8 @@ captive_portal:
 
 # =============================================================================
 # Dummy SPI bus for st7701s (init done by custom ST7701Init via on_boot).
-# Using unused GPIO35/36 since GPIO47/48 are I2C bus.
+# st7701s requires an SPI bus but doesn't use it when init_sequence is [].
+# GPIO35/36 are PSRAM pins but safe since no actual data transfer occurs.
 # =============================================================================
 spi:
   - id: dummy_spi
@@ -223,8 +224,7 @@ external_components:
 
 # =============================================================================
 # I2C Bus
-# Confirmed: SDA=GPIO39, SCL=GPIO40 (shared with LCD RGB G4/B0 — standard
-# Espressif reference design with open-drain I2C on RGB data pins)
+# Confirmed: SDA=GPIO47, SCL=GPIO48 (verified from Waveshare community code)
 # =============================================================================
 i2c:
   - id: internal_i2c
@@ -901,7 +901,6 @@ display:
     data_rate: 20MHz
     data_pins:
       - number: 40
-        allow_other_uses: true
       - number: 41
       - number: 42
       - number: 2
@@ -913,7 +912,6 @@ display:
       - number: 45
       - number: 38
       - number: 39
-        allow_other_uses: true
       - number: 10
       - number: 11
       - number: 12
