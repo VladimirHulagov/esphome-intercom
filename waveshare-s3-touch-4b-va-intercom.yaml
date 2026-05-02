@@ -230,7 +230,7 @@ i2c:
   - id: internal_i2c
     sda: GPIO47
     scl: GPIO48
-    scan: true
+    scan: false
     frequency: 100kHz
 
 # TCA9554 IO Expander (display CS/RST + speaker amp control)
