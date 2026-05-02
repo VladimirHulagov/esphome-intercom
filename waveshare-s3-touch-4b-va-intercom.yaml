@@ -113,7 +113,6 @@ esphome:
             gpio_set_level(sda, 1);
             gpio_set_level(scl, 1);
             delay(1);
-            ESP_LOGI("bus_recovery", "After pull HIGH: SDA=%d SCL=%d", gpio_get_level(sda), gpio_get_level(scl));
             for (int i = 0; i < 18; i++) {
               gpio_set_level(scl, 0);
               delayMicroseconds(50);
@@ -126,7 +125,6 @@ esphome:
             delayMicroseconds(50);
             gpio_set_level(sda, 1);
             delayMicroseconds(50);
-            ESP_LOGI("bus_recovery", "After recovery: SDA=%d SCL=%d", gpio_get_level(sda), gpio_get_level(scl));
             gpio_config_t od_cfg = {};
             od_cfg.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
             od_cfg.mode = GPIO_MODE_INPUT_OUTPUT_OD;
@@ -135,11 +133,23 @@ esphome:
             od_cfg.intr_type = GPIO_INTR_DISABLE;
             gpio_config(&od_cfg);
             delay(1);
-            ESP_LOGI("bus_recovery", "After OD switch: SDA=%d SCL=%d", gpio_get_level(sda), gpio_get_level(scl));
+            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY 1100 ===");
+            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
+              esp_get_free_heap_size(),
+              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+              heap_caps_get_free_size(MALLOC_CAP_DMA),
+              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
             ESP_LOGI("bus_recovery", "=== BUS RECOVERY DONE ===");
     - priority: 600
       then:
-      # === ST7701 display init via TCA9554 bit-bang SPI ===
+      - lambda: |-
+          ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY 600 (before audio) ===");
+          ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
+            esp_get_free_heap_size(),
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            heap_caps_get_free_size(MALLOC_CAP_DMA),
+            heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+      # === ST7701 display init via PCA9554 bit-bang SPI ===
       - lambda: |-
           ST7701Init st7701_init;
           st7701_init.set_i2c_bus(id(internal_i2c));
