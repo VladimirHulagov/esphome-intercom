@@ -278,11 +278,14 @@ i2c:
     sda_pullup_enabled: true
     scl_pullup_enabled: true
 
-# TCA9554 IO Expander (display CS/RST + speaker amp control)
-tca9555:
-  - id: io_expander
-    address: 0x20
-    i2c_id: internal_i2c
+# PCA9554 IO Expander - managed via direct I2C writes (tca9555 component
+# fails because I2C reads don't work at HARDWARE priority during setup).
+# st7701_init.h handles init (config=0x40, all outputs HIGH except EXIO6 input)
+globals:
+  - id: pca9554_output_state
+    type: uint8_t
+    restore_value: false
+    initial_value: '0xFF'
 
 # =============================================================================
 # Audio: Codec + AEC + I2S Duplex
@@ -655,14 +658,15 @@ binary_sensor:
 # Outputs
 # =============================================================================
 output:
-  # NS4150B amplifier CTRL via TCA9554 EXIO3
-  - platform: gpio
+  - platform: template
     id: speaker_enable_output
-    pin:
-      tca9555: io_expander
-      number: 3
-      mode:
-        output: true
+    type: binary
+    write_action:
+      - lambda: |-
+          uint8_t val = id(pca9554_output_state);
+          if (state) val |= (1 << 3); else val &= ~(1 << 3);
+          id(pca9554_output_state) = val;
+          id(internal_i2c).write_byte(0x20, 0x01, val);
 
   # Display backlight (GPIO4, LEDC PWM)
   # Confirmed from working Arduino main.ino: #define LCD_BL_PIN 4
@@ -908,12 +912,6 @@ touchscreen:
   - platform: gt911
     id: touch
     i2c_id: internal_i2c
-    interrupt_pin:
-      tca9555: io_expander
-      number: 6
-    reset_pin:
-      tca9555: io_expander
-      number: 5
     on_touch:
       - lambda: |-
           ESP_LOGD("touch", "Touch: x=%d y=%d", touch.x, touch.y);

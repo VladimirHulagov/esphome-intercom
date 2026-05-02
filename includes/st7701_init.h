@@ -16,10 +16,10 @@ class ST7701Init : public esphome::Component, public esphome::i2c::I2CDevice {
   float get_setup_priority() const override { return esphome::setup_priority::HARDWARE; }
 
   void setup() override {
-    ESP_LOGI("st7701_init", "Starting ST7701 init via TCA9554 bit-bang SPI");
+    ESP_LOGI("st7701_init", "Starting ST7701 init via PCA9554 bit-bang SPI");
 
-    if (!this->write_byte(REG_CONFIG, 0x00)) {
-      ESP_LOGE("st7701_init", "TCA9554 not responding");
+    if (!this->write_byte(REG_CONFIG, 0x40)) {
+      ESP_LOGE("st7701_init", "PCA9554 not responding");
       this->mark_failed();
       return;
     }
