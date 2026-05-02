@@ -961,7 +961,6 @@ display:
       - number: 21
       - number: 8
       - number: 18
-        allow_other_uses: true
       - number: 45
       - number: 38
       - number: 39
