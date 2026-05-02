@@ -99,73 +99,59 @@ esphome:
   on_boot:
     priority: 1100
     then:
+      # === RAW I2C DIAGNOSTIC (temporary) ===
       - lambda: |-
-          auto raw_scan = []() {
-            ESP_LOGI("i2c_diag", "=== RAW I2C DIAGNOSTIC ===");
-            int pairs[][3] = {
-              {47, 48, 1}, {39, 40, 0}, {41, 42, 0},
-              {38, 45, 0}, {8, 9, 0}, {18, 17, 0}, {10, 11, 0}
-            };
-            for (auto &p : pairs) {
-              int sda_n = p[0], scl_n = p[1];
-              ESP_LOGI("i2c_diag", "--- SDA=%d SCL=%d ---", sda_n, scl_n);
-              gpio_num_t sda = (gpio_num_t)sda_n;
-              gpio_num_t scl = (gpio_num_t)scl_n;
-              gpio_reset_pin(sda);
-              gpio_reset_pin(scl);
-              delay(1);
-              gpio_config_t io_conf = {};
-              io_conf.intr_type = GPIO_INTR_DISABLE;
-              io_conf.mode = GPIO_MODE_OUTPUT_OD;
-              io_conf.pin_bit_mask = (1ULL << sda_n) | (1ULL << scl_n);
-              io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-              io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-              gpio_config(&io_conf);
-              delay(1);
-              gpio_set_level(sda, 1);
-              gpio_set_level(scl, 1);
-              delay(1);
-              int sda_h = gpio_get_level(sda);
-              int scl_h = gpio_get_level(scl);
-              gpio_set_level(sda, 0); delay(1);
-              int sda_l = gpio_get_level(sda);
-              gpio_set_level(sda, 1); delay(1);
-              gpio_set_level(scl, 0); delay(1);
-              int scl_l = gpio_get_level(scl);
-              gpio_set_level(scl, 1); delay(1);
-              ESP_LOGI("i2c_diag", "  SDA hi=%d lo=%d SCL hi=%d lo=%d", sda_h, sda_l, scl_h, scl_l);
-              if (sda_h && scl_h && !sda_l && !scl_l) {
-                int found = 0;
-                for (int addr = 0x08; addr < 0x78; addr++) {
-                  gpio_set_level(scl, 1); gpio_set_level(sda, 1); delayMicroseconds(5);
-                  gpio_set_level(sda, 0); delayMicroseconds(5);
-                  gpio_set_level(scl, 0); delayMicroseconds(5);
-                  for (int i = 7; i >= 0; i--) {
-                    gpio_set_level(sda, (addr >> i) & 1); delayMicroseconds(5);
-                    gpio_set_level(scl, 1); delayMicroseconds(5);
-                    gpio_set_level(scl, 0); delayMicroseconds(5);
-                  }
-                  gpio_set_level(sda, 1); delayMicroseconds(5);
-                  gpio_set_level(scl, 1); delayMicroseconds(5);
-                  bool ack = (gpio_get_level(sda) == 0);
-                  gpio_set_level(scl, 0); delayMicroseconds(5);
-                  gpio_set_level(sda, 0); delayMicroseconds(5);
-                  gpio_set_level(scl, 1); delayMicroseconds(5);
-                  gpio_set_level(sda, 1); delayMicroseconds(5);
-                  if (ack) { ESP_LOGI("i2c_diag", "  *** FOUND 0x%02X ***", addr); found++; }
-                }
-                if (!found) ESP_LOGI("i2c_diag", "  No devices");
-              }
-              gpio_reset_pin(sda); gpio_reset_pin(scl);
-            }
-            ESP_LOGI("i2c_diag", "=== DONE ===");
+          ESP_LOGI("i2c_diag", "=== RAW I2C DIAGNOSTIC ===");
+          int pairs[][2] = {
+            {47, 48}, {39, 40}, {41, 42}, {38, 45}, {8, 9}, {18, 17}, {10, 11}
           };
-          raw_scan();
+          for (auto &p : pairs) {
+            int sda_n = p[0], scl_n = p[1];
+            ESP_LOGI("i2c_diag", "--- SDA=%d SCL=%d ---", sda_n, scl_n);
+            gpio_num_t sda = (gpio_num_t)sda_n;
+            gpio_num_t scl = (gpio_num_t)scl_n;
+            gpio_reset_pin(sda); gpio_reset_pin(scl); delay(1);
+            gpio_config_t io_conf = {};
+            io_conf.intr_type = GPIO_INTR_DISABLE;
+            io_conf.mode = GPIO_MODE_OUTPUT_OD;
+            io_conf.pin_bit_mask = (1ULL << sda_n) | (1ULL << scl_n);
+            io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+            io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            gpio_config(&io_conf); delay(1);
+            gpio_set_level(sda, 1); gpio_set_level(scl, 1); delay(1);
+            int sda_h = gpio_get_level(sda), scl_h = gpio_get_level(scl);
+            gpio_set_level(sda, 0); delay(1);
+            int sda_l = gpio_get_level(sda);
+            gpio_set_level(sda, 1); delay(1);
+            gpio_set_level(scl, 0); delay(1);
+            int scl_l = gpio_get_level(scl);
+            gpio_set_level(scl, 1); delay(1);
+            ESP_LOGI("i2c_diag", "  SDA hi=%d lo=%d SCL hi=%d lo=%d", sda_h, sda_l, scl_h, scl_l);
+            if (sda_h && scl_h && !sda_l && !scl_l) {
+              int found = 0;
+              for (int addr = 0x08; addr < 0x78; addr++) {
+                gpio_set_level(scl, 1); gpio_set_level(sda, 1); delayMicroseconds(5);
+                gpio_set_level(sda, 0); delayMicroseconds(5); gpio_set_level(scl, 0); delayMicroseconds(5);
+                for (int i = 7; i >= 0; i--) {
+                  gpio_set_level(sda, (addr >> i) & 1); delayMicroseconds(5);
+                  gpio_set_level(scl, 1); delayMicroseconds(5); gpio_set_level(scl, 0); delayMicroseconds(5);
+                }
+                gpio_set_level(sda, 1); delayMicroseconds(5); gpio_set_level(scl, 1); delayMicroseconds(5);
+                bool ack = (gpio_get_level(sda) == 0);
+                gpio_set_level(scl, 0); delayMicroseconds(5);
+                gpio_set_level(sda, 0); delayMicroseconds(5); gpio_set_level(scl, 1); delayMicroseconds(5);
+                gpio_set_level(sda, 1); delayMicroseconds(5);
+                if (ack) { ESP_LOGI("i2c_diag", "  *** FOUND 0x%02X ***", addr); found++; }
+              }
+              if (!found) ESP_LOGI("i2c_diag", "  No devices");
+            }
+            gpio_reset_pin(sda); gpio_reset_pin(scl);
+          }
+          ESP_LOGI("i2c_diag", "=== DONE ===");
 
-    priority: 600
-    then:
+      - delay: 500ms
+
       # === ST7701 display init via TCA9554 bit-bang SPI ===
-      # Runs at priority 600 (after I2C bus at 1000, before display at 500)
       - lambda: |-
           ST7701Init st7701_init;
           st7701_init.set_i2c_bus(id(internal_i2c));
