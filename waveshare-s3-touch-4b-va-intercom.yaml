@@ -989,30 +989,22 @@ lvgl:
   buffer_size: 10%
   color_depth: 16
   log_level: WARN
-  style_definitions:
-    - id: style_bg
-      bg_color: 0x1A1A2E
-    - id: style_text
-      text_color: 0xE0E0FF
-      text_font: font_title
-      bg_opa: TRANSP
   pages:
     - id: main_page
       skip: true
-      layout:
-        type: FLEX
-        flex_direction: COLUMN
-        flex_align_main: CENTER
-        flex_align_cross: CENTER
-      styles: style_bg
+      bg_color: 0x1A1A2E
       widgets:
         - label:
+            x: 160
+            y: 200
             text: "Intercom"
-            styles: style_text
+            text_color: 0xE0E0FF
             text_font: font_title
         - label:
+            x: 190
+            y: 260
             text: "Ready"
-            styles: style_text
+            text_color: 0xE0E0FF
             text_font: font_text
 
 # =============================================================================
