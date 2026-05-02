@@ -97,58 +97,8 @@ esphome:
   platformio_options:
     board_build.flash_mode: dio
   on_boot:
-    priority: 1100
+    priority: 600
     then:
-      # === RAW I2C DIAGNOSTIC (temporary) ===
-      - lambda: |-
-          ESP_LOGI("i2c_diag", "=== RAW I2C DIAGNOSTIC ===");
-          auto scan_pair = [](int sda_n, int scl_n) {
-            gpio_num_t sda = (gpio_num_t)sda_n, scl = (gpio_num_t)scl_n;
-            gpio_reset_pin(sda); gpio_reset_pin(scl); delay(1);
-            gpio_config_t oc = {};
-            oc.mode = GPIO_MODE_INPUT_OUTPUT_OD;
-            oc.pin_bit_mask = (1ULL << sda_n) | (1ULL << scl_n);
-            oc.pull_up_en = GPIO_PULLUP_ENABLE;
-            oc.intr_type = GPIO_INTR_DISABLE;
-            gpio_config(&oc); delay(1);
-            gpio_set_level(sda, 1); gpio_set_level(scl, 1); delay(1);
-            int sda_h = gpio_get_level(sda), scl_h = gpio_get_level(scl);
-            ESP_LOGI("i2c_diag", "SDA=%d SCL=%d idle: sda=%d scl=%d", sda_n, scl_n, sda_h, scl_h);
-            if (!sda_h || !scl_h) {
-              ESP_LOGW("i2c_diag", "  Bus not idle, skip scan");
-              gpio_reset_pin(sda); gpio_reset_pin(scl);
-              return;
-            }
-            int found = 0;
-            for (int addr = 0x08; addr < 0x78; addr++) {
-              gpio_set_level(scl, 1); gpio_set_level(sda, 1); delayMicroseconds(10);
-              gpio_set_level(sda, 0); delayMicroseconds(10);
-              gpio_set_level(scl, 0); delayMicroseconds(10);
-              for (int i = 7; i >= 0; i--) {
-                gpio_set_level(sda, (addr >> i) & 1); delayMicroseconds(10);
-                gpio_set_level(scl, 1); delayMicroseconds(10);
-                gpio_set_level(scl, 0); delayMicroseconds(10);
-              }
-              gpio_set_level(sda, 1); delayMicroseconds(10);
-              gpio_set_level(scl, 1); delayMicroseconds(10);
-              bool ack = (gpio_get_level(sda) == 0);
-              gpio_set_level(scl, 0); delayMicroseconds(10);
-              gpio_set_level(sda, 0); delayMicroseconds(10);
-              gpio_set_level(scl, 1); delayMicroseconds(10);
-              gpio_set_level(sda, 1); delayMicroseconds(10);
-              if (ack) { ESP_LOGI("i2c_diag", "  *** 0x%02X ***", addr); found++; }
-            }
-            if (!found) ESP_LOGI("i2c_diag", "  No devices found");
-            gpio_reset_pin(sda); gpio_reset_pin(scl);
-          };
-          scan_pair(47, 48);
-          scan_pair(39, 40);
-          scan_pair(41, 42);
-          scan_pair(38, 45);
-          ESP_LOGI("i2c_diag", "=== DONE ===");
-
-      - delay: 500ms
-
       # === ST7701 display init via TCA9554 bit-bang SPI ===
       - lambda: |-
           ST7701Init st7701_init;
@@ -286,7 +236,7 @@ i2c:
 # TCA9554 IO Expander (display CS/RST + speaker amp control)
 tca9555:
   - id: io_expander
-    address: 0x20
+    address: 0x28
     i2c_id: internal_i2c
 
 # =============================================================================
