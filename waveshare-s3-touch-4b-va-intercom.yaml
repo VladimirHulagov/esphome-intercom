@@ -211,11 +211,9 @@ esphome:
               heap_caps_get_free_size(MALLOC_CAP_DMA),
               heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
             uint8_t pca_out = 0;
-            {
-              esphome::i2c::I2CRegister reg = id(internal_i2c)->reg(0x20, 0x01);
-              pca_out = reg.get();
-              ESP_LOGI("bl_diag", "PCA9554 output reg: 0x%02X (EXIO4=%d)", pca_out, (pca_out >> 4) & 1);
-            }
+            id(internal_i2c)->write(0x20, &pca_out, 1, true);
+            id(internal_i2c)->read(0x20, &pca_out, 1);
+            ESP_LOGI("bl_diag", "PCA9554 output reg: 0x%02X (EXIO4=%d)", pca_out, (pca_out >> 4) & 1);
             bool gpio4_level = gpio_get_level(GPIO_NUM_4);
             ESP_LOGI("bl_diag", "GPIO4 level: %d", gpio4_level);
             gpio_config_t bl_cfg = {};
