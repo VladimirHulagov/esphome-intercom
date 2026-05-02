@@ -140,76 +140,76 @@ esphome:
               heap_caps_get_free_size(MALLOC_CAP_DMA),
               heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
             ESP_LOGI("bus_recovery", "=== BUS RECOVERY DONE ===");
-     - priority: 600
-       then:
-       - lambda: |-
-           ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY 600 (before audio) ===");
-           ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
-             esp_get_free_heap_size(),
-             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             heap_caps_get_free_size(MALLOC_CAP_DMA),
-             heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-     - priority: -100
-       then:
-       - lambda: |-
-           ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY -100 (after setup) ===");
-           ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
-             esp_get_free_heap_size(),
-             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             heap_caps_get_free_size(MALLOC_CAP_DMA),
-             heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-      # === ST7701 display init via PCA9554 bit-bang SPI ===
-      - lambda: |-
-          ST7701Init st7701_init;
-          st7701_init.set_i2c_bus(id(internal_i2c));
-          st7701_init.set_i2c_address(0x20);
-          st7701_init.setup();
+    - priority: 600
+      then:
+        - lambda: |-
+            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY 600 (before audio) ===");
+            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
+              esp_get_free_heap_size(),
+              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+              heap_caps_get_free_size(MALLOC_CAP_DMA),
+              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+        # === ST7701 display init via PCA9554 bit-bang SPI ===
+        - lambda: |-
+            ST7701Init st7701_init;
+            st7701_init.set_i2c_bus(id(internal_i2c));
+            st7701_init.set_i2c_address(0x20);
+            st7701_init.setup();
 
-      # Backlight ON
-      - output.turn_on: backlight_output
+        # Backlight ON
+        - output.turn_on: backlight_output
 
-      # Enable speaker amplifier via TCA9554
-      # NS4150B amplifier CTRL pin = EXIO3 on TCA9554
-      - switch.turn_on: speaker_enable
-      - delay: 200ms
+        # Enable speaker amplifier via TCA9554
+        # NS4150B amplifier CTRL pin = EXIO3 on TCA9554
+        - switch.turn_on: speaker_enable
+        - delay: 200ms
 
-      # === ES7210 TDM Configuration ===
-      - lambda: |-
-          uint8_t reg01;
-          if (!id(es7210_adc).read_byte(0x01, &reg01)) {
-            ESP_LOGE("es7210_tdm", "Failed to read reg 0x01, TDM config aborted");
-            return;
-          }
-          reg01 &= ~0x3F;
-          if (!id(es7210_adc).write_byte(0x01, reg01) ||
-              !id(es7210_adc).write_byte(0x12, 0x02)) {
-            ESP_LOGE("es7210_tdm", "Failed to write clock/TDM registers");
-            return;
-          }
-          if (!id(es7210_adc).write_byte(0x45, 0x1A) ||
-              !id(es7210_adc).write_byte(0x46, 0x10)) {
-            ESP_LOGE("es7210_tdm", "Failed to write MIC gain registers");
-            return;
-          }
-          ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, MIC3 gain=30dB", reg01);
+        # === ES7210 TDM Configuration ===
+        - lambda: |-
+            uint8_t reg01;
+            if (!id(es7210_adc).read_byte(0x01, &reg01)) {
+              ESP_LOGE("es7210_tdm", "Failed to read reg 0x01, TDM config aborted");
+              return;
+            }
+            reg01 &= ~0x3F;
+            if (!id(es7210_adc).write_byte(0x01, reg01) ||
+                !id(es7210_adc).write_byte(0x12, 0x02)) {
+              ESP_LOGE("es7210_tdm", "Failed to write clock/TDM registers");
+              return;
+            }
+            if (!id(es7210_adc).write_byte(0x45, 0x1A) ||
+                !id(es7210_adc).write_byte(0x46, 0x10)) {
+              ESP_LOGE("es7210_tdm", "Failed to write MIC gain registers");
+              return;
+            }
+            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, MIC3 gain=30dB", reg01);
 
-      # Restore ES8311 volume
-      - lambda: |-
-          float vol = ${volume_min} + (id(speaker_volume).state / 100.0) * (${volume_max} - ${volume_min});
-          id(es8311_dac).set_volume(vol);
+        # Restore ES8311 volume
+        - lambda: |-
+            float vol = ${volume_min} + (id(speaker_volume).state / 100.0) * (${volume_max} - ${volume_min});
+            id(es8311_dac).set_volume(vol);
 
-      - delay: 1s
-      - micro_wake_word.stop:
-      - delay: 1s
-      - micro_wake_word.start:
-      - delay: 30s
-      - if:
-          condition:
-            lambda: return id(init_in_progress);
-          then:
-            - globals.set:
-                id: init_in_progress
-                value: 'false'
+        - delay: 1s
+        - micro_wake_word.stop:
+        - delay: 1s
+        - micro_wake_word.start:
+        - delay: 30s
+        - if:
+            condition:
+              lambda: return id(init_in_progress);
+            then:
+              - globals.set:
+                  id: init_in_progress
+                  value: 'false'
+    - priority: -100
+      then:
+        - lambda: |-
+            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY -100 (after setup) ===");
+            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
+              esp_get_free_heap_size(),
+              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+              heap_caps_get_free_size(MALLOC_CAP_DMA),
+              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
 
 esp32:
   board: esp32-s3-devkitc-1
