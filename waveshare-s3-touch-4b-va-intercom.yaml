@@ -274,14 +274,14 @@ i2c:
     sda: GPIO47
     scl: GPIO48
     scan: false
-    frequency: 10kHz
+    frequency: 100kHz
     sda_pullup_enabled: true
     scl_pullup_enabled: true
 
 # TCA9554 IO Expander (display CS/RST + speaker amp control)
 tca9555:
   - id: io_expander
-    address: 0x28
+    address: 0x20
     i2c_id: internal_i2c
 
 # =============================================================================
