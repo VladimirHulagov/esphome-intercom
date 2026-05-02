@@ -164,6 +164,7 @@ esp32:
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "15"
 
 psram:
   mode: octal
@@ -178,7 +179,7 @@ logger:
   hardware_uart: USB_SERIAL_JTAG
   level: INFO
   logs:
-    i2c: INFO
+    i2c: VERBOSE
     display: INFO
     spi: INFO
 
