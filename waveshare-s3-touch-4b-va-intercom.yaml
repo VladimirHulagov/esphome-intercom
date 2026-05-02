@@ -243,8 +243,8 @@ captive_portal:
 # =============================================================================
 spi:
   - id: dummy_spi
-    clk_pin: GPIO35
-    mosi_pin: GPIO36
+    clk_pin: GPIO43
+    mosi_pin: GPIO44
 
 time:
   - platform: sntp
