@@ -205,6 +205,7 @@ esp32:
       CONFIG_SPIRAM_RODATA: "y"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "15"
+      CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"
 
 psram:
   mode: octal
@@ -329,6 +330,8 @@ i2s_audio_duplex:
   tdm_mic_slot: 0
   tdm_ref_slot: 1
   buffers_in_psram: true
+  audio_stack_in_psram: true
+  aec_ref_ring_in_psram: true
 
 # =============================================================================
 # Microphone
