@@ -76,6 +76,16 @@ substitutions:
   font_family: Figtree
 
 # =============================================================================
+# I2C Diagnostic (temporary - tests raw GPIO I2C on multiple pin pairs)
+# =============================================================================
+custom_component:
+  - lambda: |-
+      auto diag = new I2CDiagnostic();
+      return {diag};
+    components:
+      - id: i2c_diag
+
+# =============================================================================
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
@@ -93,6 +103,7 @@ esphome:
   name_add_mac_suffix: false
   includes:
     - includes/st7701_init.h
+    - includes/i2c_diagnostic.h
   platformio_options:
     board_build.flash_mode: dio
   on_boot:
