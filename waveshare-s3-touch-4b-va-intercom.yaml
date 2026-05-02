@@ -323,7 +323,7 @@ i2s_audio_duplex:
   i2s_dout_pin: GPIO15
   sample_rate: 48000
   output_sample_rate: 16000
-  aec_id: aec_processor
+  processor_id: aec_processor
   use_tdm_reference: true
   tdm_total_slots: 4
   tdm_mic_slot: 0
