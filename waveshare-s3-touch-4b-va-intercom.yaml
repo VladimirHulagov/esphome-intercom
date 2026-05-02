@@ -212,6 +212,23 @@ esphome:
               heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
         - light.turn_on: backlight
 
+interval:
+  - interval: 3s
+    then:
+      - lambda: |-
+          static bool bl_force = false;
+          if (!bl_force) {
+            gpio_set_level(GPIO_NUM_4, 1);
+            uint8_t data[2] = {0x01, 0xFF};
+            id(internal_i2c)->write(0x20, data, 2, true);
+            bl_force = true;
+          }
+          uint8_t pca_out = 0;
+          id(internal_i2c)->write(0x20, &pca_out, 1, true);
+          id(internal_i2c)->read(0x20, &pca_out, 1);
+          ESP_LOGI("bl_mon", "GPIO4=%d PCA=0x%02X EXIO4=%d",
+            gpio_get_level(GPIO_NUM_4), pca_out, (pca_out >> 4) & 1);
+
 esp32:
   board: esp32-s3-devkitc-1
   flash_size: 16MB
