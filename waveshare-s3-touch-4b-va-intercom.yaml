@@ -281,11 +281,6 @@ i2c:
 # PCA9554 IO Expander - managed via direct I2C writes (tca9555 component
 # fails because I2C reads don't work at HARDWARE priority during setup).
 # st7701_init.h handles init (config=0x40, all outputs HIGH except EXIO6 input)
-globals:
-  - id: pca9554_output_state
-    type: uint8_t
-    restore_value: false
-    initial_value: '0xFF'
 
 # =============================================================================
 # Audio: Codec + AEC + I2S Duplex
@@ -453,6 +448,10 @@ intercom_api:
 # Globals
 # =============================================================================
 globals:
+  - id: pca9554_output_state
+    type: uint8_t
+    restore_value: false
+    initial_value: '0xFF'
   - id: voice_assistant_phase
     type: int
     restore_value: false
