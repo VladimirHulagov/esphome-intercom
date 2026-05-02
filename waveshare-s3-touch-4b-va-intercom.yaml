@@ -219,9 +219,9 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: VERBOSE
+  level: INFO
   logs:
-    i2c: VERBOSE
+    i2c: WARN
     display: INFO
     spi: INFO
 
