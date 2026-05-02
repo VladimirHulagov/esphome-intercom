@@ -171,17 +171,54 @@ psram:
   speed: 80MHz
 
 api:
+  on_client_connected:
+    - logger.log: "API client connected"
 
 ota:
   - platform: esphome
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: VERBOSE
   logs:
     i2c: VERBOSE
     display: INFO
     spi: INFO
+
+esphome:
+  on_boot:
+    - priority: 1100
+      then:
+        - lambda: |-
+            ESP_LOGI("bus_recovery", "=== PRE-I2C BUS RECOVERY ===");
+            gpio_num_t sda = GPIO_NUM_47;
+            gpio_num_t scl = GPIO_NUM_48;
+            gpio_config_t cfg = {};
+            cfg.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
+            cfg.mode = GPIO_MODE_INPUT_OUTPUT_OD;
+            cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+            cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            cfg.intr_type = GPIO_INTR_DISABLE;
+            gpio_config(&cfg);
+            int sda_val = gpio_get_level(sda);
+            int scl_val = gpio_get_level(scl);
+            ESP_LOGI("bus_recovery", "SDA=%d SCL=%d", sda_val, scl_val);
+            if (sda_val == 0) {
+              ESP_LOGI("bus_recovery", "SDA stuck LOW, doing bus recovery");
+              for (int i = 0; i < 9; i++) {
+                gpio_set_level(scl, 0);
+                delay(1);
+                gpio_set_level(scl, 1);
+                delay(1);
+              }
+              gpio_set_level(sda, 0);
+              delay(1);
+              gpio_set_level(scl, 1);
+              delay(1);
+              gpio_set_level(sda, 1);
+              delay(1);
+            }
+            ESP_LOGI("bus_recovery", "=== BUS RECOVERY DONE ===");
 
 network:
   enable_high_performance: true
