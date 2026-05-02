@@ -326,9 +326,7 @@ esp_aec:
 i2s_audio_duplex:
   id: i2s_duplex
   i2s_lrclk_pin: GPIO7
-  i2s_bclk_pin:
-    number: GPIO18
-    allow_other_uses: true
+  i2s_bclk_pin: GPIO16
   i2s_mclk_pin: GPIO5
   i2s_din_pin: GPIO6
   i2s_dout_pin: GPIO15
