@@ -991,7 +991,6 @@ lvgl:
   log_level: WARN
   pages:
     - id: main_page
-      skip: true
       bg_color: 0x1A1A2E
       widgets:
         - label:
