@@ -140,8 +140,8 @@ esphome:
               heap_caps_get_free_size(MALLOC_CAP_DMA),
               heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
             ESP_LOGI("bus_recovery", "=== BUS RECOVERY DONE ===");
-    - priority: 600
-      then:
+     - priority: 600
+       then:
        - lambda: |-
            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY 600 (before audio) ===");
            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
@@ -149,15 +149,15 @@ esphome:
              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              heap_caps_get_free_size(MALLOC_CAP_DMA),
              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-      - priority: -100
-        then:
-        - lambda: |-
-            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY -100 (after setup) ===");
-            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
-              esp_get_free_heap_size(),
-              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-              heap_caps_get_free_size(MALLOC_CAP_DMA),
-              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+     - priority: -100
+       then:
+       - lambda: |-
+           ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY -100 (after setup) ===");
+           ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
+             esp_get_free_heap_size(),
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             heap_caps_get_free_size(MALLOC_CAP_DMA),
+             heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
       # === ST7701 display init via PCA9554 bit-bang SPI ===
       - lambda: |-
           ST7701Init st7701_init;
