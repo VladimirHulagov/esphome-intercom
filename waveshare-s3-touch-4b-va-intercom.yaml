@@ -149,15 +149,15 @@ esphome:
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
             heap_caps_get_free_size(MALLOC_CAP_DMA),
             heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
-          void *test1 = heap_caps_calloc(1, 4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-          ESP_LOGI("heap_diag", "DMA calloc 4096: %p (%s)", test1, test1 ? "OK" : "FAIL");
-          if (test1) heap_caps_free(test1);
-          void *test2 = heap_caps_calloc(1, 65536, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-          ESP_LOGI("heap_diag", "DMA calloc 65536: %p (%s)", test2, test2 ? "OK" : "FAIL");
-          if (test2) heap_caps_free(test2);
-          void *test3 = heap_caps_calloc(1, 131072, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-          ESP_LOGI("heap_diag", "DMA calloc 131072: %p (%s)", test3, test3 ? "OK" : "FAIL");
-          if (test3) heap_caps_free(test3);
+          void *t1 = heap_caps_calloc(1, 4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+          ESP_LOGI("heap_diag", "calloc 4096: %p", t1);
+          if (t1) heap_caps_free(t1);
+          void *t2 = heap_caps_aligned_alloc(64, 4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+          ESP_LOGI("heap_diag", "aligned_alloc(64, 4096): %p", t2);
+          if (t2) heap_caps_free(t2);
+          void *t3 = heap_caps_aligned_alloc(64, 1920, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+          ESP_LOGI("heap_diag", "aligned_alloc(64, 1920): %p", t3);
+          if (t3) heap_caps_free(t3);
       # === ST7701 display init via PCA9554 bit-bang SPI ===
       - lambda: |-
           ST7701Init st7701_init;
