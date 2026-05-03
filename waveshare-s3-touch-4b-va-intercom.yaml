@@ -216,29 +216,29 @@ interval:
   - interval: 2s
     then:
       - lambda: |-
-          static int cnt = 0;
-          cnt++;
-          static bool configured = false;
-          if (!configured) {
-            gpio_config_t cfg = {};
-            cfg.pin_bit_mask = (1ULL << GPIO_NUM_4);
-            cfg.mode = GPIO_MODE_INPUT_OUTPUT;
-            cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-            cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-            cfg.intr_type = GPIO_INTR_DISABLE;
-            esp_err_t r = gpio_config(&cfg);
-            ESP_LOGI("bl_mon", "gpio_config GPIO4: %s", esp_err_to_name(r));
-            r = gpio_set_level(GPIO_NUM_4, 1);
-            ESP_LOGI("bl_mon", "gpio_set_level GPIO4=1: %s", esp_err_to_name(r));
-            configured = true;
+          static bool done = false;
+          if (done) return;
+          done = true;
+          ESP_LOGI("i2c_scan", "Scanning I2C bus...");
+          for (uint8_t addr = 1; addr < 127; addr++) {
+            uint8_t dummy = 0;
+            id(internal_i2c)->write(addr, &dummy, 0, true);
+            if (id(internal_i2c)->read(addr, &dummy, 1) == esphome::i2c::ERROR_OK) {
+              ESP_LOGI("i2c_scan", "  Found device at 0x%02X", addr);
+            }
           }
-          int level = gpio_get_level(GPIO_NUM_4);
-          uint8_t pca_out = 0;
-          id(internal_i2c)->write(0x20, &pca_out, 1, true);
-          id(internal_i2c)->read(0x20, &pca_out, 1);
-          if (cnt <= 10) {
-            ESP_LOGI("bl_mon", "GPIO4=%d PCA=0x%02X BL=%d RST=%d",
-              level, pca_out, (pca_out >> 4) & 1, (pca_out >> 7) & 1);
+          // Try AXP2101 at 0x34
+          uint8_t val = 0;
+          id(internal_i2c)->write(0x34, &val, 0, true);
+          if (id(internal_i2c)->read(0x34, &val, 1) == esphome::i2c::ERROR_OK) {
+            ESP_LOGI("axp", "AXP2101 found at 0x34, reg0=%02X", val);
+            uint8_t regs[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x90, 0x91, 0x92, 0x93};
+            for (auto reg : regs) {
+              uint8_t rv = 0;
+              id(internal_i2c)->write(0x34, &reg, 1, true);
+              id(internal_i2c)->read(0x34, &rv, 1);
+              ESP_LOGI("axp", "  reg[0x%02X] = 0x%02X", reg, rv);
+            }
           }
 
 esp32:
