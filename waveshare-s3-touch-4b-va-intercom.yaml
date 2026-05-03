@@ -304,7 +304,7 @@ time:
 external_components:
   - source:
       type: git
-      url: https://github.com/VladimirHulagov/esphome-intercom
+      url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
     components: [intercom_api, i2s_audio_duplex, esp_aec]
 
