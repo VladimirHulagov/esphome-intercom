@@ -1479,7 +1479,6 @@ lvgl:
                           flex_align_main: SPACE_EVENLY
                           flex_align_cross: START
                           flex_align_track: START
-                      flex_align_main: SPACE_AROUND
                         widgets:
                           - obj:
                               width: 84
