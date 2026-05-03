@@ -73,6 +73,7 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
   font_glyphsets: "GF_Latin_Core"
+  font_glyphsets_extra: "GF_Latin_Core"
   font_family: Figtree
 
 # =============================================================================
@@ -211,12 +212,24 @@ esphome:
               heap_caps_get_free_size(MALLOC_CAP_DMA),
               heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
         - light.turn_on: backlight
+    - priority: 800
+      then:
+        - lvgl.page.show: initializing_page
 
 interval:
   - interval: 10s
     then:
       - lambda: |-
           ESP_LOGI("bl_mon", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
+  - interval: 30s
+    then:
+      - lambda: |-
+          auto now = id(sntp_time).now();
+          if (now.is_valid()) {
+            char clk[8];
+            snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
+            lv_label_set_text(id(clock_label), clk);
+          }
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -240,6 +253,11 @@ psram:
 api:
   on_client_connected:
     - logger.log: "API client connected"
+    - script.execute: fetch_weather
+    - interval:
+        interval: 10min
+        then:
+          - script.execute: fetch_weather
 
 ota:
   - platform: esphome
@@ -275,12 +293,10 @@ spi:
 
 time:
   - platform: sntp
-    id: my_time
+    id: sntp_time
     timezone: Europe/Moscow
     servers:
       - 0.pool.ntp.org
-      - 1.pool.ntp.org
-      - 2.pool.ntp.org
 
 # =============================================================================
 # External Components
@@ -494,26 +510,34 @@ globals:
     type: std::string
     restore_value: no
     initial_value: '"Home Assistant"'
-  - id: reply_page_index
-    type: int
-    restore_value: false
-    initial_value: "0"
-  - id: reply_total_pages
-    type: int
-    restore_value: false
-    initial_value: "1"
-  - id: wrapped_lines_reply
-    type: std::vector<std::string>
-    restore_value: false
-  - id: chord_widths_cache
-    type: std::vector<int>
-    restore_value: false
-  - id: text_row_y
-    type: std::vector<int>
-    restore_value: false
-  - id: y_metrics
-    type: std::vector<int>
-    restore_value: false
+  - id: weather_condition
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: weather_temperature
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: weather_humidity
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: weather_wind_speed
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: forecast_condition
+    type: std::string[5]
+    restore_value: no
+  - id: forecast_temp_max
+    type: float[5]
+    restore_value: no
+  - id: forecast_temp_min
+    type: float[5]
+    restore_value: no
+  - id: forecast_dow
+    type: int[5]
+    restore_value: no
 
 # =============================================================================
 # Scripts (reuse display logic from xiaozhi-ball-v3, adapted for 480x480)
@@ -521,10 +545,6 @@ globals:
 script:
   - id: !extend va_end_cleanup
     then:
-      - lambda: |-
-          id(wrapped_lines_reply).clear();
-          id(reply_total_pages) = 1;
-          id(reply_page_index) = 0;
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_idle_phase_id}'
@@ -573,15 +593,24 @@ script:
               break;
             default: break;
           }
+      - script.execute: draw_display
 
   - id: !extend ui_tts_started
     then:
       - globals.set:
           id: voice_assistant_phase
           value: '${voice_assist_replying_phase_id}'
+      - text_sensor.template.publish:
+          id: text_response
+          state: !lambda 'return id(text_response).state;'
+      - script.execute: draw_display
 
   - id: !extend ui_stt_ended
-    then: []
+    then:
+      - text_sensor.template.publish:
+          id: text_request
+          state: !lambda 'return id(text_request).state;'
+      - script.execute: draw_display
 
   - id: !extend ui_ic_call
     then:
@@ -589,50 +618,236 @@ script:
           id(peer_name) = peer;
           id(previous_mode) = id(current_mode);
           id(current_mode) = 1;
+      - script.execute: draw_display
 
-  - id: compute_layout_metrics
+  - id: fetch_weather
+    then:
+      - homeassistant.action:
+          action: weather.get_forecasts
+          data:
+            entity_id: weather.home
+            type: daily
+          response_variable: forecast_response
+      - lambda: |-
+          auto &data = id(forecast_response);
+          auto it = data.find("forecast");
+          if (it == data.end()) {
+            ESP_LOGW("weather", "No forecast data in response");
+            return;
+          }
+          auto &forecasts = it->second;
+          if (!forecasts.is_array() || forecasts.size() == 0) {
+            ESP_LOGW("weather", "Forecast array empty");
+            return;
+          }
+          auto &current = forecasts[0];
+          if (current.contains("condition"))
+            id(weather_condition) = current["condition"].as<std::string>();
+          if (current.contains("temperature"))
+            id(weather_temperature) = current["temperature"].as<float>();
+          if (current.contains("humidity"))
+            id(weather_humidity) = current["humidity"].as<float>();
+          if (current.contains("wind_speed"))
+            id(weather_wind_speed) = current["wind_speed"].as<float>();
+          int count = std::min((int)forecasts.size(), 5);
+          for (int i = 0; i < count; i++) {
+            auto &f = forecasts[i];
+            if (f.contains("condition"))
+              id(forecast_condition)[i] = f["condition"].as<std::string>();
+            if (f.contains("temperature"))
+              id(forecast_temp_max)[i] = f["temperature"].as<float>();
+            if (f.contains("templow"))
+              id(forecast_temp_min)[i] = f["templow"].as<float>();
+            auto now = id(sntp_time).now();
+            int today_dow = now.day_of_week - 1;
+            if (today_dow < 0) today_dow = 0;
+            id(forecast_dow)[i] = (today_dow + i) % 7;
+          }
+      - script.execute: update_weather_display
+
+  - id: update_weather_display
     then:
       - lambda: |-
-          const int w = ${display_width};
-          const int h = ${display_height};
-          const int r = w / 2;
-          const int cy = h / 2;
-          const int side_margin = w / 30;
-          const int line_h = h / 20;
-          const int line_spacing = h / 80;
-          const int top_pad = h / 16;
-          const int bottom_pad = h / 16;
-          id(y_metrics).clear();
-          id(y_metrics).reserve(14);
-          id(y_metrics).push_back(0);
-          id(y_metrics).push_back(h / 2);
-          id(y_metrics).push_back(h);
-          id(y_metrics).push_back(h / 8);
-          id(y_metrics).push_back(h * 7 / 24);
-          id(y_metrics).push_back(h * 5 / 12);
-          id(y_metrics).push_back(h * 13 / 24);
-          id(y_metrics).push_back(h * 5 / 8);
-          id(y_metrics).push_back(h * 37 / 48);
-          id(y_metrics).push_back(h * 5 / 6);
-          id(y_metrics).push_back(h * 41 / 48);
-          id(y_metrics).push_back(h - h / 16);
-          id(y_metrics).push_back(h - 2);
-          id(y_metrics).push_back(h * 3 / 20);
-          id(text_row_y).clear();
-          id(chord_widths_cache).clear();
-          int y = top_pad;
-          while (y + line_h <= h - bottom_pad) {
-            id(text_row_y).push_back(y);
-            int mid_y = y + line_h / 2;
-            int dy = abs(mid_y - cy);
-            int chord_w = 0;
-            if (dy < r) {
-              chord_w = (int)(2.0f * sqrtf((float)(r * r - dy * dy))) - side_margin * 2;
-              if (chord_w < 0) chord_w = 0;
+          static const char *day_names[] = {
+            "\xD0\x92\xD1\x81", "\xD0\x9F\xD0\xBD", "\xD0\x92\xD1\x82",
+            "\xD0\xA1\xD1\x80", "\xD0\xA7\xD1\x82", "\xD0\x9F\xD1\x82", "\xD0\xA1\xD0\xB1"
+          };
+          auto icon_for = [](const std::string &cond) -> const char* {
+            if (cond == "clear-night")        return "\U000F0594";
+            if (cond == "cloudy")             return "\U000F0599";
+            if (cond == "fog")                return "\U000F0592";
+            if (cond == "hail")               return "\U000F0596";
+            if (cond == "lightning")          return "\U000F0597";
+            if (cond == "lightning-rainy")    return "\U000F0598";
+            if (cond == "partlycloudy")       return "\U000F0595";
+            if (cond == "pouring")            return "\U000F0593";
+            if (cond == "rainy")              return "\U000F0590";
+            if (cond == "snowy")              return "\U000F0591";
+            if (cond == "snowy-rainy")        return "\U000F067F";
+            if (cond == "sunny")              return "\U000F059E";
+            if (cond == "windy")              return "\U000F059D";
+            if (cond == "windy-variant")      return "\U000F059D";
+            if (cond == "exceptional")        return "\U000F0F37";
+            return "\U000F0599";
+          };
+          auto text_for = [](const std::string &cond) -> const char* {
+            if (cond == "clear-night")        return "\xD0\xAF\xD1\x81\xD0\xBD\xD0\xBE";
+            if (cond == "cloudy")             return "\xD0\x9E\xD0\xB1\xD0\xBB\xD0\xB0\xD1\x87\xD0\xBD\xD0\xBE";
+            if (cond == "fog")                return "\xD0\xA2\xD1\x83\xD0\xBC\xD0\xB0\xD0\xBD";
+            if (cond == "hail")               return "\xD0\x93\xD1\x80\xD0\xB0\xD0\xB4";
+            if (cond == "lightning")          return "\xD0\x93\xD1\x80\xD0\xBE\xD0\xB7\xD0\xB0";
+            if (cond == "lightning-rainy")    return "\xD0\x93\xD1\x80\xD0\xBE\xD0\xB7\xD0\xB0 \xD1\x81 \xD0\xB4\xD0\xBE\xD0\xB6\xD0\xB4\xD1\x91\xD0\xBC";
+            if (cond == "partlycloudy")       return "\xD0\x9F\xD0\xB5\xD1\x80\xD0\xB5\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xBD\xD0\xBE";
+            if (cond == "pouring")            return "\xD0\x9B\xD0\xB8\xD0\xB2\xD0\xB5\xD0\xBD\xD1\x8C";
+            if (cond == "rainy")              return "\xD0\x94\xD0\xBE\xD0\xB6\xD0\xB4\xD1\x8C";
+            if (cond == "snowy")              return "\xD0\xA1\xD0\xBD\xD0\xB5\xD0\xB3";
+            if (cond == "snowy-rainy")        return "\xD0\xA1\xD0\xBD\xD0\xB5\xD0\xB3 \xD1\x81 \xD0\xB4\xD0\xBE\xD0\xB6\xD0\xB4\xD1\x91\xD0\xBC";
+            if (cond == "sunny")              return "\xD0\xA1\xD0\xBE\xD0\xBB\xD0\xBD\xD1\x86\xD0\xB5";
+            if (cond == "windy")              return "\xD0\x92\xD0\xB5\xD1\x82\xD0\xB5\xD1\x80";
+            if (cond == "windy-variant")      return "\xD0\x92\xD0\xB5\xD1\x82\xD0\xB5\xD1\x80";
+            if (cond == "exceptional")        return "\xD0\xA8\xD1\x82\xD0\xBE\xD1\x80\xD0\xBC";
+            return "N/A";
+          };
+          const std::string &cond = id(weather_condition);
+          lv_label_set_text(id(weather_icon_label), icon_for(cond));
+          lv_label_set_text(id(weather_condition_label), text_for(cond));
+          char buf[32];
+          snprintf(buf, sizeof(buf), "%.1f\xC2\xB0\x43", id(weather_temperature));
+          lv_label_set_text(id(weather_temp_label), buf);
+          snprintf(buf, sizeof(buf), "\xD0\x92\xD0\xBB\xD0\xB0\xD0\xB6\xD0\xBD\xD0\xBE\xD1\x81\xD1\x82\xD1\x8C: %.0f%%  \xD0\x92\xD0\xB5\xD1\x82\xD0\xB5\xD1\x80: %.1f \xD0\xBC/\xD1\x81",
+            id(weather_humidity), id(weather_wind_speed));
+          lv_label_set_text(id(weather_details_label), buf);
+          for (int i = 0; i < 5; i++) {
+            int dow = id(forecast_dow)[i];
+            const char *icon = icon_for(id(forecast_condition)[i]);
+            char maxbuf[16], minbuf[16];
+            snprintf(maxbuf, sizeof(maxbuf), "%.0f\xC2\xB0", id(forecast_temp_max)[i]);
+            snprintf(minbuf, sizeof(minbuf), "%.0f\xC2\xB0", id(forecast_temp_min)[i]);
+            switch (i) {
+              case 0:
+                lv_label_set_text(id(fc0_day_label), day_names[dow]);
+                lv_label_set_text(id(fc0_icon_label), icon);
+                lv_label_set_text(id(fc0_max_label), maxbuf);
+                lv_label_set_text(id(fc0_min_label), minbuf);
+                break;
+              case 1:
+                lv_label_set_text(id(fc1_day_label), day_names[dow]);
+                lv_label_set_text(id(fc1_icon_label), icon);
+                lv_label_set_text(id(fc1_max_label), maxbuf);
+                lv_label_set_text(id(fc1_min_label), minbuf);
+                break;
+              case 2:
+                lv_label_set_text(id(fc2_day_label), day_names[dow]);
+                lv_label_set_text(id(fc2_icon_label), icon);
+                lv_label_set_text(id(fc2_max_label), maxbuf);
+                lv_label_set_text(id(fc2_min_label), minbuf);
+                break;
+              case 3:
+                lv_label_set_text(id(fc3_day_label), day_names[dow]);
+                lv_label_set_text(id(fc3_icon_label), icon);
+                lv_label_set_text(id(fc3_max_label), maxbuf);
+                lv_label_set_text(id(fc3_min_label), minbuf);
+                break;
+              case 4:
+                lv_label_set_text(id(fc4_day_label), day_names[dow]);
+                lv_label_set_text(id(fc4_icon_label), icon);
+                lv_label_set_text(id(fc4_max_label), maxbuf);
+                lv_label_set_text(id(fc4_min_label), minbuf);
+                break;
             }
-            id(chord_widths_cache).push_back(chord_w);
-            y += (line_h + line_spacing);
           }
+  - id: draw_display
+    mode: restart
+    then:
+      - lambda: |-
+          lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
+          if (!wifi::global_wifi_component->is_connected()) {
+            if (active_scr != id(no_wifi_page)->obj)
+              lv_disp_load_scr(id(no_wifi_page)->obj);
+            return;
+          }
+          if (!api::global_api_server || !api::global_api_server->is_connected()) {
+            if (active_scr != id(no_ha_page)->obj)
+              lv_disp_load_scr(id(no_ha_page)->obj);
+            return;
+          }
+          int phase = id(voice_assistant_phase);
+          if (phase == ${voice_assist_not_ready_phase_id}) {
+            if (active_scr != id(no_ha_page)->obj)
+              lv_disp_load_scr(id(no_ha_page)->obj);
+            return;
+          }
+          if (phase == ${voice_assist_timer_finished_phase_id}) {
+            if (active_scr != id(timer_finished_page)->obj)
+              lv_disp_load_scr(id(timer_finished_page)->obj);
+            return;
+          }
+          if (active_scr != id(main_page)->obj) {
+            lv_disp_load_scr(id(main_page)->obj);
+            lv_obj_clear_flag(id(idle_tile), LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(id(weather_tile), LV_OBJ_FLAG_SCROLLABLE);
+          }
+          lv_obj_add_flag(id(va_listening_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_thinking_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_replying_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_error_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(va_muted_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_outgoing_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_clear_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+          std::string ic_state = id(intercom).get_state_str();
+          if (ic_state == "Ringing" || ic_state == "Incoming") {
+            lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(id(ic_ringing_in_peer_label), id(peer_name).c_str());
+          } else if (ic_state == "Calling" || ic_state == "Outgoing") {
+            lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ic_outgoing_group), LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(id(ic_outgoing_peer_label), id(peer_name).c_str());
+          } else if (ic_state == "Streaming" || ic_state == "Answering") {
+            lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(id(ic_in_call_peer_label), id(peer_name).c_str());
+          }
+          if (ic_state == "Idle" || ic_state == "") {
+            switch (phase) {
+              case ${voice_assist_listening_phase_id}:
+                lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(id(va_listening_group), LV_OBJ_FLAG_HIDDEN);
+                break;
+              case ${voice_assist_thinking_phase_id}:
+                lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(id(va_thinking_group), LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_text(id(thinking_text_label), id(text_request).state.c_str());
+                break;
+              case ${voice_assist_replying_phase_id}:
+                lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(id(va_replying_group), LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_text(id(replying_text_label), id(text_response).state.c_str());
+                break;
+              case ${voice_assist_error_phase_id}:
+                lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(id(va_error_group), LV_OBJ_FLAG_HIDDEN);
+                break;
+              case ${voice_assist_muted_phase_id}:
+                lv_obj_add_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(id(va_muted_group), LV_OBJ_FLAG_HIDDEN);
+                break;
+            }
+          }
+          lv_label_set_text(id(idle_peer_label), id(peer_name).c_str());
+          lv_label_set_text(id(top_bar_peer), id(peer_name).c_str());
+      - if:
+          condition:
+            and:
+              - lambda: 'return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};'
+              - switch.is_off: mute
+              - not:
+                  micro_wake_word.is_running:
+              - intercom_api.is_idle: intercom
+          then:
+            - micro_wake_word.start:
 
 # =============================================================================
 # Binary Sensors
@@ -932,6 +1147,67 @@ font:
     size: 24
     glyphsets:
       - GF_Latin_Core
+  - file:
+      type: gfonts
+      family: ${font_family}
+      weight: 600
+    id: font_btn
+    size: 22
+    glyphsets:
+      - ${font_glyphsets_extra}
+  - file:
+      type: gfonts
+      family: "Roboto Mono"
+      weight: 400
+    id: font_clock
+    size: 48
+    glyphs: '0123456789: '
+  - file: "gfonts://materialdesignicons-webfont"
+    id: font_icon
+    size: 48
+    glyphs:
+      - "\U000F0599"
+      - "\U000F0594"
+      - "\U000F0590"
+      - "\U000F0595"
+      - "\U000F0591"
+      - "\U000F0597"
+      - "\U000F0598"
+      - "\U000F0593"
+      - "\U000F0592"
+      - "\U000F059D"
+      - "\U000F0596"
+      - "\U000F067F"
+      - "\U000F059E"
+      - "\U000F067E"
+      - "\U000F0F37"
+      - "\U000F0718"
+      - "\U000F071A"
+      - "\U000F05A9"
+      - "\U000F05AA"
+  - file: "gfonts://materialdesignicons-webfont"
+    id: font_icon_sm
+    size: 24
+    glyphs:
+      - "\U000F0599"
+      - "\U000F0594"
+      - "\U000F0590"
+      - "\U000F0595"
+      - "\U000F0591"
+      - "\U000F0597"
+      - "\U000F0598"
+      - "\U000F0593"
+      - "\U000F0592"
+      - "\U000F059D"
+      - "\U000F0596"
+      - "\U000F067F"
+      - "\U000F059E"
+      - "\U000F067E"
+      - "\U000F0F37"
+      - "\U000F0718"
+      - "\U000F071A"
+      - "\U000F05A9"
+      - "\U000F05AA"
 
 # =============================================================================
 # Touchscreen (GT911)
@@ -961,15 +1237,6 @@ display:
     spi_id: dummy_spi
     init_sequence: []
     color_order: RGB
-    dimensions:
-      width: 480
-      height: 480
-    de_pin: GPIO17
-    hsync_pin: GPIO46
-    vsync_pin: GPIO3
-    pclk_pin: GPIO9
-    pclk_frequency: 12MHz
-    data_rate: 20MHz
     data_pins:
       - number: 40
       - number: 41
@@ -999,21 +1266,650 @@ lvgl:
   color_depth: 16
   log_level: WARN
   pages:
-    - id: main_page
-      bg_color: 0x1A1A2E
+    - id: initializing_page
+      bg_color: 0x000000
       widgets:
         - label:
-            x: 160
-            y: 200
-            text: "Intercom"
-            text_color: 0xE0E0FF
-            text_font: font_title
+            align: CENTER
+            text: "\xD0\x97\xD0\xB0\xD0\xB3\xD1\x80\xD1\x83\xD0\xB7\xD0\xBA\xD0\xB0..."
+            text_color: 0x888888
+            text_font: font_state
+    - id: no_wifi_page
+      bg_color: 0x000000
+      widgets:
         - label:
-            x: 190
-            y: 260
-            text: "Ready"
-            text_color: 0xE0E0FF
+            align: CENTER
+            y: -20
+            text: "\xD0\x9D\xD0\xB5\xD1\x82 WiFi"
+            text_color: 0xFF4444
+            text_font: font_state
+        - label:
+            align: CENTER
+            y: 30
+            text: "\xD0\x9E\xD0\xB6\xD0\xB8\xD0\xB4\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBF\xD0\xBE\xD0\xB4\xD0\xBA\xD0\xBB\xD1\x8E\xD1\x87\xD0\xB5\xD0\xBD\xD0\xB8\xD1\x8F..."
+            text_color: 0x888888
             text_font: font_text
+    - id: no_ha_page
+      bg_color: 0x000000
+      widgets:
+        - label:
+            align: CENTER
+            y: -20
+            text: "\xD0\x9D\xD0\xB5\xD1\x82 Home Assistant"
+            text_color: 0xFF8800
+            text_font: font_state
+        - label:
+            align: CENTER
+            y: 30
+            text: "\xD0\x9E\xD0\xB6\xD0\xB8\xD0\xB4\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5 API..."
+            text_color: 0x888888
+            text_font: font_text
+    - id: timer_finished_page
+      bg_color: 0x000000
+      widgets:
+        - label:
+            align: CENTER
+            y: -60
+            text: "\xD0\xA2\xD0\xB0\xD0\xB9\xD0\xBC\xD0\xB5\xD1\x80!"
+            text_color: 0xFF8800
+            text_font: font_state
+        - button:
+            align: CENTER
+            width: 200
+            height: 60
+            bg_color: 0xCC0000
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\xD0\xA1\xD1\x82\xD0\xBE\xD0\xBF"
+                  text_color: 0xFFFFFF
+                  text_font: font_btn
+            on_click:
+              - switch.turn_off: timer_ringing
+    - id: main_page
+      bg_color: 0x0D1117
+      widgets:
+        - panel:
+            id: top_bar
+            width: 480
+            height: 40
+            bg_opa: TRANSP
+            widgets:
+              - label:
+                  id: clock_label
+                  align: TOP_LEFT
+                  x: 10
+                  y: 5
+                  text: "--:--"
+                  text_color: 0xFFFFFF
+                  text_font: font_clock
+              - label:
+                  id: top_bar_peer
+                  align: CENTER
+                  text: ""
+                  text_color: 0x888888
+                  text_font: font_title
+              - label:
+                  id: wifi_icon_label
+                  align: TOP_RIGHT
+                  x: -10
+                  y: 10
+                  text: "\U000F05A9"
+                  text_color: 0x888888
+                  text_font: font_icon_sm
+        - tileview:
+            id: main_tileview
+            y: 40
+            width: 480
+            height: 440
+            bg_opa: TRANSP
+            tiles:
+              - tile:
+                  id: idle_tile
+                  column: 0
+                  row: 0
+                  widgets:
+                    - label:
+                        id: idle_peer_label
+                        align: CENTER
+                        y: -100
+                        text: "Home Assistant"
+                        text_color: 0xFFFFFF
+                        text_font: font_title
+                    - button:
+                        id: btn_prev
+                        align: BOTTOM_LEFT
+                        width: 110
+                        height: 60
+                        bg_color: 0x21262D
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "< \xD0\x9F\xD1\x80\xD0\xB5\xD0\xB4"
+                              text_color: 0xFFFFFF
+                              text_font: font_btn
+                        on_click:
+                          - button.press: prev_contact_button
+                    - button:
+                        id: btn_call
+                        align: BOTTOM_MID
+                        y: -80
+                        width: 160
+                        height: 70
+                        bg_color: 0x2ECC71
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "\xD0\x92\xD0\xAB\xD0\x97\xD0\x9E\xD0\x92"
+                              text_color: 0xFFFFFF
+                              text_font: font_btn
+                        on_click:
+                          - button.press: call_button
+                    - button:
+                        id: btn_next
+                        align: BOTTOM_RIGHT
+                        width: 110
+                        height: 60
+                        bg_color: 0x21262D
+                        widgets:
+                          - label:
+                              align: CENTER
+                              text: "\xD0\xA1\xD0\xBB\xD0\xB5\xD0\xB4 >"
+                              text_color: 0xFFFFFF
+                              text_font: font_btn
+                        on_click:
+                          - button.press: next_contact_button
+                    - label:
+                        align: BOTTOM_MID
+                        y: -20
+                        text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB3\xD0\xBE\xD0\xBB\xD0\xBE\xD1\x81\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB3\xD0\xBE"
+                        text_color: 0x666666
+                        text_font: font_text
+              - tile:
+                  id: weather_tile
+                  column: 1
+                  row: 0
+                  widgets:
+                    - label:
+                        id: weather_icon_label
+                        align: TOP_MID
+                        y: 10
+                        text: "\U000F059E"
+                        text_color: 0xFFD700
+                        text_font: font_icon
+                    - label:
+                        id: weather_temp_label
+                        align: TOP_MID
+                        y: 70
+                        text: "--\xC2\xB0\x43"
+                        text_color: 0xFFFFFF
+                        text_font: font_state
+                    - label:
+                        id: weather_condition_label
+                        align: TOP_MID
+                        y: 115
+                        text: ""
+                        text_color: 0x888888
+                        text_font: font_text
+                    - label:
+                        id: weather_details_label
+                        align: TOP_MID
+                        y: 140
+                        text: ""
+                        text_color: 0x888888
+                        text_font: font_text
+                    - panel:
+                        id: forecast_container
+                        align: TOP_MID
+                        y: 180
+                        width: 460
+                        height: 240
+                        bg_opa: TRANSP
+                        layout:
+                          type: flex
+                          flex_direction: ROW
+                          flex_align_main: SPACE_EVENLY
+                          flex_align_cross: START
+                          flex_align_track: START
+                        widgets:
+                          - panel:
+                              width: 84
+                              height: 240
+                              bg_opa: TRANSP
+                              layout:
+                                type: flex
+                                flex_direction: COLUMN
+                                flex_align_main: CENTER
+                                flex_align_cross: CENTER
+                                flex_align_track: CENTER
+                                flex_gap: 8
+                              widgets:
+                                - label:
+                                    id: fc0_day_label
+                                    text: ""
+                                    text_color: 0x2ECC71
+                                    text_font: font_btn
+                                - label:
+                                    id: fc0_icon_label
+                                    text: ""
+                                    text_color: 0xFFD700
+                                    text_font: font_icon_sm
+                                - label:
+                                    id: fc0_max_label
+                                    text: ""
+                                    text_color: 0xFF6B6B
+                                    text_font: font_text
+                                - label:
+                                    id: fc0_min_label
+                                    text: ""
+                                    text_color: 0x6BA3FF
+                                    text_font: font_text
+                          - panel:
+                              width: 84
+                              height: 240
+                              bg_opa: TRANSP
+                              layout:
+                                type: flex
+                                flex_direction: COLUMN
+                                flex_align_main: CENTER
+                                flex_align_cross: CENTER
+                                flex_align_track: CENTER
+                                flex_gap: 8
+                              widgets:
+                                - label:
+                                    id: fc1_day_label
+                                    text: ""
+                                    text_color: 0x2ECC71
+                                    text_font: font_btn
+                                - label:
+                                    id: fc1_icon_label
+                                    text: ""
+                                    text_color: 0xFFD700
+                                    text_font: font_icon_sm
+                                - label:
+                                    id: fc1_max_label
+                                    text: ""
+                                    text_color: 0xFF6B6B
+                                    text_font: font_text
+                                - label:
+                                    id: fc1_min_label
+                                    text: ""
+                                    text_color: 0x6BA3FF
+                                    text_font: font_text
+                          - panel:
+                              width: 84
+                              height: 240
+                              bg_opa: TRANSP
+                              layout:
+                                type: flex
+                                flex_direction: COLUMN
+                                flex_align_main: CENTER
+                                flex_align_cross: CENTER
+                                flex_align_track: CENTER
+                                flex_gap: 8
+                              widgets:
+                                - label:
+                                    id: fc2_day_label
+                                    text: ""
+                                    text_color: 0x2ECC71
+                                    text_font: font_btn
+                                - label:
+                                    id: fc2_icon_label
+                                    text: ""
+                                    text_color: 0xFFD700
+                                    text_font: font_icon_sm
+                                - label:
+                                    id: fc2_max_label
+                                    text: ""
+                                    text_color: 0xFF6B6B
+                                    text_font: font_text
+                                - label:
+                                    id: fc2_min_label
+                                    text: ""
+                                    text_color: 0x6BA3FF
+                                    text_font: font_text
+                          - panel:
+                              width: 84
+                              height: 240
+                              bg_opa: TRANSP
+                              layout:
+                                type: flex
+                                flex_direction: COLUMN
+                                flex_align_main: CENTER
+                                flex_align_cross: CENTER
+                                flex_align_track: CENTER
+                                flex_gap: 8
+                              widgets:
+                                - label:
+                                    id: fc3_day_label
+                                    text: ""
+                                    text_color: 0x2ECC71
+                                    text_font: font_btn
+                                - label:
+                                    id: fc3_icon_label
+                                    text: ""
+                                    text_color: 0xFFD700
+                                    text_font: font_icon_sm
+                                - label:
+                                    id: fc3_max_label
+                                    text: ""
+                                    text_color: 0xFF6B6B
+                                    text_font: font_text
+                                - label:
+                                    id: fc3_min_label
+                                    text: ""
+                                    text_color: 0x6BA3FF
+                                    text_font: font_text
+                          - panel:
+                              width: 84
+                              height: 240
+                              bg_opa: TRANSP
+                              layout:
+                                type: flex
+                                flex_direction: COLUMN
+                                flex_align_main: CENTER
+                                flex_align_cross: CENTER
+                                flex_align_track: CENTER
+                                flex_gap: 8
+                              widgets:
+                                - label:
+                                    id: fc4_day_label
+                                    text: ""
+                                    text_color: 0x2ECC71
+                                    text_font: font_btn
+                                - label:
+                                    id: fc4_icon_label
+                                    text: ""
+                                    text_color: 0xFFD700
+                                    text_font: font_icon_sm
+                                - label:
+                                    id: fc4_max_label
+                                    text: ""
+                                    text_color: 0xFF6B6B
+                                    text_font: font_text
+                                - label:
+                                    id: fc4_min_label
+                                    text: ""
+                                    text_color: 0x6BA3FF
+                                    text_font: font_text
+        - panel:
+            id: va_listening_group
+            width: 480
+            height: 440
+            y: 40
+            bg_opa: TRANSP
+            hidden: true
+            widgets:
+              - label:
+                  align: CENTER
+                  y: -40
+                  text: "\xD0\xA1\xD0\x9B\xD0\xA3\xD0\xA8\xD0\x90\xD0\xAE..."
+                  text_color: 0x2ECC71
+                  text_font: font_state
+              - label:
+                  align: BOTTOM_MID
+                  y: -20
+                  text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD1\x8B"
+                  text_color: 0x666666
+                  text_font: font_text
+            on_click:
+              - voice_assistant.stop:
+        - panel:
+            id: va_thinking_group
+            width: 480
+            height: 440
+            y: 40
+            bg_opa: TRANSP
+            hidden: true
+            widgets:
+              - label:
+                  id: thinking_text_label
+                  align: TOP_MID
+                  y: 40
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_font: font_text
+                  long_mode: WRAP
+                  width: 420
+              - label:
+                  align: CENTER
+                  y: -40
+                  text: "\xD0\x94\xD0\xA3\xD0\x9C\xD0\x90\xD0\xAE..."
+                  text_color: 0xFF8800
+                  text_font: font_state
+              - label:
+                  align: BOTTOM_MID
+                  y: -20
+                  text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD1\x8B"
+                  text_color: 0x666666
+                  text_font: font_text
+            on_click:
+              - voice_assistant.stop:
+        - panel:
+            id: va_replying_group
+            width: 480
+            height: 440
+            y: 40
+            bg_opa: TRANSP
+            hidden: true
+            widgets:
+              - label:
+                  id: replying_text_label
+                  align: TOP_MID
+                  y: 40
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_font: font_text
+                  long_mode: WRAP
+                  width: 420
+              - label:
+                  align: CENTER
+                  y: -40
+                  text: "\xD0\x9E\xD0\xA2\xD0\x92\xD0\x95\xD0\xA7\xD0\x90\xD0\xAE"
+                  text_color: 0x58A6FF
+                  text_font: font_state
+              - label:
+                  align: BOTTOM_MID
+                  y: -20
+                  text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD1\x8B"
+                  text_color: 0x666666
+                  text_font: font_text
+            on_click:
+              - voice_assistant.stop:
+        - panel:
+            id: va_error_group
+            width: 480
+            height: 440
+            y: 40
+            bg_opa: TRANSP
+            hidden: true
+            widgets:
+              - label:
+                  align: CENTER
+                  text: "\xD0\x9E\xD0\xA8\xD0\x98\xD0\x91\xD0\x9A\xD0\x90"
+                  text_color: 0xFF4444
+                  text_font: font_state
+              - label:
+                  align: BOTTOM_MID
+                  y: -20
+                  text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD1\x87\xD1\x82\xD0\xBE\xD0\xB1\xD1\x8B \xD0\xBF\xD0\xBE\xD0\xB2\xD1\x82\xD0\xBE\xD1\x80\xD0\xB8\xD1\x82\xD1\x8C"
+                  text_color: 0x666666
+                  text_font: font_text
+            on_click:
+              - voice_assistant.start:
+        - panel:
+            id: va_muted_group
+            width: 480
+            height: 440
+            y: 40
+            bg_opa: TRANSP
+            hidden: true
+            widgets:
+              - label:
+                  align: CENTER
+                  y: -40
+                  text: "\xD0\x9C\xD0\x98\xD0\x9A\xD0\xA0\xD0\x9E\xD0\xA4\xD0\x9E\xD0\x9D \xD0\x92\xD0\xAB\xD0\x9A\xD0\x9B"
+                  text_color: 0xFF4444
+                  text_font: font_state
+              - label:
+                  align: BOTTOM_MID
+                  y: -20
+                  text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD1\x8B"
+                  text_color: 0x666666
+                  text_font: font_text
+              - button:
+                  align: CENTER
+                  y: 40
+                  width: 200
+                  height: 60
+                  bg_color: 0x2ECC71
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\xD0\x92\xD0\x9A\xD0\x9B\xD0\xAE\xD0\xA7\xD0\x98\xD0\xA2\xD0\xAC"
+                        text_color: 0xFFFFFF
+                        text_font: font_btn
+                  on_click:
+                    - switch.turn_off: mute
+        - panel:
+            id: ic_ringing_in_group
+            width: 480
+            height: 440
+            y: 40
+            bg_color: 0x3D0000
+            hidden: true
+            widgets:
+              - label:
+                  align: TOP_MID
+                  y: 40
+                  text: "\xD0\x92\xD0\xA5\xD0\x9E\xD0\x94\xD0\xAF\xD0\xA9\xD0\x98\xD0\x99 \xD0\x97\xD0\x92\xD0\x9E\xD0\x9D\xD0\x9E\xD0\x9A"
+                  text_color: 0xFF4444
+                  text_font: font_title
+              - label:
+                  align: CENTER
+                  y: -30
+                  text: "\xD0\xBE\xD1\x82:"
+                  text_color: 0x888888
+                  text_font: font_text
+              - label:
+                  id: ic_ringing_in_peer_label
+                  align: CENTER
+                  y: 20
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_font: font_state
+              - button:
+                  align: BOTTOM_LEFT
+                  x: 20
+                  y: -30
+                  width: 200
+                  height: 70
+                  bg_color: 0x2ECC71
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\xD0\x9E\xD0\xA2\xD0\x92\xD0\x95\xD0\xA2\xD0\x98\xD0\xA2\xD0\xAC"
+                        text_color: 0xFFFFFF
+                        text_font: font_btn
+                  on_click:
+                    - intercom_api.answer: intercom
+              - button:
+                  align: BOTTOM_RIGHT
+                  x: -20
+                  y: -30
+                  width: 200
+                  height: 70
+                  bg_color: 0xCC0000
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\xD0\x9E\xD0\xA2\xD0\x9A\xD0\x9B\xD0\x9E\xD0\x9D\xD0\x98\xD0\xA2\xD0\xAC"
+                        text_color: 0xFFFFFF
+                        text_font: font_btn
+                  on_click:
+                    - button.press: decline_button
+        - panel:
+            id: ic_outgoing_group
+            width: 480
+            height: 440
+            y: 40
+            bg_color: 0x1A1000
+            hidden: true
+            widgets:
+              - label:
+                  align: TOP_MID
+                  y: 40
+                  text: "\xD0\x97\xD0\x92\xD0\x9E\xD0\x9D\xD0\xAE..."
+                  text_color: 0xFF8800
+                  text_font: font_title
+              - label:
+                  id: ic_outgoing_peer_label
+                  align: CENTER
+                  y: 0
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_font: font_state
+              - label:
+                  align: CENTER
+                  y: 50
+                  text: "\xD0\x9E\xD0\xB6\xD0\xB8\xD0\xB4\xD0\xB0\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBE\xD1\x82\xD0\xB2\xD0\xB5\xD1\x82\xD0\xB0..."
+                  text_color: 0x888888
+                  text_font: font_text
+              - button:
+                  align: BOTTOM_MID
+                  y: -30
+                  width: 200
+                  height: 70
+                  bg_color: 0xCC0000
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\xD0\x9E\xD0\xA2\xD0\x9C\xD0\x95\xD0\x9D\xD0\x90"
+                        text_color: 0xFFFFFF
+                        text_font: font_btn
+                  on_click:
+                    - button.press: call_button
+        - panel:
+            id: ic_in_call_group
+            width: 480
+            height: 440
+            y: 40
+            bg_color: 0x002200
+            hidden: true
+            widgets:
+              - label:
+                  align: TOP_MID
+                  y: 40
+                  text: "\xD0\xA0\xD0\x90\xD0\x97\xD0\x93\xD0\x9E\xD0\x92\xD0\x9E\xD0\xA0"
+                  text_color: 0x2ECC71
+                  text_font: font_title
+              - label:
+                  align: CENTER
+                  y: -30
+                  text: "\xD1\x81:"
+                  text_color: 0x888888
+                  text_font: font_text
+              - label:
+                  id: ic_in_call_peer_label
+                  align: CENTER
+                  y: 20
+                  text: ""
+                  text_color: 0xFFFFFF
+                  text_font: font_state
+              - button:
+                  align: BOTTOM_MID
+                  y: -30
+                  width: 200
+                  height: 70
+                  bg_color: 0xCC0000
+                  widgets:
+                    - label:
+                        align: CENTER
+                        text: "\xD0\x97\xD0\x90\xD0\x92\xD0\x95\xD0\xA0\xD0\xA8\xD0\x98\xD0\xA2\xD0\xAC"
+                        text_color: 0xFFFFFF
+                        text_font: font_btn
+                  on_click:
+                    - button.press: call_button
 
 # =============================================================================
 # END OF CONFIGURATION
