@@ -213,32 +213,10 @@ esphome:
         - light.turn_on: backlight
 
 interval:
-  - interval: 2s
+  - interval: 10s
     then:
       - lambda: |-
-          static bool done = false;
-          if (done) return;
-          done = true;
-          ESP_LOGI("axp", "Enabling ALL AXP2101 power rails...");
-          uint8_t on = 0xFF;
-          const uint8_t regs[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
-          for (uint8_t reg : regs) {
-            uint8_t data[2] = {reg, on};
-            id(internal_i2c)->write(0x34, data, 2, true);
-          }
-          uint8_t data90[2] = {0x90, 0x1C};
-          id(internal_i2c)->write(0x34, data90, 2, true);
-          uint8_t data91[2] = {0x91, 0x1C};
-          id(internal_i2c)->write(0x34, data91, 2, true);
-          const uint8_t rregs[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
-          for (uint8_t reg : rregs) {
-            uint8_t rv = 0;
-            id(internal_i2c)->write(0x34, &reg, 1, true);
-            id(internal_i2c)->read(0x34, &rv, 1);
-            ESP_LOGI("axp", "  reg[0x%02X] = 0x%02X", reg, rv);
-          }
-          gpio_set_level(GPIO_NUM_4, 1);
-          ESP_LOGI("axp", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
+          ESP_LOGI("bl_mon", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
 
 esp32:
   board: esp32-s3-devkitc-1
