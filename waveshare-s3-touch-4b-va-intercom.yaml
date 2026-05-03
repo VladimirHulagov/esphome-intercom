@@ -219,6 +219,7 @@ interval:
     then:
       - lambda: |-
           ESP_LOGI("bl_mon", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
+      - script.execute: draw_display
   - interval: 30s
     then:
       - lambda: |-
