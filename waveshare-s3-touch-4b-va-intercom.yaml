@@ -1333,7 +1333,7 @@ lvgl:
                   text_color: 0xFFFFFF
                   text_font: font_btn
             on_click:
-              - switch.turn_off: timer_ringing
+              - voice_assistant.stop:
     - id: main_page
       bg_color: 0x0D1117
       widgets:
