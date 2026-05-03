@@ -773,7 +773,6 @@ script:
               lv_disp_load_scr(id(no_ha_page)->obj);
             return;
           }
-          int phase = id(voice_assistant_phase);
           if (phase == ${voice_assist_not_ready_phase_id}) {
             if (active_scr != id(no_ha_page)->obj)
               lv_disp_load_scr(id(no_ha_page)->obj);
