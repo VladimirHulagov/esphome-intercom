@@ -212,7 +212,7 @@ esphome:
         - light.turn_on: backlight
     - priority: 800
       then:
-        - lvgl.page.show: initializing_page
+        - lvgl.page.show: color_test_page
 
 interval:
   - interval: 10s
@@ -1315,6 +1315,93 @@ lvgl:
   color_depth: 16
   log_level: WARN
   pages:
+    - id: color_test_page
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            x: 0
+            y: 0
+            width: 120
+            height: 240
+            bg_color: 0xF800
+        - obj:
+            x: 120
+            y: 0
+            width: 120
+            height: 240
+            bg_color: 0x07E0
+        - obj:
+            x: 240
+            y: 0
+            width: 120
+            height: 240
+            bg_color: 0x001F
+        - obj:
+            x: 360
+            y: 0
+            width: 120
+            height: 240
+            bg_color: 0xFFFF
+        - label:
+            x: 10
+            y: 250
+            text: "R"
+            text_color: 0xFFFF
+            text_font: font_state
+        - label:
+            x: 130
+            y: 250
+            text: "G"
+            text_color: 0xFFFF
+            text_font: font_state
+        - label:
+            x: 250
+            y: 250
+            text: "B"
+            text_color: 0xFFFF
+            text_font: font_state
+        - label:
+            x: 370
+            y: 250
+            text: "W"
+            text_color: 0x0000
+            text_font: font_state
+        - obj:
+            x: 0
+            y: 290
+            width: 160
+            height: 160
+            bg_color: 0x0000
+        - obj:
+            x: 160
+            y: 290
+            width: 160
+            height: 160
+            bg_color: 0x7BEF
+        - obj:
+            x: 320
+            y: 290
+            width: 160
+            height: 160
+            bg_color: 0xFD20
+        - label:
+            x: 10
+            y: 300
+            text: "BLK"
+            text_color: 0xFFFF
+            text_font: font_text
+        - label:
+            x: 170
+            y: 300
+            text: "GRY"
+            text_color: 0x0000
+            text_font: font_text
+        - label:
+            x: 330
+            y: 300
+            text: "ORG"
+            text_color: 0x0000
+            text_font: font_text
     - id: initializing_page
       bg_color: 0x000000
       widgets:
