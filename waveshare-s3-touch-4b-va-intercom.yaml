@@ -39,7 +39,7 @@ substitutions:
   friendly_name: Waveshare 86 Box
 
   # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  assets_base: "https://github.com/VladimirHulagov/esphome-intercom/raw/main/"
   # ---- Local mode (for development, clone repo first) ----
   # assets_base: ""
 
@@ -79,7 +79,7 @@ substitutions:
 # =============================================================================
 packages:
   core:
-    url: https://github.com/n-IA-hane/esphome-intercom
+    url: https://github.com/VladimirHulagov/esphome-intercom
     file: packages/va_intercom.yaml
     ref: main
 
@@ -304,7 +304,7 @@ time:
 external_components:
   - source:
       type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
+      url: https://github.com/VladimirHulagov/esphome-intercom
       ref: main
     components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
 
