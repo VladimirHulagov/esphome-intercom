@@ -1484,13 +1484,13 @@ lvgl:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
+                              pad_all: 4
                               layout:
                                 type: flex
                                 flex_flow: COLUMN
                                 flex_align_main: CENTER
                                 flex_align_cross: CENTER
                                 flex_align_track: CENTER
-                                pad_all: 4
                               widgets:
                                 - label:
                                     id: fc0_day_label
@@ -1516,13 +1516,13 @@ lvgl:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
+                              pad_all: 4
                               layout:
                                 type: flex
                                 flex_flow: COLUMN
                                 flex_align_main: CENTER
                                 flex_align_cross: CENTER
                                 flex_align_track: CENTER
-                                pad_all: 4
                               widgets:
                                 - label:
                                     id: fc1_day_label
@@ -1548,13 +1548,13 @@ lvgl:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
+                              pad_all: 4
                               layout:
                                 type: flex
                                 flex_flow: COLUMN
                                 flex_align_main: CENTER
                                 flex_align_cross: CENTER
                                 flex_align_track: CENTER
-                                pad_all: 4
                               widgets:
                                 - label:
                                     id: fc2_day_label
@@ -1580,13 +1580,13 @@ lvgl:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
+                              pad_all: 4
                               layout:
                                 type: flex
                                 flex_flow: COLUMN
                                 flex_align_main: CENTER
                                 flex_align_cross: CENTER
                                 flex_align_track: CENTER
-                                pad_all: 4
                               widgets:
                                 - label:
                                     id: fc3_day_label
@@ -1612,13 +1612,13 @@ lvgl:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
+                              pad_all: 4
                               layout:
                                 type: flex
                                 flex_flow: COLUMN
                                 flex_align_main: CENTER
                                 flex_align_cross: CENTER
                                 flex_align_track: CENTER
-                                pad_all: 4
                               widgets:
                                 - label:
                                     id: fc4_day_label
