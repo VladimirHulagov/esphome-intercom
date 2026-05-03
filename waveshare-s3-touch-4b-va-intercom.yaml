@@ -239,20 +239,6 @@ interval:
           }
           gpio_set_level(GPIO_NUM_4, 1);
           ESP_LOGI("axp", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
-          }
-          // Try AXP2101 at 0x34
-          uint8_t val = 0;
-          id(internal_i2c)->write(0x34, &val, 0, true);
-          if (id(internal_i2c)->read(0x34, &val, 1) == esphome::i2c::ERROR_OK) {
-            ESP_LOGI("axp", "AXP2101 found at 0x34, reg0=%02X", val);
-            uint8_t regs[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x90, 0x91, 0x92, 0x93};
-            for (auto reg : regs) {
-              uint8_t rv = 0;
-              id(internal_i2c)->write(0x34, &reg, 1, true);
-              id(internal_i2c)->read(0x34, &rv, 1);
-              ESP_LOGI("axp", "  reg[0x%02X] = 0x%02X", reg, rv);
-            }
-          }
 
 esp32:
   board: esp32-s3-devkitc-1
