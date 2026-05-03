@@ -73,7 +73,7 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
   font_glyphsets: "GF_Latin_Core"
-  font_family: Figtree
+  font_family: Roboto
 
 # =============================================================================
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
