@@ -758,6 +758,7 @@ script:
     mode: restart
     then:
       - lambda: |-
+          return; // TEMP: disabled for color test
           lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
           bool wifi_ok = wifi::global_wifi_component && wifi::global_wifi_component->is_connected();
           bool api_ok = api::global_api_server && api::global_api_server->is_connected();
