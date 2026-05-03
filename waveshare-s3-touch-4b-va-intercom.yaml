@@ -232,11 +232,10 @@ interval:
            }
   - interval: 10min
     then:
-      - if:
-          condition:
-            api:
-          then:
-            - script.execute: fetch_weather
+      - lambda: |-
+          if (api::global_api_server && api::global_api_server->is_connected()) {
+            id(fetch_weather).execute();
+          }
 
 esp32:
   board: esp32-s3-devkitc-1
