@@ -694,30 +694,27 @@ output:
           uint8_t data[2] = {0x01, val};
           id(internal_i2c)->write(0x20, data, 2, true);
 
-  # Display backlight - raw GPIO4, managed by interval
-  # LEDC and GPIO binary output both fail because GPIO4 is held LOW
-  # by an unknown peripheral (possibly I2S MCLK on the PCB)
-  - platform: template
+  # Display backlight - GPIO4, ACTIVE-LOW (inverted)
+  # Waveshare Arduino: duty=0 (LOW) = ON, duty=255 (HIGH) = OFF
+  - platform: ledc
     id: backlight_output
-    type: binary
-    write_action:
-      - lambda: |-
-          if (state) {
-            gpio_set_level(GPIO_NUM_4, 1);
-          } else {
-            gpio_set_level(GPIO_NUM_4, 0);
-          }
+    pin:
+      number: GPIO4
+      inverted: true
+    frequency: 5000Hz
+    bit_depth: 8
 
 # =============================================================================
 # Lights
 # =============================================================================
 light:
-  - platform: binary
+  - platform: monochromatic
     id: backlight
     name: "Display Backlight"
     icon: "mdi:brightness-6"
     output: backlight_output
     restore_mode: ALWAYS_ON
+    default_transition_length: 250ms
 
 # =============================================================================
 # Switches
