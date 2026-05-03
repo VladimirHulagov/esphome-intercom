@@ -1157,7 +1157,7 @@ font:
     id: font_clock
     size: 48
     glyphs: '0123456789: '
-  - file: "gfonts://materialdesignicons-webfont"
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: font_icon
     size: 48
     glyphs:
@@ -1180,7 +1180,7 @@ font:
       - "\U000F071A"
       - "\U000F05A9"
       - "\U000F05AA"
-  - file: "gfonts://materialdesignicons-webfont"
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: font_icon_sm
     size: 24
     glyphs:
