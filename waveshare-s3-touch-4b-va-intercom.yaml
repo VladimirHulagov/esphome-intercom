@@ -1820,7 +1820,7 @@ lvgl:
                         text_color: 0xFFFFFF
                         text_font: font_btn
                   on_click:
-                    - intercom_api.answer: intercom
+                    - intercom_api.answer_call: intercom
               - button:
                   align: BOTTOM_RIGHT
                   x: -20
