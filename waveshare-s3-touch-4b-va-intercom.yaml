@@ -1372,11 +1372,11 @@ lvgl:
             height: 440
             bg_opa: TRANSP
             tiles:
-              - tile:
-                  id: idle_tile
-                  column: 0
-                  row: 0
-                  widgets:
+              - id: idle_tile
+                column: 0
+                row: 0
+                dir: HOR
+                widgets:
                     - label:
                         id: idle_peer_label
                         align: CENTER
@@ -1433,11 +1433,11 @@ lvgl:
                         text: "\xD0\x9D\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD0\xBB\xD1\x8F \xD0\xB3\xD0\xBE\xD0\xBB\xD0\xBE\xD1\x81\xD0\xBE\xD0\xB2\xD0\xBE\xD0\xB3\xD0\xBE"
                         text_color: 0x666666
                         text_font: font_text
-              - tile:
-                  id: weather_tile
-                  column: 1
-                  row: 0
-                  widgets:
+              - id: weather_tile
+                column: 1
+                row: 0
+                dir: HOR
+                widgets:
                     - label:
                         id: weather_icon_label
                         align: TOP_MID
