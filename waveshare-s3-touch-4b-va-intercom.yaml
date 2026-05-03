@@ -72,9 +72,6 @@ substitutions:
   voice_assist_muted_phase_id: "12"
   voice_assist_timer_finished_phase_id: "20"
 
-  font_glyphsets:
-    - GF_Latin_Core
-    - GF_Cyrillic_Core
   font_family: Roboto
 
 # =============================================================================
@@ -1118,7 +1115,8 @@ font:
     id: font_text
     size: 20
     glyphsets:
-      - ${font_glyphsets}
+      - GF_Latin_Core
+      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
@@ -1129,7 +1127,8 @@ font:
     id: font_title
     size: 30
     glyphsets:
-      - ${font_glyphsets}
+      - GF_Latin_Core
+      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
@@ -1164,7 +1163,8 @@ font:
     id: font_btn
     size: 22
     glyphsets:
-      - ${font_glyphsets}
+      - GF_Latin_Core
+      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
