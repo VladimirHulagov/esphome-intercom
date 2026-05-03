@@ -213,21 +213,28 @@ esphome:
         - light.turn_on: backlight
 
 interval:
-  - interval: 3s
+  - interval: 1s
     then:
       - lambda: |-
-          static bool bl_force = false;
-          if (!bl_force) {
-            gpio_set_level(GPIO_NUM_4, 1);
-            uint8_t data[2] = {0x01, 0xFF};
-            id(internal_i2c)->write(0x20, data, 2, true);
-            bl_force = true;
+          static int cnt = 0;
+          if (cnt == 0) {
+            gpio_config_t cfg = {};
+            cfg.pin_bit_mask = (1ULL << GPIO_NUM_4);
+            cfg.mode = GPIO_MODE_INPUT_OUTPUT;
+            cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+            cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            cfg.intr_type = GPIO_INTR_DISABLE;
+            gpio_config(&cfg);
           }
-          uint8_t pca_out = 0;
-          id(internal_i2c)->write(0x20, &pca_out, 1, true);
-          id(internal_i2c)->read(0x20, &pca_out, 1);
-          ESP_LOGI("bl_mon", "GPIO4=%d PCA=0x%02X EXIO4=%d",
-            gpio_get_level(GPIO_NUM_4), pca_out, (pca_out >> 4) & 1);
+          gpio_set_level(GPIO_NUM_4, 1);
+          cnt++;
+          if (cnt <= 10 || cnt % 10 == 0) {
+            uint8_t pca_out = 0;
+            id(internal_i2c)->write(0x20, &pca_out, 1, true);
+            id(internal_i2c)->read(0x20, &pca_out, 1);
+            ESP_LOGI("bl_mon", "GPIO4=%d PCA=0x%02X cnt=%d",
+              gpio_get_level(GPIO_NUM_4), pca_out, cnt);
+          }
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -705,11 +712,19 @@ output:
           uint8_t data[2] = {0x01, val};
           id(internal_i2c)->write(0x20, data, 2, true);
 
-  # Display backlight (GPIO4, direct GPIO)
-  # LEDC PWM loses the signal after component setup on this board
-  - platform: gpio
+  # Display backlight - raw GPIO4, managed by interval
+  # LEDC and GPIO binary output both fail because GPIO4 is held LOW
+  # by an unknown peripheral (possibly I2S MCLK on the PCB)
+  - platform: template
     id: backlight_output
-    pin: GPIO4
+    type: binary
+    write_action:
+      - lambda: |-
+          if (state) {
+            gpio_set_level(GPIO_NUM_4, 1);
+          } else {
+            gpio_set_level(GPIO_NUM_4, 0);
+          }
 
 # =============================================================================
 # Lights
