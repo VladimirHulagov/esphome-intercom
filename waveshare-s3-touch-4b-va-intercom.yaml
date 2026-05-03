@@ -219,13 +219,28 @@ interval:
           static bool done = false;
           if (done) return;
           done = true;
-          ESP_LOGI("i2c_scan", "Scanning I2C bus...");
-          for (uint8_t addr = 1; addr < 127; addr++) {
-            uint8_t dummy = 0;
-            id(internal_i2c)->write(addr, &dummy, 0, true);
-            if (id(internal_i2c)->read(addr, &dummy, 1) == esphome::i2c::ERROR_OK) {
-              ESP_LOGI("i2c_scan", "  Found device at 0x%02X", addr);
-            }
+          ESP_LOGI("axp", "Enabling ALL AXP2101 power rails...");
+          uint8_t on = 0xFF;
+          uint8_t regs[] = {0x10, 0x11, 0x12, 0x13, 0x14, 0x15};
+          for (auto reg : regs) {
+            uint8_t data[2] = {reg, on};
+            id(internal_i2c)->write(0x34, data, 2, true);
+          }
+          // Set DLDO voltages to max (3.3V)
+          uint8_t data90[2] = {0x90, 0x1C};
+          id(internal_i2c)->write(0x34, data90, 2, true);
+          uint8_t data91[2] = {0x91, 0x1C};
+          id(internal_i2c)->write(0x34, data91, 2, true);
+          // Re-read all registers
+          for (auto reg : {0x10, 0x11, 0x12, 0x13, 0x14, 0x15}) {
+            uint8_t rv = 0;
+            id(internal_i2c)->write(0x34, &reg, 1, true);
+            id(internal_i2c)->read(0x34, &rv, 1);
+            ESP_LOGI("axp", "  reg[0x%02X] = 0x%02X", reg, rv);
+          }
+          // Also force GPIO4 HIGH
+          gpio_set_level(GPIO_NUM_4, 1);
+          ESP_LOGI("axp", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
           }
           // Try AXP2101 at 0x34
           uint8_t val = 0;
