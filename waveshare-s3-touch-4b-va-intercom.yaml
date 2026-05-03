@@ -228,8 +228,15 @@ interval:
           if (now.is_valid()) {
             char clk[8];
             snprintf(clk, sizeof(clk), "%02d:%02d", now.hour, now.minute);
-            lv_label_set_text(id(clock_label), clk);
-          }
+             lv_label_set_text(id(clock_label), clk);
+           }
+  - interval: 10min
+    then:
+      - if:
+          condition:
+            api:
+          then:
+            - script.execute: fetch_weather
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -254,10 +261,6 @@ api:
   on_client_connected:
     - logger.log: "API client connected"
     - script.execute: fetch_weather
-    - interval:
-        interval: 10min
-        then:
-          - script.execute: fetch_weather
 
 ota:
   - platform: esphome
