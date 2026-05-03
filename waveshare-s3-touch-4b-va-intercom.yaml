@@ -621,49 +621,42 @@ script:
       - script.execute: draw_display
 
   - id: fetch_weather
+    mode: single
     then:
       - homeassistant.action:
           action: weather.get_forecasts
           data:
             entity_id: weather.home
             type: daily
-          response_variable: forecast_response
-      - lambda: |-
-          auto &data = id(forecast_response);
-          auto it = data.find("forecast");
-          if (it == data.end()) {
-            ESP_LOGW("weather", "No forecast data in response");
-            return;
-          }
-          auto &forecasts = it->second;
-          if (!forecasts.is_array() || forecasts.size() == 0) {
-            ESP_LOGW("weather", "Forecast array empty");
-            return;
-          }
-          auto &current = forecasts[0];
-          if (current.contains("condition"))
-            id(weather_condition) = current["condition"].as<std::string>();
-          if (current.contains("temperature"))
-            id(weather_temperature) = current["temperature"].as<float>();
-          if (current.contains("humidity"))
-            id(weather_humidity) = current["humidity"].as<float>();
-          if (current.contains("wind_speed"))
-            id(weather_wind_speed) = current["wind_speed"].as<float>();
-          int count = std::min((int)forecasts.size(), 5);
-          for (int i = 0; i < count; i++) {
-            auto &f = forecasts[i];
-            if (f.contains("condition"))
-              id(forecast_condition)[i] = f["condition"].as<std::string>();
-            if (f.contains("temperature"))
-              id(forecast_temp_max)[i] = f["temperature"].as<float>();
-            if (f.contains("templow"))
-              id(forecast_temp_min)[i] = f["templow"].as<float>();
-            auto now = id(sntp_time).now();
-            int today_dow = now.day_of_week - 1;
-            if (today_dow < 0) today_dow = 0;
-            id(forecast_dow)[i] = (today_dow + i) % 7;
-          }
-      - script.execute: update_weather_display
+          capture_response: true
+          on_success:
+            - lambda: |-
+                JsonObjectConst resp = response["response"];
+                JsonObjectConst data = resp["weather.home"];
+                JsonArrayConst forecast = data["forecast"];
+                int count = std::min((int)forecast.size(), 5);
+                for (int i = 0; i < count; i++) {
+                  JsonObjectConst day = forecast[i];
+                  id(forecast_condition)[i] = day["condition"].as<std::string>();
+                  id(forecast_temp_max)[i]  = day["temperature"]   | 0.0f;
+                  id(forecast_temp_min)[i]  = day["templow"]       | 0.0f;
+                  if (i == 0) {
+                    if (day.containsKey("condition"))
+                      id(weather_condition) = day["condition"].as<std::string>();
+                    if (day.containsKey("temperature"))
+                      id(weather_temperature) = day["temperature"] | 0.0f;
+                  }
+                  std::string dt = day["datetime"].as<std::string>();
+                  int y, m, d;
+                  sscanf(dt.c_str(), "%d-%d-%d", &y, &m, &d);
+                  struct tm tm = {};
+                  tm.tm_year = y - 1900;
+                  tm.tm_mon = m - 1;
+                  tm.tm_mday = d;
+                  mktime(&tm);
+                  id(forecast_dow)[i] = tm.tm_wday;
+                }
+            - script.execute: update_weather_display
 
   - id: update_weather_display
     then:
