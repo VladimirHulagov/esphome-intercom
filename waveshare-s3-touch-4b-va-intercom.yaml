@@ -306,7 +306,7 @@ external_components:
       type: git
       url: https://github.com/VladimirHulagov/esphome-intercom
       ref: main
-    components: [intercom_api, i2s_audio_duplex, esp_aec, audio_processor]
+    components: [intercom_api, i2s_audio_duplex, esp_aec]
 
 # =============================================================================
 # I2C Bus
