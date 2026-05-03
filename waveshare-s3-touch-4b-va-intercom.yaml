@@ -258,6 +258,7 @@ api:
   on_client_connected:
     - logger.log: "API client connected"
     - script.execute: fetch_weather
+    - script.execute: draw_display
 
 ota:
   - platform: esphome
@@ -276,6 +277,8 @@ network:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  on_connect:
+    - script.execute: draw_display
   ap:
     ssid: "86Box Hotspot"
 
