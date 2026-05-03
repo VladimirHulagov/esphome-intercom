@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "3.1.0";
+const INTERCOM_CARD_VERSION = "4.0.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
