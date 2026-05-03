@@ -278,6 +278,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   on_connect:
+    - logger.log: "WiFi connected!"
     - script.execute: draw_display
   ap:
     ssid: "86Box Hotspot"
@@ -757,12 +758,16 @@ script:
     then:
       - lambda: |-
           lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
-          if (!wifi::global_wifi_component->is_connected()) {
+          bool wifi_ok = wifi::global_wifi_component && wifi::global_wifi_component->is_connected();
+          bool api_ok = api::global_api_server && api::global_api_server->is_connected();
+          int phase = id(voice_assistant_phase);
+          ESP_LOGI("draw_display", "wifi=%d api=%d phase=%d active_scr=%p", wifi_ok, api_ok, phase, active_scr);
+          if (!wifi_ok) {
             if (active_scr != id(no_wifi_page)->obj)
               lv_disp_load_scr(id(no_wifi_page)->obj);
             return;
           }
-          if (!api::global_api_server || !api::global_api_server->is_connected()) {
+          if (!api_ok) {
             if (active_scr != id(no_ha_page)->obj)
               lv_disp_load_scr(id(no_ha_page)->obj);
             return;
