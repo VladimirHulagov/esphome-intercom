@@ -213,27 +213,27 @@ esphome:
         - light.turn_on: backlight
 
 interval:
-  - interval: 1s
+  - interval: 2s
     then:
       - lambda: |-
           static int cnt = 0;
-          if (cnt == 0) {
-            gpio_config_t cfg = {};
-            cfg.pin_bit_mask = (1ULL << GPIO_NUM_4);
-            cfg.mode = GPIO_MODE_INPUT_OUTPUT;
-            cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-            cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
-            cfg.intr_type = GPIO_INTR_DISABLE;
-            gpio_config(&cfg);
-          }
-          gpio_set_level(GPIO_NUM_4, 1);
           cnt++;
-          if (cnt <= 10 || cnt % 10 == 0) {
-            uint8_t pca_out = 0;
-            id(internal_i2c)->write(0x20, &pca_out, 1, true);
-            id(internal_i2c)->read(0x20, &pca_out, 1);
-            ESP_LOGI("bl_mon", "GPIO4=%d PCA=0x%02X cnt=%d",
-              gpio_get_level(GPIO_NUM_4), pca_out, cnt);
+          uint8_t pca_out = 0;
+          id(internal_i2c)->write(0x20, &pca_out, 1, true);
+          id(internal_i2c)->read(0x20, &pca_out, 1);
+          if (cnt <= 5) {
+            ESP_LOGI("bl_mon", "PCA=0x%02X CS=%d SDA=%d SCL=%d SPK=%d BL=%d TP_RST=%d TP_INT=%d LCD_RST=%d",
+              pca_out,
+              (pca_out >> 0) & 1, (pca_out >> 1) & 1, (pca_out >> 2) & 1,
+              (pca_out >> 3) & 1, (pca_out >> 4) & 1,
+              (pca_out >> 5) & 1, (pca_out >> 6) & 1, (pca_out >> 7) & 1);
+          }
+          if (cnt == 3) {
+            ESP_LOGI("bl_mon", "Forcing EXIO4=1 EXIO7=1 (backlight + LCD RST)...");
+            uint8_t val = pca_out | (1 << 4) | (1 << 7);
+            uint8_t data[2] = {0x01, val};
+            id(internal_i2c)->write(0x20, data, 2, true);
+            id(pca9554_output_state) = val;
           }
 
 esp32:
