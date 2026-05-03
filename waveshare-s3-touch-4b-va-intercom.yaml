@@ -774,8 +774,20 @@ script:
             return;
           }
           if (phase == ${voice_assist_not_ready_phase_id}) {
-            if (active_scr != id(no_ha_page)->obj)
-              lv_disp_load_scr(id(no_ha_page)->obj);
+            if (active_scr != id(main_page)->obj) {
+              lv_disp_load_scr(id(main_page)->obj);
+              lv_obj_clear_flag(id(idle_tile), LV_OBJ_FLAG_SCROLLABLE);
+              lv_obj_clear_flag(id(weather_tile), LV_OBJ_FLAG_SCROLLABLE);
+            }
+            lv_obj_add_flag(id(va_listening_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(va_thinking_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(va_replying_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(va_error_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(va_muted_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ic_ringing_in_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ic_outgoing_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(ic_in_call_group), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(main_tileview), LV_OBJ_FLAG_HIDDEN);
             return;
           }
           if (phase == ${voice_assist_timer_finished_phase_id}) {
