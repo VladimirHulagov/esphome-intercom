@@ -51,6 +51,16 @@ Under the hood: full-duplex I2S on a single bus, ESP-SR echo cancellation, optio
 This release brings the reworked audio core onto `main` and keeps the
 public YAML presets aligned with it.
 
+- **ESP-SR AFE pipeline as an ESPHome component (`esp_afe`)** — wraps
+  Espressif's full speech front-end (AEC, BSS spatial source separation
+  on dual-mic boards, noise suppression, VAD, AGC) so a single ESP can
+  run wake word, voice assistant, and full-duplex intercom on the same
+  microphone and speaker. ESPHome alone does not provide a full-duplex
+  audio path; with `i2s_audio_duplex` plus `esp_afe` (or the lighter
+  `esp_aec`), the same I2S codec carries both directions of a call
+  while a wake word model and the voice assistant share the mic stream.
+  See [Audio components → `esp_afe`](#audio-components) for what each
+  stage does and how to pick between AFE and AEC.
 - **TX-side AEC reference decimation** in `i2s_audio_duplex` for mono
   MEMS/I2S builds, reducing residual echo and avoiding RX-side
   ghost-tail artifacts.
@@ -612,7 +622,23 @@ Standalone ESP-SR echo cancellation (~80 KB internal RAM). Four modes (`sr_low_c
 
 ### [`esp_afe`](esphome/components/esp_afe/README.md)
 
-Full ESP-SR audio front-end: AEC + NS + VAD + AGC, optionally dual-mic BSS voice isolation. Runtime toggles for every feature, diagnostic sensors (input volume, output RMS, voice presence), and mode switching in Home Assistant. Memory and CPU cost is substantial (see the [AFE README](esphome/components/esp_afe/README.md) for the exact numbers). Use only when you actually need noise suppression, AGC, VAD, or BSS voice isolation; prefer `esp_aec` for plain intercom-only setups.
+Full ESP-SR audio front-end. Chains AEC, optional spatial source separation, noise suppression, voice activity detection and automatic gain control behind `i2s_audio_duplex`. Runs on Core 0 (~22-23% load on S3 in `low_cost` mode) and the pipeline shape adapts at runtime to `mic_num` and the per-stage switches exposed in Home Assistant.
+
+**What each stage does**
+
+- **AEC** (Acoustic Echo Cancellation) — removes the speaker signal from the mic input. Same engine as `esp_aec`. Required by everything downstream and by wake word detection during a call.
+- **BSS / SE** (Blind Source Separation, dual-mic only) — uses the spatial difference between two microphones to isolate the speaker's voice and suppress directional noise (TV, kitchen fan, neighbour talking). Active when `se_enabled: true` and `mic_num: 2`. While SE is on, esp-sr replaces NS and AGC in the pipeline; their toggles become noops until SE is turned off.
+- **NS** (Noise Suppression, single-mic mode) — WebRTC-style spectral noise reduction for stationary background (HVAC hum, fan whir). Less surgical than BSS but the only option on single-mic boards where spatial separation is impossible.
+- **VAD** (Voice Activity Detection) — meant to mark frames as speech vs noise so downstream consumers can act on it. **Currently under investigation: the WebRTC VAD wired in our pipeline does not produce stable results on real input. The `voice_present` sensor and `vad_enabled` switch are exposed as opt-in but should not be relied on yet.** Will be revisited in a future release.
+- **AGC** (Automatic Gain Control, single-mic mode) — WebRTC-style level normalization that pulls quiet speech up and limits loud peaks. Useful on boards where mic distance varies (room scale).
+
+**Configuration shape**
+
+YAML keys cover type (`sr` for speech recognition or `vc` for voice communication), mode (`low_cost` or `high_perf`), per-stage enable switches, AEC filter length, AGC compression and target, plus diagnostic sensors (input volume dB, output RMS dB, voice presence) and runtime switches in Home Assistant for each stage. See the [AFE README](esphome/components/esp_afe/README.md) for the full option matrix and exact memory/CPU numbers per mode.
+
+**When to use it**
+
+Pick `esp_afe` if you actually need NS, AGC or BSS voice isolation, or if you want runtime control of those stages from Home Assistant. For plain intercom-only setups `esp_aec` is lighter and lacks the AFE switches you would not use anyway. `esp_afe` requires `i2s_audio_duplex` in front of it; it cannot replace `esp_aec` in standalone `intercom_api` configurations (no duplex driver = no steady frame producer for the AFE feed/fetch tasks).
 
 ---
 
