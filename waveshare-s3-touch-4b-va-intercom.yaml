@@ -1232,6 +1232,19 @@ display:
     spi_id: dummy_spi
     init_sequence: []
     color_order: RGB
+    pclk_pin: GPIO9
+    de_pin: GPIO17
+    hsync_pin: GPIO46
+    vsync_pin: GPIO3
+    hsync_pulse_width: 10
+    hsync_back_porch: 10
+    hsync_front_porch: 10
+    vsync_pulse_width: 4
+    vsync_back_porch: 4
+    vsync_front_porch: 4
+    dimensions:
+      width: 480
+      height: 480
     data_pins:
       - number: 40
       - number: 41
