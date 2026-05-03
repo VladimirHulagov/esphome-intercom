@@ -11,7 +11,7 @@
  * - Streaming  -> Show "In Call [peer]" + Hangup
  */
 
-const INTERCOM_CARD_VERSION = "3.1.0";
+const INTERCOM_CARD_VERSION = "4.0.0";
 
 class IntercomCard extends HTMLElement {
   constructor() {
@@ -132,7 +132,7 @@ class IntercomCard extends HTMLElement {
       if (espStateChanged && this._autoAnswer && !this._autoAnswering && !this._starting) {
         const isIncoming = (newEspState === "ringing" || newEspState === "incoming")
           || ((newEspState === "calling" || newEspState === "outgoing")
-              && this._getDestination() === "Home Assistant");
+              && this._getDestination() === this._getHaName());
         if (isIncoming) {
           this._autoAnswering = true;
           this._tryAutoAnswer();
@@ -169,11 +169,20 @@ class IntercomCard extends HTMLElement {
     return state;
   }
 
+  // The HA peer is identified by the instance friendly name (location_name).
+  // The integration sensor prepends location_name as the first contact, and
+  // intercom_api selects it by index, so the destination text shown by the
+  // ESP equals location_name. Compare against this everywhere instead of the
+  // legacy "Home Assistant" string literal.
+  _getHaName() {
+    return this._hass?.config?.location_name || "Home Assistant";
+  }
+
   // Get destination from entity
   _getDestination() {
-    if (!this._hass || !this._destinationEntityId) return "Home Assistant";
+    if (!this._hass || !this._destinationEntityId) return this._getHaName();
     const entity = this._hass.states[this._destinationEntityId];
-    return entity?.state || "Home Assistant";
+    return entity?.state || this._getHaName();
   }
 
   async _findEntityIds() {
@@ -277,8 +286,8 @@ class IntercomCard extends HTMLElement {
         break;
       case "calling":
       case "outgoing":
-        // Special case: ESP calling "Home Assistant" = incoming call TO the card
-        if (destination === "Home Assistant") {
+        // Special case: ESP calling the HA instance = incoming call TO the card
+        if (destination === this._getHaName()) {
           statusText = `Incoming: ${espDeviceName}`;
           statusClass = "ringing";
           showAnswer = true;
@@ -420,7 +429,7 @@ class IntercomCard extends HTMLElement {
           <label for="auto-answer-cb">Auto Answer</label>
         </div>
         ` : ''}
-        <div class="stats" id="stats">${isFullMode ? (destination === 'Home Assistant' ? 'Browser ↔ ESP' : 'ESP ↔ ESP') : 'Sent: 0 | Recv: 0'}</div>
+        <div class="stats" id="stats">${isFullMode ? (destination === this._getHaName() ? 'Browser ↔ ESP' : 'ESP ↔ ESP') : 'Sent: 0 | Recv: 0'}</div>
         <div class="error" id="err">${this._errorMsg}</div>
         <div class="version">v${INTERCOM_CARD_VERSION}</div>
       </div>
@@ -496,7 +505,7 @@ class IntercomCard extends HTMLElement {
     try {
       const destination = this._getDestination();
 
-      if (this._isFullMode() && destination !== "Home Assistant") {
+      if (this._isFullMode() && destination !== this._getHaName()) {
         // Full mode: Bridge to another ESP
         await this._startBridge(deviceInfo, destination);
       } else {
@@ -617,8 +626,8 @@ class IntercomCard extends HTMLElement {
       const espState = this._getEspState().toLowerCase();
       const destination = this._getDestination();
 
-      // Check if ESP is calling HA (outgoing + destination = Home Assistant)
-      if ((espState === "outgoing" || espState === "calling") && destination === "Home Assistant") {
+      // Check if ESP is calling HA (outgoing + destination matches the HA instance)
+      if ((espState === "outgoing" || espState === "calling") && destination === this._getHaName()) {
         // ESP is calling us - answer with proper ANSWER message (not START)
         await this._answerEspCall(deviceInfo);
       } else {
@@ -657,8 +666,8 @@ class IntercomCard extends HTMLElement {
       const espState = this._getEspState().toLowerCase();
       const destination = this._getDestination();
 
-      // Check if ESP is calling HA (outgoing + destination = Home Assistant)
-      if ((espState === "outgoing" || espState === "calling") && destination === "Home Assistant") {
+      // Check if ESP is calling HA (outgoing + destination matches the HA instance)
+      if ((espState === "outgoing" || espState === "calling") && destination === this._getHaName()) {
         // ESP is calling us - press ESP's decline button to hang up
         if (this._declineButtonEntityId) {
           await this._hass.callService("button", "press", { entity_id: this._declineButtonEntityId });

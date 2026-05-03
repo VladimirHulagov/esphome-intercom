@@ -10,7 +10,7 @@ from esphome.const import (
     CONF_MODE,
     CONF_DISABLED_BY_DEFAULT,
 )
-from esphome.components import microphone, speaker, switch, text_sensor
+from esphome.components import microphone, speaker, text_sensor
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
@@ -18,8 +18,10 @@ AUTO_LOAD = ["switch", "number", "text_sensor"]
 
 CONF_INTERCOM_API_ID = "intercom_api_id"
 CONF_DC_OFFSET_REMOVAL = "dc_offset_removal"
+CONF_TASKS_STACK_IN_PSRAM = "tasks_stack_in_psram"
+CONF_FRAME_BUFFERS_IN_PSRAM = "frame_buffers_in_psram"
 
-CONF_AEC_ID = "aec_id"
+CONF_PROCESSOR_ID = "processor_id"
 CONF_AEC_REF_DELAY_MS = "aec_reference_delay_ms"
 CONF_RINGING_TIMEOUT = "ringing_timeout"
 CONF_ON_RINGING = "on_ringing"
@@ -63,14 +65,15 @@ IntercomIsIncomingCondition = intercom_api_ns.class_("IntercomIsIncomingConditio
 IntercomIsAnsweringCondition = intercom_api_ns.class_("IntercomIsAnsweringCondition", automation.Condition)
 IntercomIsInCallCondition = intercom_api_ns.class_("IntercomIsInCallCondition", automation.Condition)
 IntercomDestinationIsCondition = intercom_api_ns.class_("IntercomDestinationIsCondition", automation.Condition)
+IntercomIsHaDestinationCondition = intercom_api_ns.class_("IntercomIsHaDestinationCondition", automation.Condition)
 
-def _aec_schema(value):
-    """Validate aec_id - import esp_aec only if used."""
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
+
+def _processor_schema(value):
+    """Validate processor_id: accepts any AudioProcessor (EspAec or EspAfe)."""
     if value is None:
         return value
-    # Import here to avoid circular dependency
-    from esphome.components import esp_aec
-    return cv.use_id(esp_aec.EspAec)(value)
+    return cv.use_id(AudioProcessor)(value)
 
 
 CONFIG_SCHEMA = cv.Schema(
@@ -82,10 +85,20 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SPEAKER): cv.use_id(speaker.Speaker),
         # DC offset removal for mics with significant DC bias (e.g., SPH0645)
         cv.Optional(CONF_DC_OFFSET_REMOVAL, default=False): cv.boolean,
+        # Place the server / tx / speaker task stacks in PSRAM (saves ~28KB
+        # internal heap on S3/P4 builds where AFE/MWW/LVGL compete for it).
+        # Default false: standard dynamic tasks with internal-heap stacks,
+        # required on plain ESP32 boards without PSRAM. Set true on full-
+        # experience S3/P4/Xiaozhi builds.
+        cv.Optional(CONF_TASKS_STACK_IN_PSRAM, default=False): cv.boolean,
         # Optional AEC (Acoustic Echo Cancellation) component
-        cv.Optional(CONF_AEC_ID): _aec_schema,
+        cv.Optional(CONF_PROCESSOR_ID): _processor_schema,
         # AEC reference delay in ms (ring buffer pre-fill, typically 60-100ms)
         cv.Optional(CONF_AEC_REF_DELAY_MS, default=80): cv.int_range(min=10, max=200),
+        # Place AEC working frame buffers (mic/ref/out, ~3 KB total) in PSRAM.
+        # Default false = internal RAM (~20 us/frame faster on Core 0). Set true
+        # to save 3 KB internal RAM at the cost of Core 0 PSRAM traffic.
+        cv.Optional(CONF_FRAME_BUFFERS_IN_PSRAM, default=False): cv.boolean,
         # Ringing timeout: auto-decline call if not answered within this time
         cv.Optional(CONF_RINGING_TIMEOUT): cv.positive_time_period_milliseconds,
         # Trigger when incoming call (auto_answer OFF)
@@ -103,36 +116,51 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
+def _consume_intercom_sockets(config):
+    """Reserve lwIP sockets for intercom_api at validation time.
+
+    The component opens one TCP listening socket (incoming peer calls) plus
+    up to three concurrent TCP client sockets (outgoing peer calls). Mirrors
+    the upstream api component pattern so ESPHome can size
+    CONFIG_LWIP_MAX_SOCKETS automatically instead of forcing a YAML override.
+    """
+    from esphome.components import socket
+
+    socket.consume_sockets(3, "intercom_api")(config)
+    socket.consume_sockets(1, "intercom_api", socket.SocketType.TCP_LISTEN)(config)
+    return config
+
+
 def _final_validate(config):
-    """Cross-component validation: warn about conflicts with i2s_audio_duplex."""
+    """Cross-component validation + socket reservation."""
     from esphome.core import CORE
     full_config = CORE.config or {}
 
     # Check if i2s_audio_duplex is also configured
     duplex_configs = full_config.get("i2s_audio_duplex", [])
-    if not duplex_configs:
-        return config
 
-    # If duplex exists, check for AEC conflict
-    if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
-        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
-            if isinstance(duplex, dict) and "aec_id" in duplex and duplex["aec_id"] is not None:
-                raise cv.Invalid(
-                    "Both intercom_api and i2s_audio_duplex have aec_id configured. "
-                    "This causes a race condition on the AEC processor. "
-                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
-                )
+    if duplex_configs:
+        # If duplex exists, check for processor conflict
+        if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
+            for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+                if isinstance(duplex, dict) and duplex.get("processor_id") is not None:
+                    raise cv.Invalid(
+                        "Both intercom_api.processor_id and i2s_audio_duplex.processor_id are configured. "
+                        "This causes a race condition on the audio processor. "
+                        "Use the processor on only ONE component (i2s_audio_duplex recommended)."
+                    )
 
-    # Warn about DC offset double-filtering
-    if config.get(CONF_DC_OFFSET_REMOVAL, False):
-        for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
-            if isinstance(duplex, dict) and duplex.get("correct_dc_offset", False):
-                raise cv.Invalid(
-                    "Both intercom_api.dc_offset_removal and i2s_audio_duplex.correct_dc_offset are enabled. "
-                    "Double DC-block filtering causes instability. "
-                    "Use correct_dc_offset on i2s_audio_duplex only."
-                )
+        # Warn about DC offset double-filtering
+        if config.get(CONF_DC_OFFSET_REMOVAL, False):
+            for duplex in (duplex_configs if isinstance(duplex_configs, list) else [duplex_configs]):
+                if isinstance(duplex, dict) and duplex.get("correct_dc_offset", False):
+                    raise cv.Invalid(
+                        "Both intercom_api.dc_offset_removal and i2s_audio_duplex.correct_dc_offset are enabled. "
+                        "Double DC-block filtering causes instability. "
+                        "Use correct_dc_offset on i2s_audio_duplex only."
+                    )
 
+    _consume_intercom_sockets(config)
     return config
 
 
@@ -158,16 +186,18 @@ async def to_code(config):
         cg.add(var.set_speaker(spk))
 
     cg.add(var.set_dc_offset_removal(config[CONF_DC_OFFSET_REMOVAL]))
+    cg.add(var.set_tasks_stack_in_psram(config[CONF_TASKS_STACK_IN_PSRAM]))
+    cg.add(var.set_frame_buffers_in_psram(config[CONF_FRAME_BUFFERS_IN_PSRAM]))
 
     # Set device name (for full mode: exclude self from contacts list)
     from esphome.core import CORE
     cg.add(var.set_device_name(CORE.friendly_name or CORE.name))
 
-    if CONF_AEC_ID in config and config[CONF_AEC_ID] is not None:
-        aec = await cg.get_variable(config[CONF_AEC_ID])
+    if CONF_PROCESSOR_ID in config and config[CONF_PROCESSOR_ID] is not None:
+        aec = await cg.get_variable(config[CONF_PROCESSOR_ID])
         cg.add(var.set_aec(aec))
         cg.add(var.set_aec_reference_delay_ms(config[CONF_AEC_REF_DELAY_MS]))
-        cg.add_define("USE_ESP_AEC")
+        cg.add_define("USE_AUDIO_PROCESSOR")
 
     # Ringing timeout (auto-decline if not answered)
     if CONF_RINGING_TIMEOUT in config:
@@ -529,4 +559,16 @@ async def intercom_destination_is_to_code(config, condition_id, template_arg, ar
     cg.add(var.set_parent(parent))
     templ = await cg.templatable(config[CONF_DESTINATION], args, cg.std_string)
     cg.add(var.set_destination(templ))
+    return var
+
+
+@automation.register_condition(
+    "intercom_api.is_ha_destination",
+    IntercomIsHaDestinationCondition,
+    INTERCOM_CONDITION_SCHEMA,
+)
+async def intercom_is_ha_destination_to_code(config, condition_id, template_arg, args):
+    var = cg.new_Pvariable(condition_id, template_arg)
+    parent = await cg.get_variable(config[CONF_ID])
+    cg.add(var.set_parent(parent))
     return var

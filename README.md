@@ -1,16 +1,24 @@
-# ESPHome Intercom
-From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, all the way to a complete Voice Assistant experience, with wake word detection, echo cancellation, LVGL touchscreen UI, intercom, and ready-to-flash configs for tested ESP32 hardware.
+# ESPHome Intercom and Full-Duplex Voice for ESP32
 
-![Dashboard Preview](readme-img/dashboard.png)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3%20%7C%20ESP32--P4-blue)](#hardware-support)
+[![ESPHome](https://img.shields.io/badge/ESPHome-2026.4-%23008cd0)](https://esphome.io)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-native-blue)](https://www.home-assistant.io)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-![Dashboard Demo](readme-img/dashboard.gif)
+From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom over Home Assistant, all the way to a complete Voice Assistant setup with wake word detection, echo cancellation and an LVGL touchscreen UI. Each tier is a standalone configuration, and ready-to-flash YAML files are provided for the ESP32-S3 and ESP32-P4 hardware that has actually been tested.
+
+Under the hood: full-duplex I2S on a single bus, ESP-SR echo cancellation, optional dual-mic BSS voice isolation, FIR decimation, audio mixing with ducking, native Home Assistant integration and a Lovelace card.
+
+![Dashboard Preview](docs/images/dashboard.png)
+
+![Dashboard Demo](docs/images/dashboard.gif)
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/idle.jpg" width="180"/><br/><b>Idle</b></td>
-    <td align="center"><img src="readme-img/calling.jpg" width="180"/><br/><b>Calling</b></td>
-    <td align="center"><img src="readme-img/ringing.jpg" width="180"/><br/><b>Ringing</b></td>
-    <td align="center"><img src="readme-img/in_call.jpg" width="180"/><br/><b>In Call</b></td>
+    <td align="center"><img src="docs/images/idle.jpg" width="180"/><br/><b>Idle</b></td>
+    <td align="center"><img src="docs/images/calling.jpg" width="180"/><br/><b>Calling</b></td>
+    <td align="center"><img src="docs/images/ringing.jpg" width="180"/><br/><b>Ringing</b></td>
+    <td align="center"><img src="docs/images/in_call.jpg" width="180"/><br/><b>In Call</b></td>
   </tr>
 </table>
 
@@ -26,21 +34,55 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 - [Operating Modes](#operating-modes)
   - [Simple Mode](#simple-mode-browser--esp)
   - [Full Mode](#full-mode-esp--esp)
-- [Configuration Reference](#configuration-reference)
-- [Entities and Controls](#entities-and-controls)
-- [HA Services](#ha-services)
+- [Reference](#reference): intercom_api, esp_aec, esp_afe, entities, HA services, automations ([docs/reference.md](docs/reference.md))
 - [Call Flow Diagrams](#call-flow-diagrams)
 - [Hardware Support](#hardware-support)
-- [i2s_audio_duplex](#i2s_audio_duplex)
+- [Audio components](#audio-components): i2s_audio_duplex, esp_aec, esp_afe
 - [Voice Assistant + Intercom Experience](#voice-assistant--intercom-experience)
-- [Troubleshooting](#troubleshooting)
+- [What's New](#whats-new)
+- [Troubleshooting](#troubleshooting) ([docs/troubleshooting.md](docs/troubleshooting.md))
+- [Deep dives and architecture](docs/)
 - [License](#license)
+
+---
+
+## What's New
+
+This release brings the reworked audio core onto `main` and keeps the
+public YAML presets aligned with it.
+
+- **ESP-SR AFE pipeline as an ESPHome component (`esp_afe`)** — wraps
+  Espressif's full speech front-end (AEC, BSS spatial source separation
+  on dual-mic boards, noise suppression, VAD, AGC) so a single ESP can
+  run wake word, voice assistant, and full-duplex intercom on the same
+  microphone and speaker. ESPHome alone does not provide a full-duplex
+  audio path; with `i2s_audio_duplex` plus `esp_afe` (or the lighter
+  `esp_aec`), the same I2S codec carries both directions of a call
+  while a wake word model and the voice assistant share the mic stream.
+  See [Audio components → `esp_afe`](#audio-components) for what each
+  stage does and how to pick between AFE and AEC.
+- **TX-side AEC reference decimation** in `i2s_audio_duplex` for mono
+  MEMS/I2S builds, reducing residual echo and avoiding RX-side
+  ghost-tail artifacts.
+- **Granular PSRAM placement knobs** across `i2s_audio_duplex`,
+  `esp_afe`, and `intercom_api`, with component-level trade-off
+  guidance for internal RAM versus Core 0 load.
+- **`intercom_api` socket TX scatter/gather** via `sendmsg()`, removing
+  one assembly copy from the audio transmit path.
+- **Consistent `-O2` audio builds** through `compiler_optimization: PERF`
+  on the published presets.
+- **Public YAMLs published in remote mode** and pointing at `main`, so
+  end users can compile directly from GitHub without rewriting package,
+  asset, or component paths.
+- **Release-focused cleanup** across docs, YAML comments, and preset
+  defaults to keep the repository aligned with the shipped behavior.
 
 ---
 
 ## Overview
 
-**Intercom API** is a scalable full-duplex ESPHome intercom framework that grows with your needs:
+**ESPHome Intercom** is a scalable ESPHome audio stack for full-duplex
+intercom, wake word, voice assistant, and display-driven devices:
 
 | Use Case | Configuration | Description |
 |----------|---------------|-------------|
@@ -53,10 +95,10 @@ From a simple ESPHome full-duplex doorbell to a PBX-like multi-device intercom, 
 
 ```mermaid
 graph TD
-    HA[🏠 Home Assistant<br/>PBX hub]
-    ESP1[📻 ESP #1<br/>Kitchen]
-    ESP2[📻 ESP #2<br/>Bedroom]
-    Browser[🌐 Browser<br/>Phone]
+    HA[🏠 Home Assistant\nPBX hub]
+    ESP1[📻 ESP #1\nKitchen]
+    ESP2[📻 ESP #2\nBedroom]
+    Browser[🌐 Browser\nPhone]
 
     HA <--> ESP1
     HA <--> ESP2
@@ -71,6 +113,11 @@ graph TD
   - **Full**: ESP ↔ Home Assistant ↔ ESP (intercom between devices)
 - **Echo Cancellation (AEC)** - Built-in acoustic echo cancellation using ESP-SR
   *(ES8311 digital feedback mode provides perfect sample-accurate echo cancellation)*
+- **Full Audio Front-End (AFE)** - Complete ESP-SR AFE pipeline via `esp_afe`:
+  - **Single-mic (MR)**: AEC + Noise Suppression + VAD + AGC
+  - **Dual-mic (MMR)**: AEC + spatial source separation (BSS) for voice isolation
+  - Runtime switches and diagnostic sensors in Home Assistant
+  - Automatic pipeline switching: SE(BSS) replaces NS/AGC when spatial separation is active
 - **Voice Assistant compatible** - Coexists with ESPHome Voice Assistant and Micro Wake Word
 - **Ready-to-flash YAML configs** - Optimized configurations for real, tested hardware that combine Voice Assistant, Micro Wake Word, and Intercom running simultaneously, creating the most complete hub possible for a full Voice Assistant experience
 - **Auto Answer** - Configurable automatic call acceptance (ESP-side switch + browser card checkbox)
@@ -93,22 +140,22 @@ graph TD
 graph TB
     subgraph HA[🏠 HOME ASSISTANT]
         subgraph Integration[intercom_native integration]
-            WS[WebSocket API<br/>/start /stop /audio]
-            TCP[TCP Client<br/>Port 6054<br/>Async queue]
-            Bridge[Auto-Bridge<br/>Full Mode<br/>ESP↔ESP relay]
+            WS[WebSocket API\n/start /stop /audio]
+            TCP[TCP Client\nPort 6054\nAsync queue]
+            Bridge[Auto-Bridge\nFull Mode\nESP↔ESP relay]
         end
     end
 
     subgraph Browser[🌐 Browser]
-        Card[Lovelace Card<br/>AudioWorklet<br/>getUserMedia]
+        Card[Lovelace Card\nAudioWorklet\ngetUserMedia]
     end
 
     subgraph ESP[📻 ESP32]
-        API[intercom_api<br/>FreeRTOS Tasks<br/>I2S mic/spk]
+        API[intercom_api\nFreeRTOS Tasks\nI2S mic/spk]
     end
 
-    Card <-->|WebSocket<br/>JSON+Base64| WS
-    API <-->|TCP :6054<br/>Binary PCM| TCP
+    Card <-->|WebSocket\nJSON+Base64| WS
+    API <-->|TCP :6054\nBinary PCM| TCP
 ```
 
 ### Intercom Audio Format (TCP Protocol)
@@ -180,10 +227,20 @@ The integration will:
 Add the external component to your ESPHome device configuration:
 
 ```yaml
+# Lightweight (single-mic, echo cancellation only):
 external_components:
   - source: github://n-IA-hane/esphome-intercom
-    components: [intercom_api, esp_aec]
+    ref: main
+    components: [audio_processor, intercom_api, esp_aec]
+
+# Full AFE pipeline (AEC + NS + VAD + AGC, optional dual-mic BSS):
+external_components:
+  - source: github://n-IA-hane/esphome-intercom
+    ref: main
+    components: [audio_processor, intercom_api, esp_afe, i2s_audio_duplex]
 ```
+
+> **Note**: `audio_processor` must be listed because it provides the shared `AudioProcessor` interface used by both `esp_aec` and `esp_afe`. Use `esp_aec` for lightweight single-mic setups, `esp_afe` for the full pipeline (see [AFE section](#audio-front-end-afe) below).
 
 #### Minimal Configuration (Simple Mode)
 
@@ -237,7 +294,7 @@ intercom_api:
   mode: simple
   microphone: mic_component
   speaker: spk_component
-  aec_id: aec_processor
+  processor_id: aec_processor
 ```
 
 #### Full Configuration (Full Mode with ESP↔ESP)
@@ -248,7 +305,7 @@ intercom_api:
   mode: full                  # Enable ESP↔ESP calls
   microphone: mic_component
   speaker: spk_component
-  aec_id: aec_processor
+  processor_id: aec_processor
   ringing_timeout: 30s        # Auto-decline unanswered calls
 
   # FSM event callbacks
@@ -329,44 +386,9 @@ button:
           id: intercom
 ```
 
-#### Direct GPIO Calls (Apartment Intercom)
+#### Apartment intercom panel
 
-Each GPIO button can call a different room, like a condominium intercom panel:
-
-```yaml
-binary_sensor:
-  # Button 1: Call Kitchen
-  - platform: gpio
-    pin:
-      number: GPIO4
-      mode: INPUT_PULLUP
-      inverted: true
-    on_press:
-      - intercom_api.set_contact:
-          id: intercom
-          contact: "Kitchen Intercom"
-      - intercom_api.start:
-          id: intercom
-
-  # Button 2: Call Living Room
-  - platform: gpio
-    pin:
-      number: GPIO5
-      mode: INPUT_PULLUP
-      inverted: true
-    on_press:
-      - intercom_api.set_contact:
-          id: intercom
-          contact: "Living Room Intercom"
-      - intercom_api.start:
-          id: intercom
-```
-
-> ⚠️ **Name matching is exact (case-sensitive).** The `contact` value must match the device name exactly as it appears in the contacts list. There is no fuzzy matching or validation; a typo will silently fail and fire `on_call_failed`.
->
-> Contact names come from the `name:` substitution in each device's YAML. Home Assistant converts the ESPHome name to a display name: `name: kitchen-intercom` → HA device name `Kitchen Intercom` (hyphens become spaces, words capitalized).
->
-> **How to verify the correct name:** check the `sensor.{name}_destination` entity in HA, cycle through contacts, and note the exact string shown for each device.
+For multi-room setups, each GPIO button can call a specific room directly. The full recipe (one button per contact, exact name matching rules, `on_call_failed` handling) lives in the [`intercom_api` README](esphome/components/intercom_api/README.md#example-multi-button-intercom-apartment-doorbell).
 
 ### 3. Lovelace Card
 
@@ -376,11 +398,11 @@ The Lovelace card is **automatically registered** when the integration loads, no
 
 The card is available in the Lovelace card picker - just search for "Intercom":
 
-![Card Selection](readme-img/card-selection.png)
+![Card Selection](docs/images/card-selection.png)
 
 Then configure it with the visual editor:
 
-![Card Configuration](readme-img/card-configuration.png)
+![Card Configuration](docs/images/card-configuration.png)
 
 Alternatively, you can add it manually via YAML:
 
@@ -399,7 +421,7 @@ The Lovelace card provides **full-duplex bidirectional audio** with the ESP devi
 
 > **Note**: Devices must be added to Home Assistant via the ESPHome integration before they appear in the card.
 
-![ESPHome Add Device](readme-img/esphome-add-device.png)
+![ESPHome Add Device](docs/images/esphome-add-device.png)
 
 ---
 
@@ -409,7 +431,7 @@ The Lovelace card provides **full-duplex bidirectional audio** with the ESP devi
 
 In Simple mode, the browser communicates directly with a single ESP device through Home Assistant. If the ESP has **Auto Answer** enabled, streaming starts automatically when you call.
 
-![Browser calling ESP](readme-img/call-from-home-assistant-to-esp.gif)
+![Browser calling ESP](docs/images/call-from-home-assistant-to-esp.gif)
 
 ```mermaid
 graph LR
@@ -443,12 +465,12 @@ graph LR
 
 Full mode includes everything from Simple mode (Browser ↔ ESP calls) **plus** enables a PBX-like system where ESP devices can also call each other through Home Assistant, which acts as an audio relay.
 
-![ESP to ESP call](readme-img/call-between-esp.png)
+![ESP to ESP call](docs/images/call-between-esp.png)
 
 ```mermaid
 graph TB
-    ESP1[📻 ESP #1<br/>Kitchen] <-->|TCP 6054| HA[🏠 HA<br/>PBX hub]
-    ESP2[📻 ESP #2<br/>Bedroom] <-->|TCP 6054| HA
+    ESP1[📻 ESP #1\nKitchen] <-->|TCP 6054| HA[🏠 HA\nPBX hub]
+    ESP2[📻 ESP #2\nBedroom] <-->|TCP 6054| HA
     Browser[🌐 Browser/App] <-->|WebSocket| HA
 ```
 
@@ -473,283 +495,23 @@ graph TB
 
 When an ESP device has "Home Assistant" selected as destination and initiates a call (via GPIO button press or template button), it fires an `esphome.intercom_call` event for notifications and the Lovelace card goes into ringing state with Answer/Decline buttons:
 
-![ESP calling Home Assistant, Card ringing](readme-img/call-from-esp-to-homeassistant.png)
+![ESP calling Home Assistant, Card ringing](docs/images/call-from-esp-to-homeassistant.png)
 
 ---
 
-## Configuration Reference
 
-### intercom_api Component
+## Reference
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `id` | ID | Required | Component ID |
-| `mode` | string | `simple` | `simple` (browser only) or `full` (ESP↔ESP) |
-| `microphone` | ID | Required | Reference to microphone component |
-| `speaker` | ID | Required | Reference to speaker component |
-| `aec_id` | ID | - | Reference to esp_aec component |
-| `dc_offset_removal` | bool | false | Remove DC offset (for mics like SPH0645) |
-| `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
+Full options, actions, conditions, entities, services and automation examples are documented in **[docs/reference.md](docs/reference.md)**.
 
-### Event Callbacks
+Quick links:
+- [`intercom_api` component options](docs/reference.md#intercom_api-component)
+- [Event callbacks](docs/reference.md#event-callbacks)
+- [Actions](docs/reference.md#actions) and [conditions](docs/reference.md#conditions)
+- [`esp_aec`](docs/reference.md#esp_aec-component) / [`esp_afe`](docs/reference.md#esp_afe-component) components
+- [Home Assistant services](docs/reference.md#home-assistant-services)
+- [Automation examples](docs/reference.md#automation-examples) (doorbell routing, night mode, forward, bridge)
 
-| Callback | Trigger | Use Case |
-|----------|---------|----------|
-| `on_ringing` | Incoming call (auto_answer OFF) | Turn on ringing LED/sound, show display page |
-| `on_outgoing_call` | User initiated call | Show "Calling..." status |
-| `on_answered` | Call was answered (local or remote) | Log event |
-| `on_streaming` | Audio streaming active | Solid LED, enable amp |
-| `on_idle` | State returns to idle | Turn off LED, disable amp |
-| `on_hangup` | Call ended normally | Log with reason string |
-| `on_call_failed` | Call failed (unreachable, busy, etc.) | Show error with reason string |
-
-### Actions
-
-| Action | Description |
-|--------|-------------|
-| `intercom_api.start` | Start outgoing call |
-| `intercom_api.stop` | Hangup current call |
-| `intercom_api.answer_call` | Answer incoming call |
-| `intercom_api.decline_call` | Decline incoming call |
-| `intercom_api.call_toggle` | Smart: idle→call, ringing→answer, streaming→hangup |
-| `intercom_api.next_contact` | Select next contact (Full mode) |
-| `intercom_api.prev_contact` | Select previous contact (Full mode) |
-| `intercom_api.set_contacts` | Update contact list from CSV |
-| `intercom_api.set_contact` | Select a specific contact by name |
-| `intercom_api.set_volume` | Set speaker volume (float, 0.0–1.0) |
-| `intercom_api.set_mic_gain_db` | Set microphone gain (float, -20.0 to +20.0 dB) |
-
-### Conditions
-
-| Condition | Returns true when |
-|-----------|-------------------|
-| `intercom_api.is_idle` | State is Idle |
-| `intercom_api.is_ringing` | State is Ringing (incoming) |
-| `intercom_api.is_calling` | State is Outgoing (waiting answer) |
-| `intercom_api.is_in_call` | State is Streaming (active call) |
-| `intercom_api.is_streaming` | Audio is actively streaming |
-| `intercom_api.is_answering` | Call is being answered |
-| `intercom_api.is_incoming` | Has incoming call |
-
-### esp_aec Component
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `id` | ID | Required | Component ID |
-| `sample_rate` | int | 16000 | Must match audio sample rate |
-| `filter_length` | int | 4 | Echo tail in frames (4 = 64ms) |
-| `mode` | string | `voip_low_cost` | AEC algorithm mode |
-
-**AEC modes** (ESP-SR library - two completely different engines):
-
-| Mode | Engine | CPU (Core 0) | RES | MWW on post-AEC | Recommended |
-|------|--------|-------------|-----|-----------------|-------------|
-| `sr_low_cost` | `esp_aec3` (linear) | **~22%** | No | **10/10** | **Yes - for VA + MWW** |
-| `sr_high_perf` | `esp_aec3` (FFT) | ~25% | No | 10/10 | No (DMA memory issues on S3) |
-| `voip_low_cost` | `dios_ssp_aec` (Speex) | ~58% | Yes | 2/10 | Only if MWW not needed |
-| `voip_high_perf` | `dios_ssp_aec` | ~64% | Yes | 2/10 | No |
-
-> **Important**: SR modes use a **linear-only** adaptive filter that preserves spectral features for neural wake word detection. VOIP modes add a **residual echo suppressor** (RES) that distorts features, reducing MWW detection from 10/10 to 2/10. Use `sr_low_cost` for VA + MWW setups. SR mode requires `buffers_in_psram: true` on ESP32-S3 (512-sample frames need more memory). See [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md#aec-cpu-impact) for details.
-
----
-
-## Entities and Controls
-
-### Auto-created Entities (always)
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| `sensor.{name}_intercom_state` | Text Sensor | Current state: Idle, Ringing, Streaming, etc. |
-
-### Auto-created Entities (Full mode only)
-
-| Entity | Type | Description |
-|--------|------|-------------|
-| `sensor.{name}_destination` | Text Sensor | Currently selected contact |
-| `sensor.{name}_caller` | Text Sensor | Who is calling (during incoming call) |
-| `sensor.{name}_contacts` | Text Sensor | Contact count |
-
-### Platform Entities (declared in YAML)
-
-| Platform | Entities |
-|----------|----------|
-| `switch` | `auto_answer`, `aec` |
-| `number` | `speaker_volume` (0-100%), `mic_gain` (-20 to +20 dB) |
-| `button` | Call, Next Contact, Prev Contact, Decline (template) |
-
----
-
-## HA Services
-
-The integration exposes native Home Assistant services for intercom control. All services use **target device selectors**, so you pick devices from a dropdown in the automation editor (no need to know device IDs).
-
-> **Note:** The device picker shows all ESPHome devices. Select your intercom device under **Devices** tab (not Entities). Only devices with `intercom_api` configured will work. If you select a non-intercom device, the service logs an error and does nothing.
-
-### Available Services
-
-| Service | Target | Fields | Description |
-|---------|--------|--------|-------------|
-| `intercom_native.answer` | Device | - | Answer an incoming call |
-| `intercom_native.decline` | Device | - | Decline an incoming call |
-| `intercom_native.hangup` | Device | - | End an active call |
-| `intercom_native.call` | Device (dest) | `source` (optional device) | Start a call. With `source`: ESP-to-ESP bridge. Without: HA-to-ESP P2P |
-| `intercom_native.forward` | Device (source/caller) | `forward_to` (device) | Forward an active or ringing call to another device |
-
-### ESP-to-ESP vs Browser-to-ESP
-
-| Capability | ESP-to-ESP (Bridge) | Browser-to-ESP (P2P) |
-|---|---|---|
-| `call` | Fully automatable | Opens TCP but no browser mic |
-| `answer` | Fully automatable | Works if mic permission is persistent |
-| `decline` / `hangup` | Fully automatable | Fully automatable |
-| `forward` | Fully automatable | Fully automatable |
-
-For browser P2P calls, the intercom card must be open and the browser must have granted persistent microphone permission (Chrome "Allow", not "Allow this time").
-
-### Auto Answer (Card)
-
-The intercom card has an **Auto Answer** checkbox (visible in idle state only):
-
-1. Enable the checkbox (this requests mic permission via user gesture)
-2. When an incoming call arrives and the checkbox is on, the card auto-answers if the browser has persistent mic permission
-3. If permission is not persistent, the card falls back to showing Answer/Decline buttons
-
-The preference is saved per device in localStorage.
-
-### Automation Examples
-
-#### Doorbell routing based on presence
-
-When the doorbell rings, forward to the indoor panel if someone is home, or send a push notification if everyone is away.
-
-```yaml
-alias: Doorbell call routing
-triggers:
-  - trigger: event
-    event_type: esphome.intercom_call
-actions:
-  - choose:
-      - conditions:
-          - condition: state
-            entity_id: person.daniele
-            state: "home"
-        sequence:
-          - action: intercom_native.forward
-            target:
-              device_id: "{{ trigger.event.data.device_id }}"
-            data:
-              forward_to: "<indoor_panel_device_id>"
-      - conditions:
-          - condition: state
-            entity_id: person.daniele
-            state: "not_home"
-        sequence:
-          - action: notify.mobile_app_phone
-            data:
-              title: "Doorbell"
-              message: "{{ trigger.event.data.caller }} is calling"
-              data:
-                clickAction: /lovelace/intercom
-                importance: high
-                channel: doorbell
-                actions:
-                  - action: URI
-                    title: "Open Intercom"
-                    uri: /lovelace/intercom
-mode: single
-```
-
-#### Bridge two ESP devices from an automation
-
-Start a call between the kitchen and bedroom intercoms via an HA automation (e.g. triggered by a button or schedule).
-
-```yaml
-alias: Call kitchen from bedroom
-triggers:
-  - trigger: state
-    entity_id: input_button.call_kitchen
-actions:
-  - action: intercom_native.call
-    target:
-      device_id: "<kitchen_device_id>"
-    data:
-      source: "<bedroom_device_id>"
-mode: single
-```
-
-#### Doorbell with actionable notification and decline
-
-Send a push notification with Answer and Decline actions. If the user taps Decline, the call is ended.
-
-```yaml
-alias: Doorbell notification with actions
-triggers:
-  - trigger: event
-    event_type: esphome.intercom_call
-actions:
-  - action: notify.mobile_app_phone
-    data:
-      title: "Doorbell"
-      message: "{{ trigger.event.data.caller }} is calling"
-      data:
-        tag: intercom
-        channel: doorbell
-        importance: high
-        clickAction: /lovelace/intercom
-        actions:
-          - action: URI
-            title: "Open Intercom"
-            uri: /lovelace/intercom
-          - action: DECLINE_INTERCOM
-            title: "Decline"
-  - wait_for_trigger:
-      - trigger: event
-        event_type: mobile_app_notification_action
-        event_data:
-          action: DECLINE_INTERCOM
-    timeout: "00:00:30"
-  - condition: template
-    value_template: "{{ wait.trigger is not none }}"
-  - action: intercom_native.decline
-    target:
-      device_id: "{{ trigger.event.data.device_id }}"
-  - action: notify.mobile_app_phone
-    data:
-      message: clear_notification
-      data:
-        tag: intercom
-mode: single
-```
-
-#### Night mode: auto-decline all calls
-
-During night hours, automatically decline all incoming calls.
-
-```yaml
-alias: Night mode auto-decline
-triggers:
-  - trigger: event
-    event_type: esphome.intercom_call
-conditions:
-  - condition: time
-    after: "23:00:00"
-    before: "07:00:00"
-actions:
-  - action: intercom_native.decline
-    target:
-      device_id: "{{ trigger.event.data.device_id }}"
-mode: single
-```
-
-### Events
-
-| Event | Payload | When |
-|-------|---------|------|
-| `esphome.intercom_call` | `caller`, `device_id` | ESP calls Home Assistant |
-| `intercom_bridge_state` | `bridge_id`, `source_device_id`, `dest_device_id`, `state` | Bridge state changes |
-| `intercom_forward_state` | `bridge_id`, `source_name`, `new_dest_name`, `state` | Call forwarded (forwarding/ringing/connected/failed) |
-
----
 
 ## Call Flow Diagrams
 
@@ -764,7 +526,7 @@ sequenceDiagram
     B->>HA: WS: start {host: "esp.local"}
     HA->>E: TCP Connect :6054
     HA->>E: START {caller:"HA"}
-    Note right of E: State: Ringing<br/>(or auto-answer)
+    Note right of E: State: Ringing\n(or auto-answer)
     E-->>HA: PONG (answered)
     Note right of E: State: Streaming
 
@@ -788,7 +550,7 @@ sequenceDiagram
     participant HA as 🏠 Home Assistant
     participant E2 as 📻 ESP #2 (Callee)
 
-    Note left of E1: State: Outgoing<br/>(user pressed Call)
+    Note left of E1: State: Outgoing\n(user pressed Call)
     E1->>HA: ESPHome API state change
     HA->>E2: TCP Connect :6054
     HA->>E2: START {caller:"ESP1"}
@@ -821,17 +583,18 @@ sequenceDiagram
 
 ### Tested Configurations
 
-| Device | YAML | Microphone | Speaker | I2S Mode | AEC | Features |
-|--------|------|------------|---------|----------|-----|----------|
-| **Generic S3 (dual bus)** | `generic-s3-dual-intercom.yaml` | Any I2S MEMS | Any I2S amp | Dual bus | Ring buffer (intercom_api) | Intercom only |
-| **Generic S3 (single bus)** | `generic-s3-duplex-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom only |
-| **Generic S3 (single bus, VA)** | `generic-s3-duplex-va-intercom.yaml` | Any I2S MEMS | Any I2S amp | Single bus (duplex) | Direct TX reference | Intercom + Media Player + mixer |
-| **Xiaozhi Ball V3** | `xiaozhi-ball-v3-va-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | VA + MWW + Intercom + LVGL |
-| **Xiaozhi Ball V3 (intercom)** | `xiaozhi-ball-v3-intercom.yaml` | ES8311 | ES8311 | Single bus | SR (stereo loopback) | Intercom only |
-| **Waveshare S3-Audio** | `waveshare-s3-audio-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LED |
-| **Waveshare P4-Touch** | `waveshare-p4-touch-va-intercom.yaml` | ES7210 4-ch | ES8311 | Single bus TDM | SR (MIC3 30dB) | VA + MWW + Intercom + LVGL touch |
-| **ESP32-S3 Mini** | `esp32-s3-mini-va-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | VA + MWW + Intercom |
-| **ESP32-S3 Mini (intercom)** | `esp32-s3-mini-intercom.yaml` | SPH0645 | MAX98357A | Dual bus | Ring buffer (intercom_api) | Intercom only |
+| Device | YAML | Microphone | Speaker | I2S Mode | Audio pipeline | Features |
+|--------|------|------------|---------|----------|----------------|----------|
+| **Xiaozhi Ball V3 (AEC)** | [`xiaozhi-ball-v3-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | VA + MWW + Intercom + LVGL |
+| **Xiaozhi Ball V3 (AFE)** | [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | ES8311 | ES8311 | Single bus | `esp_afe` (AEC + NS + AGC + VAD) | VA + MWW + Intercom + LVGL |
+| **Xiaozhi Ball V3 (intercom)** | [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | ES8311 | ES8311 | Single bus | `esp_aec` (SR stereo loopback) | Intercom only |
+| **Waveshare S3-Audio (AFE)** | [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS voice isolation + NS + AGC) | VA + MWW + Intercom + LED + AFE switches/sensors |
+| **Waveshare P4-Touch (AFE)** | [`waveshare-p4-touch-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-touch-full-afe.yaml) | ES7210 4-ch | ES8311 | Single bus TDM | `esp_afe` (AEC + BSS voice isolation + NS + AGC) | VA + MWW + Intercom + LVGL touch |
+| **ESP32-S3 Mini** | [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | VA + MWW + Intercom |
+| **ESP32-S3 Mini (intercom)** | [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | SPH0645 | MAX98357A | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
+| **Generic S3 (full AEC)** | [`generic-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/generic-s3-full-aec.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (TX-side decimated ref, see [What's New](#whats-new)) | VA + MWW + Intercom |
+| **Generic S3 (intercom)** | [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Any I2S MEMS | Any I2S amp | Single bus (duplex) | `esp_aec` (TX-side decimated ref) | Intercom only |
+| **Generic S3 (dual bus)** | [`generic-s3-dual-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml) | Any I2S MEMS | Any I2S amp | Dual bus | Ring-buffer reference (intercom_api) | Intercom only |
 
 > **Want to help expand this list?** Send me a device to test or consider a [donation](https://github.com/sponsors/n-IA-hane), every bit helps!
 
@@ -845,70 +608,37 @@ sequenceDiagram
 
 ---
 
-## i2s_audio_duplex
+## Audio components
 
-Standard ESPHome `i2s_audio` **cannot drive mic and speaker on the same I2S bus simultaneously**. This is a problem for most audio codecs (ES8311, ES8388, WM8960) and single-bus setups with discrete MEMS mics and I2S amps. **[i2s_audio_duplex](esphome/components/i2s_audio_duplex/)** solves this.
+Three ESPHome components sit between your codec and the intercom / voice assistant pipelines. Each has its own README with the full option list and tuning notes; the highlights below exist just to help you pick.
 
-### Why it matters
+### [`i2s_audio_duplex`](esphome/components/i2s_audio_duplex/README.md)
 
-Without full-duplex I2S, you can't have Voice Assistant, Micro Wake Word, intercom, and media playback all running at the same time. With `i2s_audio_duplex`:
+Full-duplex I2S driver that lets mic and speaker share one I2S bus (ES8311, ES8388, WM8960, or MEMS + I2S amp). Runs the codec bus at 48 kHz and decimates the mic to 16 kHz via a 31-tap Kaiser FIR. Three zero-config AEC reference modes (direct TX, ES8311 stereo loopback, ES7210 TDM), dual mic outputs (pre-AEC for MWW, post-AEC for VA/STT), runtime AEC mode switching from Home Assistant, and optional PSRAM buffer placement.
 
-- **Intercom, VA, and MWW receive completely clean audio** - echo cancellation removes speaker output from the mic signal. You can listen to music, receive an intercom call, and talk to the voice assistant without any of them hearing each other's audio
-- **Wake word detection works during music/TTS playback** - barge-in support: say the wake word while music is playing, the system ducks the audio and starts listening
-- **Media plays at full quality** - the I2S bus runs at 48kHz (codec native rate). Only the mic output is decimated to 16kHz via FIR filter for AEC/VA/intercom
+### [`esp_aec`](esphome/components/esp_aec/README.md)
 
-### Key features
+Standalone ESP-SR echo cancellation (~80 KB internal RAM). Four modes (`sr_low_cost` recommended for VA+MWW, `voip_*` for pure VoIP). See the mode table in [docs/reference.md](docs/reference.md#esp_aec-component) before changing defaults.
 
-- **True full-duplex** on a single I2S bus (or discrete MEMS mic + I2S amp on same bus with `slot_bit_width: 32`)
-- **Three AEC reference modes**, all zero-configuration:
-  - **Direct TX reference** (default) - uses previous TX frame, no delay tuning needed. Works with any hardware
-  - **ES8311 stereo digital feedback** - sample-accurate DAC loopback via I2S stereo frame
-  - **ES7210 TDM hardware reference** - DAC output captured by dedicated ADC channel
-- **48kHz FIR decimation** - bus runs at 48kHz, mic output decimated to 16kHz (31-tap Kaiser FIR, ~60dB stopband)
-- **Dual mic outputs** - post-AEC mic for VA/STT/intercom, raw (pre-AEC) mic available for any consumer that needs unprocessed audio
-- **Pre-AEC and post-AEC gain** - `mic_gain_pre_aec` for weak MEMS mics (SPH0645), `mic_gain` for post-AEC amplification. Both as HA number entities, persistent across reboots
-- **Runtime AEC mode switching** - change between sr_low_cost, sr_high_perf, voip_low_cost, voip_high_perf from HA without reflashing
-- **DC offset correction** - `correct_dc_offset: true` for MEMS mics without built-in HPF (MSM261, SPH0645)
-- **PSRAM buffer support** - `buffers_in_psram` frees ~28KB internal heap (required for SR AEC on memory-constrained devices)
-- **Audio mixer with ducking** - combine media, TTS, and intercom through a mixer. Music auto-ducks during calls and VA interactions
+### [`esp_afe`](esphome/components/esp_afe/README.md)
 
-### Quick start
+Full ESP-SR audio front-end. Chains AEC, optional spatial source separation, noise suppression, voice activity detection and automatic gain control behind `i2s_audio_duplex`. Runs on Core 0 (~22-23% load on S3 in `low_cost` mode) and the pipeline shape adapts at runtime to `mic_num` and the per-stage switches exposed in Home Assistant.
 
-```yaml
-external_components:
-  - source: github://n-IA-hane/esphome-intercom
-    components: [i2s_audio_duplex, esp_aec]
+**What each stage does**
 
-esp_aec:
-  id: aec_processor
-  sample_rate: 16000
-  mode: sr_low_cost
+- **AEC** (Acoustic Echo Cancellation) — removes the speaker signal from the mic input. Same engine as `esp_aec`. Required by everything downstream and by wake word detection during a call.
+- **BSS / SE** (Blind Source Separation, dual-mic only) — uses the spatial difference between two microphones to isolate the speaker's voice and suppress directional noise (TV, kitchen fan, neighbour talking). Active when `se_enabled: true` and `mic_num: 2`. While SE is on, esp-sr replaces NS and AGC in the pipeline; their toggles become noops until SE is turned off.
+- **NS** (Noise Suppression, single-mic mode) — WebRTC-style spectral noise reduction for stationary background (HVAC hum, fan whir). Less surgical than BSS but the only option on single-mic boards where spatial separation is impossible.
+- **VAD** (Voice Activity Detection) — meant to mark frames as speech vs noise so downstream consumers can act on it. **Currently under investigation: the WebRTC VAD wired in our pipeline does not produce stable results on real input. The `voice_present` sensor and `vad_enabled` switch are exposed as opt-in but should not be relied on yet.** Will be revisited in a future release.
+- **AGC** (Automatic Gain Control, single-mic mode) — WebRTC-style level normalization that pulls quiet speech up and limits loud peaks. Useful on boards where mic distance varies (room scale).
 
-i2s_audio_duplex:
-  id: i2s_duplex
-  i2s_lrclk_pin: GPIO37
-  i2s_bclk_pin: GPIO36
-  i2s_din_pin: GPIO35          # mic data
-  i2s_dout_pin: GPIO7          # speaker data
-  sample_rate: 48000
-  output_sample_rate: 16000    # FIR decimation to 16kHz
-  slot_bit_width: 32           # required for MEMS mics without codec
-  correct_dc_offset: true
-  aec_id: aec_processor
+**Configuration shape**
 
-microphone:
-  - platform: i2s_audio_duplex
-    id: mic_aec
-    i2s_audio_duplex_id: i2s_duplex
+YAML keys cover type (`sr` for speech recognition or `vc` for voice communication), mode (`low_cost` or `high_perf`), per-stage enable switches, AEC filter length, AGC compression and target, plus diagnostic sensors (input volume dB, output RMS dB, voice presence) and runtime switches in Home Assistant for each stage. See the [AFE README](esphome/components/esp_afe/README.md) for the full option matrix and exact memory/CPU numbers per mode.
 
-speaker:
-  - platform: i2s_audio_duplex
-    id: hw_speaker
-    i2s_audio_duplex_id: i2s_duplex
-    sample_rate: 48000
-```
+**When to use it**
 
-For codec-specific configurations (ES8311 stereo feedback, ES7210 TDM, register setup), see the [i2s_audio_duplex README](esphome/components/i2s_audio_duplex/README.md).
+Pick `esp_afe` if you actually need NS, AGC or BSS voice isolation, or if you want runtime control of those stages from Home Assistant. For plain intercom-only setups `esp_aec` is lighter and lacks the AFE switches you would not use anyway. `esp_afe` requires `i2s_audio_duplex` in front of it; it cannot replace `esp_aec` in standalone `intercom_api` configurations (no duplex driver = no steady frame producer for the AFE feed/fetch tasks).
 
 ---
 
@@ -916,9 +646,9 @@ For codec-specific configurations (ES8311 stereo feedback, ES7210 TDM, register 
 
 <table>
   <tr>
-    <td align="center"><img src="readme-img/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4: Weather + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4: Intercom + Voice Assistant</b></td>
-    <td align="center"><img src="readme-img/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball: VA + Intercom</b></td>
+    <td align="center"><img src="docs/images/p4-va-weather.jpg" width="280"/><br/><b>ESP32-P4: Weather + Voice Assistant</b></td>
+    <td align="center"><img src="docs/images/p4-va-intercom.jpg" width="280"/><br/><b>ESP32-P4: Intercom + Voice Assistant</b></td>
+    <td align="center"><img src="docs/images/intercom_va.gif" width="180"/><br/><b>Xiaozhi Ball: VA + Intercom</b></td>
   </tr>
 </table>
 
@@ -963,15 +693,25 @@ AEC uses Espressif's closed-source ESP-SR library. All modes have similar CPU co
 
 **Recommended: `sr_low_cost`** for VA + MWW setups (i2s_audio_duplex devices). Linear-only AEC preserves spectral features for neural wake word detection (10/10 vs 2/10 with VOIP modes). Also uses ~60% less CPU. Requires `buffers_in_psram: true` on ESP32-S3. For dual-bus devices without i2s_audio_duplex, use `voip_high_perf` (AEC runs inside intercom_api).
 
+For devices that benefit from noise suppression and auto gain control (noisy environments, variable mic distance), use `esp_afe` instead of `esp_aec`. The AFE wraps the same AEC engine plus WebRTC NS and AGC, with runtime switches in Home Assistant.
+
 ```yaml
+# Option A: esp_aec (AEC only, lighter)
 esp_aec:
   sample_rate: 16000
   filter_length: 4       # 64ms tail, sufficient for integrated codecs
   mode: sr_low_cost      # Linear AEC, best for MWW + VA, lowest CPU
 
+# Option B: esp_afe (AEC + NS + VAD + AGC, full pipeline)
+# esp_afe:
+#   type: sr
+#   mode: low_cost
+#   ns_enabled: true
+#   agc_enabled: true
+
 i2s_audio_duplex:
   # ... pins ...
-  aec_id: aec_component
+  processor_id: aec_component   # works with either esp_aec or esp_afe
   buffers_in_psram: true  # Required for sr_low_cost (512-sample frames)
 ```
 
@@ -1002,7 +742,7 @@ micro_wake_word:
 
 ### LVGL Display
 
-Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-va-intercom.yaml` and `waveshare-p4-touch-va-intercom.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
+Running a display alongside Voice Assistant, Micro Wake Word, AEC, and intercom on a single ESP32-S3 or ESP32-P4 is challenging due to RAM and CPU constraints. The `xiaozhi-ball-v3-full-aec.yaml` and `waveshare-p4-touch-full-afe.yaml` configs demonstrate proven approaches using **LVGL** (Light and Versatile Graphics Library):
 
 | Before (ili9xxx manual) | After (LVGL) |
 |---|---|
@@ -1026,63 +766,22 @@ Every setup is different: room acoustics, mic sensitivity, speaker placement, co
 - **Adjust `mic_gain`** (-20 to +30 dB): higher gain helps voice detection but can introduce noise
 - **Test MWW during TTS** with your specific wake word, some words are more robust than others
 - **Compare `voip_low_cost` vs `voip_high_perf`**: the difference may be subtle in your environment
-- **Monitor ESP logs**: AEC diagnostics, task timing, and heap usage are all logged at DEBUG level
+- **Monitor ESP logs**: use `INFO` for normal operation, and temporarily switch to `DEBUG` plus `telemetry: true` when you need timing diagnostics
 
 ---
 
 ## Troubleshooting
 
-### Card shows "No devices found"
+Common symptoms and fixes are documented in **[docs/troubleshooting.md](docs/troubleshooting.md)**:
 
-1. Verify `intercom_native:` is in `configuration.yaml`
-2. Restart Home Assistant after adding the integration
-3. Ensure ESP device is connected via ESPHome integration
-4. Check ESP has `intercom_api` component configured
-5. Clear browser cache and reload
+- [Card shows "No devices found"](docs/troubleshooting.md#card-shows-no-devices-found)
+- [No audio from ESP speaker](docs/troubleshooting.md#no-audio-from-esp-speaker)
+- [No audio from browser](docs/troubleshooting.md#no-audio-from-browser)
+- [Echo or feedback](docs/troubleshooting.md#echo-or-feedback)
+- [High latency](docs/troubleshooting.md#high-latency)
+- [ESP shows "Ringing" but browser doesn't connect](docs/troubleshooting.md#esp-shows-ringing-but-browser-doesnt-connect)
+- [Full mode: ESP doesn't see other devices](docs/troubleshooting.md#full-mode-esp-doesnt-see-other-devices)
 
-### No audio from ESP speaker
-
-1. Check speaker wiring and I2S pin configuration
-2. Verify `speaker_enable` GPIO if your amp has an enable pin
-3. Check volume level (default 80%)
-4. Look for I2S errors in ESP logs
-
-### No audio from browser
-
-1. Check browser microphone permissions
-2. Verify HTTPS (required for getUserMedia)
-3. Check browser console for AudioContext errors
-4. Try a different browser (Chrome recommended)
-
-### Echo or feedback
-
-1. Enable AEC: create `esp_aec` component and link with `aec_id`
-2. Ensure AEC switch is ON in Home Assistant
-3. Reduce speaker volume
-4. Increase physical distance between mic and speaker
-
-### High latency
-
-1. Check WiFi signal strength (should be > -70 dBm)
-2. Verify Home Assistant is not overloaded
-3. Check for network congestion
-4. Reduce ESP log level to `WARN`
-
-### ESP shows "Ringing" but browser doesn't connect
-
-1. Check TCP port 6054 is accessible
-2. Verify no firewall blocking HA→ESP connection
-3. Check Home Assistant logs for connection errors
-4. Try restarting the ESP device
-
-### Full mode: ESP doesn't see other devices
-
-1. Ensure all ESPs use `mode: full`
-2. Verify `sensor.intercom_active_devices` exists in HA
-3. Check ESP subscribes to this sensor via `text_sensor: platform: homeassistant`
-4. Devices must be online and connected to HA
-
----
 
 ## Home Assistant Automation
 
@@ -1100,16 +799,32 @@ See [examples/dashboard.yaml](examples/dashboard.yaml) for a complete Lovelace d
 
 ## Example YAML Files
 
-Working configs tested on real hardware are included in the repository:
+Working configs tested on real hardware, organized by use case. Not sure which one to pick? See the [Deployment Guide](docs/DEPLOYMENT_GUIDE.md) for a decision tree.
 
-| File | Device | Features |
-|------|--------|----------|
-| [`xiaozhi-ball-v3-va-intercom.yaml`](xiaozhi-ball-v3-va-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | VA + MWW + Intercom + LVGL display + 48kHz audio |
-| [`xiaozhi-ball-v3-intercom.yaml`](xiaozhi-ball-v3-intercom.yaml) | Xiaozhi Ball V3 (ES8311) | Intercom only, C++ display |
-| [`waveshare-s3-audio-va-intercom.yaml`](waveshare-s3-audio-va-intercom.yaml) | Waveshare ESP32-S3-AUDIO (ES8311 + ES7210) | VA + MWW + Intercom + TDM AEC + LED feedback |
-| [`waveshare-p4-touch-va-intercom.yaml`](waveshare-p4-touch-va-intercom.yaml) | Waveshare ESP32-P4-WiFi6-Touch-LCD-10.1 (ES8311 + ES7210) | VA + MWW + Intercom + LVGL 10.1" touch split-screen (weather + intercom tileview, touch-to-talk VA with mood images, 5-day forecast) + ringtone |
-| [`esp32-s3-mini-va-intercom.yaml`](esp32-s3-mini-va-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | VA + MWW + Intercom, LED feedback |
-| [`esp32-s3-mini-intercom.yaml`](esp32-s3-mini-intercom.yaml) | ESP32-S3 Mini (SPH0645 + MAX98357A) | Intercom only, LED feedback |
+### Full Experience with `esp_aec` (VA + MWW + Intercom, lighter)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-ball-v3-full-aec.yaml`](yamls/full-experience/single-bus/aec/xiaozhi-ball-v3-full-aec.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus stereo AEC |
+| [`generic-s3-full-aec.yaml`](yamls/full-experience/single-bus/aec/generic-s3-full-aec.yaml) | Generic ESP32-S3 (MEMS+amp) | Single-bus mono, TX-side decimated reference |
+| [`esp32-s3-mini-full_NOT_READY.yaml`](yamls/full-experience/dual-bus/esp32-s3-mini-full_NOT_READY.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+
+### Full Experience with `esp_afe` (VA + MWW + Intercom + NS/AGC/VAD, heavier)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-ball-v3-full-afe.yaml`](yamls/full-experience/single-bus/afe/xiaozhi-ball-v3-full-afe.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, AFE (AEC + NS + AGC + VAD) |
+| [`waveshare-s3-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-s3-full-afe.yaml) | Waveshare S3-AUDIO (ES8311+ES7210) | TDM dual-mic, AFE + BSS voice isolation |
+| [`waveshare-p4-touch-full-afe.yaml`](yamls/full-experience/single-bus/afe/waveshare-p4-touch-full-afe.yaml) | Waveshare P4-Touch-LCD (ES8311+ES7210) | TDM dual-mic, AFE + BSS voice isolation, LVGL touch |
+
+### Intercom Only (no VA, no MWW)
+
+| File | Device | Audio |
+|------|--------|-------|
+| [`xiaozhi-intercom.yaml`](yamls/intercom-only/single-bus/xiaozhi-intercom.yaml) | Xiaozhi Ball V3 (ES8311, LVGL) | Single-bus, `esp_aec`, intercom display |
+| [`generic-s3-intercom.yaml`](yamls/intercom-only/single-bus/generic-s3-intercom.yaml) | Generic ESP32-S3 (MEMS+amp, single bus) | Single-bus, `esp_aec` |
+| [`esp32-s3-mini-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/esp32-s3-mini-intercom_NOT_READY.yaml) | ESP32-S3 Mini (SPH0645+MAX98357A) | Dual-bus, ring-buffer reference, LED feedback |
+| [`generic-s3-dual-intercom_NOT_READY.yaml`](yamls/intercom-only/dual-bus/generic-s3-dual-intercom_NOT_READY.yaml) | Generic ESP32-S3 (dual I2S) | Dual-bus, ring-buffer reference |
 
 ---
 

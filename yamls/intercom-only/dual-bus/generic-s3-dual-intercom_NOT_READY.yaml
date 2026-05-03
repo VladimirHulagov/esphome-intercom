@@ -4,7 +4,10 @@
 # Uses intercom_api with AEC for full-duplex echo-cancelled calls.
 # Speaker direct (no mixer, no resamplers). Same proven path as s3-mini.
 #
-# WIP: ringtone not yet implemented (requires mixer or speaker sharing fix)
+# Limitation: the incoming-call ringtone is not played on this YAML yet.
+# The speaker path is plugged directly into intercom_api RX to keep the
+# latency budget tight; playing a ringtone would require a mixer in front
+# of the speaker, which is the full-experience architecture.
 #
 # HARDWARE (adapt GPIOs to YOUR board):
 #   - Board: Any ESP32-S3 with PSRAM
@@ -20,17 +23,24 @@
 # =============================================================================
 
 substitutions:
-  name: generic-esp32-s3
-  friendly_name: Generic Esp32-s3
+  name: generic-dual-intercom
+  friendly_name: Generic Dual Intercom
+
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@main"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../esphome/components"
 
 # =============================================================================
 # Package: shared intercom state machine
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/intercom_only.yaml
-    ref: main
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/intercom_only.yaml@main
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
+  core: !include ../../../packages/intercom_only.yaml
+  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
 
 esphome:
   name: ${name}
@@ -44,11 +54,7 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
-      CONFIG_SPIRAM_RODATA: "y"
+      # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
@@ -84,11 +90,8 @@ wifi:
   password: !secret wifi_password
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, esp_aec]
+  - source: ${ext_components_source}
+    components: [intercom_api, esp_aec, audio_processor]
 
 # =============================================================================
 # I2S Audio Buses (dual-bus: separate mic + speaker)
@@ -147,7 +150,7 @@ intercom_api:
   microphone: mic_main
   speaker: hw_speaker
   dc_offset_removal: true
-  aec_id: aec_processor
+  processor_id: aec_processor
   aec_reference_delay_ms: 80
   ringing_timeout: 30s
 
@@ -176,14 +179,21 @@ select:
     name: AEC Mode
     id: aec_mode_select
     icon: mdi:tune-vertical
+    # Intercom-only standard: stay inside the dios_ssp_aec engine. The two
+    # VOIP modes share the same engine, so a runtime switch never triggers
+    # an esp_aec3 FFT alloc and avoids the silent calloc-fail bug observed
+    # at filter_length>4 on cross-engine transitions. SR modes are not
+    # offered here because no MWW is present in this configuration.
     options:
-      - "sr_low_cost"
-      - "sr_high_perf"
       - "voip_low_cost"
       - "voip_high_perf"
     initial_option: "voip_high_perf"
-    optimistic: true
-    restore_value: true
+    # Non-optimistic: HA reflects the live component mode, not the value the
+    # user clicked. If the switch is rejected (e.g. internal RAM fragmented)
+    # or the component falls back to the previous mode, the select shows the
+    # actual mode rather than a fictitious one.
+    optimistic: false
+    restore_value: false
     set_action:
       - if:
           condition:
@@ -200,6 +210,9 @@ select:
             - esp_aec.set_mode:
                 id: aec_processor
                 mode: !lambda 'return x;'
+      # Reflect actual live mode (covers rejection and silent fallback).
+      - lambda: |-
+          id(aec_mode_select).publish_state(id(aec_processor).get_mode_name());
 
 # =============================================================================
 # Numbers

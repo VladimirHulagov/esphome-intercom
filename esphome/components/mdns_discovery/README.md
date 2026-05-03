@@ -56,9 +56,11 @@ mdns_discovery:
 |--------|------|---------|-------------|
 | `id` | ID | Required | Component ID for referencing |
 | `service_type` | string | Required | mDNS service type (e.g., `_http._tcp`) |
-| `scan_interval` | time | 60s | How often to scan for peers |
-| `on_peer_found` | automation | - | Actions when peer discovered |
-| `on_peer_lost` | automation | - | Actions when peer disappears |
+| `scan_interval` | time | 10s | How often to issue an mDNS query for the configured service. |
+| `peer_timeout` | time | 60s | How long a previously-seen peer is kept in the registry without a fresh response before it is considered lost. Trigger `on_peer_lost` fires when the timeout elapses. |
+| `on_peer_found` | automation | - | Actions when a new peer is discovered. Lambda args: `name` (string), `ip` (string), `port` (uint16). |
+| `on_peer_lost` | automation | - | Actions when a peer disappears (no response within `peer_timeout`). Lambda arg: `name` (string). |
+| `on_scan_complete` | automation | - | Actions after each scan cycle finishes. Lambda arg: `count` (int) of currently known peers. |
 
 ## Common Service Types
 
@@ -187,9 +189,9 @@ button:
 
 ## Requirements
 
-- ESP32 or ESP8266
+- ESPHome `network` and `mdns` components (declared as dependencies)
 - Network connectivity
-- mDNS support on network (standard on most routers)
+- mDNS support on the network (standard on most routers; some VLAN setups block multicast)
 
 ## License
 

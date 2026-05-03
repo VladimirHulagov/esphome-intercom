@@ -9,5 +9,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/n-IA-hane/esphome-intercom/issues",
   "requirements": [],
-  "version": "3.1.0"
+  "version": "4.0.0"
 }

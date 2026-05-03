@@ -23,26 +23,17 @@ enum class MessageType : uint8_t {
 // Message flags
 enum class MessageFlags : uint8_t {
   NONE = 0x00,
-  END = 0x01,      // Last packet of stream
   NO_RING = 0x02,  // START flag: skip ringing, start streaming directly (for caller in bridge)
 };
 
 // Error codes
 enum class ErrorCode : uint8_t {
-  OK = 0x00,
   BUSY = 0x01,           // Already streaming with another client
-  INVALID_MSG = 0x02,    // Invalid message format
-  NOT_READY = 0x03,      // Component not ready
-  INTERNAL = 0xFF,       // Internal error
 };
 
-// Audio format constants
+// Audio format constants. Wire contract: 16 kHz mono int16, 512 samples per chunk = 32 ms.
 static constexpr uint32_t SAMPLE_RATE = 16000;
-static constexpr uint8_t BITS_PER_SAMPLE = 16;
-static constexpr uint8_t CHANNELS = 1;
-static constexpr size_t AUDIO_CHUNK_SIZE = 1024;     // bytes per chunk (32ms @ 16kHz mono 16-bit)
-static constexpr size_t SAMPLES_PER_CHUNK = 512;     // 1024 bytes / 2 bytes per sample
-static constexpr uint32_t CHUNK_DURATION_MS = 32;    // 512 samples at 16kHz, matches AEC frame
+static constexpr size_t AUDIO_CHUNK_SIZE = 1024;     // bytes per chunk
 
 // Protocol header
 struct __attribute__((packed)) MessageHeader {

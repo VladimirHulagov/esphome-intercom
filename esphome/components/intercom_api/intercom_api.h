@@ -19,8 +19,8 @@
 #include "esphome/components/number/number.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 
-#ifdef USE_ESP_AEC
-#include "esphome/components/esp_aec/aec_processor.h"
+#ifdef USE_AUDIO_PROCESSOR
+#include "esphome/components/audio_processor/audio_processor.h"
 #endif
 
 #include "intercom_protocol.h"
@@ -37,6 +37,8 @@
 
 namespace esphome {
 namespace intercom_api {
+
+using audio_processor::AudioProcessor;
 
 // TCP connection state (low-level)
 enum class ConnectionState : uint8_t {
@@ -101,8 +103,28 @@ struct ClientInfo {
   std::atomic<bool> streaming{false};
 };
 
+/// TCP-based intercom peer component.
+///
+/// Implements a custom TCP protocol (port 6054) for ESP-to-ESP calls,
+/// complementing voice_assistant and micro_wake_word with bi-directional
+/// audio streaming between devices on the same network. Optionally
+/// integrates an AudioProcessor (set via processor_id) when it owns its
+/// own mic/speaker path; on devices where i2s_audio_duplex owns the
+/// processor, intercom_api stays mic/speaker-passthrough and the
+/// processor side is handled upstream.
+///
+/// Runs up to three FreeRTOS tasks depending on configuration
+/// (server/tx/speaker); see README.md for the task topology and stack
+/// budget per mode.
 class IntercomApi : public Component {
  public:
+  // FreeRTOS task stack sizes (in words). Mirrors esp_afe's convention
+  // of keeping stack footprint explicit at the class level rather than
+  // as magic numbers at xTaskCreate sites.
+  static constexpr uint32_t kServerTaskStackWords = 8192 / sizeof(StackType_t);
+  static constexpr uint32_t kTxTaskStackWords = 12288 / sizeof(StackType_t);
+  static constexpr uint32_t kSpeakerTaskStackWords = 8192 / sizeof(StackType_t);
+
   void setup() override;
   void loop() override;
   void dump_config() override;
@@ -120,10 +142,12 @@ class IntercomApi : public Component {
 #endif
 
   void set_dc_offset_removal(bool enabled) { this->dc_offset_removal_ = enabled; }
+  void set_tasks_stack_in_psram(bool enabled) { this->tasks_stack_in_psram_ = enabled; }
+  void set_frame_buffers_in_psram(bool enabled) { this->frame_buffers_in_psram_ = enabled; }
   void set_device_name(const std::string &name) { this->device_name_ = name; }
 
-#ifdef USE_ESP_AEC
-  void set_aec(AecProcessor *aec) { this->aec_ = aec; }
+#ifdef USE_AUDIO_PROCESSOR
+  void set_aec(AudioProcessor *aec) { this->aec_ = aec; }
   void set_aec_reference_delay_ms(uint32_t delay_ms) { this->aec_ref_delay_ms_ = delay_ms; }
   void set_aec_enabled(bool enabled);
   bool is_aec_enabled() const { return this->aec_enabled_; }
@@ -157,6 +181,10 @@ class IntercomApi : public Component {
   bool is_outgoing() const { return this->call_state_.load(std::memory_order_acquire) == CallState::OUTGOING; }
   bool is_idle() const { return this->call_state_.load(std::memory_order_acquire) == CallState::IDLE; }
   bool is_streaming() const { return this->call_state_.load(std::memory_order_acquire) == CallState::STREAMING; }
+  // The HA peer is by convention contacts_[0] (the integration sensor always
+  // prepends the HA instance name). Selecting it by index instead of by string
+  // keeps the YAML conditions stable when location_name changes.
+  bool is_ha_destination() const { return this->contact_index_ == 0; }
 
   // Smart call toggle: ringing → answer, active → hangup, idle → start
   void call_toggle();
@@ -174,7 +202,6 @@ class IntercomApi : public Component {
 
   // Mode setting
   void set_full_mode(bool full) { this->full_mode_ = full; }
-  bool is_full_mode() const { return this->full_mode_; }
 
   // Sensor registration
   void set_state_sensor(text_sensor::TextSensor *sensor) { this->state_sensor_ = sensor; }
@@ -186,7 +213,7 @@ class IntercomApi : public Component {
   void register_auto_answer_switch(switch_::Switch *sw) { this->auto_answer_switch_ = sw; }
   void register_volume_number(number::Number *num) { this->volume_number_ = num; }
   void register_mic_gain_number(number::Number *num) { this->mic_gain_number_ = num; }
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   void register_aec_switch(switch_::Switch *sw) { this->aec_switch_ = sw; }
 #endif
 
@@ -198,12 +225,6 @@ class IntercomApi : public Component {
   const std::string &get_current_destination() const;
   std::string get_caller() const { return this->caller_sensor_ ? this->caller_sensor_->state : ""; }
   std::string get_contacts_csv() const;
-
-  // Internal triggers (TCP lifecycle)
-  Trigger<> *get_connect_trigger() { return &this->connect_trigger_; }
-  Trigger<> *get_disconnect_trigger() { return &this->disconnect_trigger_; }
-  Trigger<> *get_start_trigger() { return &this->start_trigger_; }
-  Trigger<> *get_stop_trigger() { return &this->stop_trigger_; }
 
   // Call state triggers (exposed to YAML)
   Trigger<> *get_ringing_trigger() { return &this->ringing_trigger_; }
@@ -219,10 +240,10 @@ class IntercomApi : public Component {
   const char *get_call_state_str() const { return call_state_to_str(this->call_state_.load(std::memory_order_acquire)); }
 
  protected:
-  // Returns true when intercom_api has its own AEC (aec_id configured on intercom_api component)
+  // Returns true when intercom_api has its own AEC (processor_id configured on intercom_api component)
   // When false, speaker_task and tx_task are eliminated to save ~34KB internal RAM
-  bool has_intercom_aec_() const {
-#ifdef USE_ESP_AEC
+  bool has_intercom_processor_() const {
+#ifdef USE_AUDIO_PROCESSOR
     return this->aec_ != nullptr;
 #else
     return false;
@@ -230,17 +251,29 @@ class IntercomApi : public Component {
   }
 
   // Server task - handles incoming connections and receiving data
-  // When !has_intercom_aec_(), also handles TX (mic→network) and direct speaker playback
+  // When !has_intercom_processor_(), also handles TX (mic→network) and direct speaker playback
   static void server_task(void *param);
   void server_task_();
 
   // TX task - handles mic capture and sending to network (Core 0)
-  // Only created when has_intercom_aec_() (AEC processing needs dedicated task)
+  // Only created when has_intercom_processor_() (AEC processing needs dedicated task)
   static void tx_task(void *param);
   void tx_task_();
 
+  // Build AUDIO message header + payload and send over the active client
+  // socket. Noops if not active or no socket. Used by both AEC and pass-through
+  // TX paths.
+  void send_chunk_(const uint8_t *data, size_t length);
+
+#ifdef USE_AUDIO_PROCESSOR
+  // Drain `audio_chunk` (AUDIO_CHUNK_SIZE bytes) into the AEC accumulator,
+  // process every complete AEC frame, and send each result via send_chunk_().
+  // Updates aec_mic_fill_ across calls.
+  void process_aec_chunk_(const uint8_t *audio_chunk);
+#endif
+
   // Speaker task - handles playback from speaker buffer (Core 0)
-  // Only created when has_intercom_aec_() (needs to feed AEC reference buffer)
+  // Only created when has_intercom_processor_() (needs to feed AEC reference buffer)
   static void speaker_task(void *param);
   void speaker_task_();
 
@@ -273,7 +306,7 @@ class IntercomApi : public Component {
   void set_call_state_(CallState new_state);
   void end_call_(CallEndReason reason);
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // AEC helper
   void reset_aec_buffers_();
 #endif
@@ -302,7 +335,7 @@ class IntercomApi : public Component {
   switch_::Switch *auto_answer_switch_{nullptr};
   number::Number *volume_number_{nullptr};
   number::Number *mic_gain_number_{nullptr};
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   switch_::Switch *aec_switch_{nullptr};
 #endif
 
@@ -324,21 +357,36 @@ class IntercomApi : public Component {
   // Pre-allocated frame buffers
   uint8_t *tx_buffer_{nullptr};      // Used by server_task for control messages
   uint8_t *rx_buffer_{nullptr};      // Used by server_task for receiving
-  uint8_t *audio_tx_buffer_{nullptr}; // Used by tx_task for audio (no mutex needed)
   SemaphoreHandle_t send_mutex_{nullptr};  // Protects tx_buffer_ during send
 
-  // Task handles
+  // Task handles and static-task storage.
+  // When tasks_stack_in_psram_ is true (default false), the stacks are
+  // allocated from PSRAM via xTaskCreateStaticPinnedToCore: saves ~28 KB
+  // of internal heap on S3/P4 boards that already have heavy AFE/MWW/LVGL
+  // pressure. When false, the tasks are created with the standard dynamic
+  // xTaskCreatePinnedToCore (stack on the internal heap), which is the
+  // only option on plain ESP32 boards without PSRAM.
   TaskHandle_t server_task_handle_{nullptr};
   TaskHandle_t tx_task_handle_{nullptr};
   TaskHandle_t speaker_task_handle_{nullptr};
+  StaticTask_t server_task_tcb_{};
+  StaticTask_t tx_task_tcb_{};
+  StaticTask_t speaker_task_tcb_{};
+  StackType_t *server_task_stack_{nullptr};
+  StackType_t *tx_task_stack_{nullptr};
+  StackType_t *speaker_task_stack_{nullptr};
+  bool tasks_stack_in_psram_{false};
 
   // Speaker single-owner: only speaker_task_ touches speaker hardware
   // This prevents race conditions between play() and stop()
   std::atomic<bool> speaker_stop_requested_{false};
   SemaphoreHandle_t speaker_stopped_sem_{nullptr};  // Signaled when speaker has stopped
 
-  // Volume
-  float volume_{1.0f};
+  // Volume: atomic, shared between main/api thread and audio tasks
+  std::atomic<float> volume_{1.0f};
+
+  // Diagnostic counters
+  uint32_t spk_overflow_count_{0};
 
   // Auto-answer (default true for backward compatibility)
   bool auto_answer_{true};
@@ -349,8 +397,9 @@ class IntercomApi : public Component {
   uint32_t outgoing_start_time_{0};
 
   // Mic gain (applied before sending to network)
-  float mic_gain_{1.0f};
-  float mic_gain_db_{0.0f};  // UI-friendly value (dB) for persistence
+  // Atomic: shared between main/api thread and mic_task
+  std::atomic<float> mic_gain_{1.0f};
+  float mic_gain_db_{0.0f};  // UI-friendly value (dB) for persistence, main thread only
 
   // === Settings persistence (local flash) ===
   static constexpr uint8_t SETTINGS_VERSION = 1;
@@ -372,16 +421,18 @@ class IntercomApi : public Component {
 
   // Mic configuration
   bool dc_offset_removal_{false}; // Enable for mics with DC bias (SPH0645)
+  bool frame_buffers_in_psram_{false};  // Place aec_mic_/ref_/out_ (~3 KB) in PSRAM (default internal)
   int32_t dc_offset_{0};          // Running DC offset value
 
   // Pre-allocated processing buffers (avoid stack VLAs on FreeRTOS tasks)
   int16_t *mic_converted_{nullptr};     // Mic callback processing (MAX_SAMPLES = 512 samples)
-  int16_t *spk_ref_scaled_{nullptr};    // Speaker AEC ref scaling (AUDIO_CHUNK_SIZE*4/2 = 1024 samples)
+  int16_t *spk_ref_scaled_{nullptr};    // Speaker AEC ref scaling (AUDIO_CHUNK_SIZE*4/2 = 2048 samples)
 
-#ifdef USE_ESP_AEC
+#ifdef USE_AUDIO_PROCESSOR
   // AEC (Acoustic Echo Cancellation)
-  AecProcessor *aec_{nullptr};
-  bool aec_enabled_{false};
+  AudioProcessor *aec_{nullptr};
+  // Atomic: shared between set_aec_enabled (API thread) and audio tasks
+  std::atomic<bool> aec_enabled_{false};
   uint32_t aec_ref_delay_ms_{80};  // Configurable via YAML (default 80ms)
 
   // Speaker reference buffer for AEC (fed by speaker_task)
@@ -395,12 +446,6 @@ class IntercomApi : public Component {
   int16_t *aec_out_{nullptr};   // AEC output samples (frame_size)
   size_t aec_mic_fill_{0};      // Current fill level in aec_mic_
 #endif
-
-  // Internal triggers (TCP lifecycle)
-  Trigger<> connect_trigger_;
-  Trigger<> disconnect_trigger_;
-  Trigger<> start_trigger_;
-  Trigger<> stop_trigger_;
 
   // Call state triggers (exposed to YAML)
   Trigger<> ringing_trigger_;
@@ -546,8 +591,8 @@ class PublishEntityStatesAction : public Action<Ts...>, public Parented<Intercom
 
 // === Switch platform classes with restore support ===
 
-// AEC switch (only available when USE_ESP_AEC is defined)
-#ifdef USE_ESP_AEC
+// AEC switch (only available when USE_AUDIO_PROCESSOR is defined)
+#ifdef USE_AUDIO_PROCESSOR
 class IntercomAecSwitch : public switch_::Switch, public Parented<IntercomApi> {
  public:
   void write_state(bool state) override {
@@ -617,6 +662,12 @@ class IntercomDestinationIsCondition : public Condition<Ts...>, public Parented<
   bool check(const Ts &...x) override {
     return this->parent_->get_current_destination() == this->destination_.value(x...);
   }
+};
+
+template<typename... Ts>
+class IntercomIsHaDestinationCondition : public Condition<Ts...>, public Parented<IntercomApi> {
+ public:
+  bool check(const Ts &...x) override { return this->parent_->is_ha_destination(); }
 };
 
 }  // namespace intercom_api

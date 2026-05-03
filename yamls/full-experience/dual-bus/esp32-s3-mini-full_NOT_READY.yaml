@@ -5,6 +5,15 @@
 # Uses standard i2s_audio (separate I2S buses: SPH0645 mic + MAX98357A speaker).
 # Mixer speaker shares hardware speaker between VA, Media, and Intercom.
 #
+# Audio pipeline (dual-bus, no TDM, software AEC reference via intercom_api):
+#
+#   SPH0645 MEMS (I2S_NUM_0) ──┐
+#                              └── esp_aec (AEC voip_high_perf) → mic_main → VA / Intercom TX / MWW
+#
+#   Music/radio → media_speaker (resampler) ───────────┐
+#   VA TTS      → tts_speaker (resampler) ─────────────┼── mixer (48kHz) → hw_speaker → MAX98357A (I2S_NUM_1)
+#   Intercom RX → intercom_speaker (resampler) ────────┘
+#
 # HARDWARE:
 #   - Board: ESP32-S3 Mini (4MB Flash, Quad PSRAM)
 #   - Microphone: SPH0645 I2S MEMS (I2S_NUM_0) - has DC offset
@@ -18,13 +27,20 @@
 # =============================================================================
 
 substitutions:
-  name: esp32-s3-mini-va-intercom
-  friendly_name: ESP32-S3 Mini VA Intercom
+  # Hardware-shared identity: keep the same device name across firmware variants
+  # for this board so HA and .esphome/build reuse the same hardware identity.
+  name: esp32-s3-mini
+  friendly_name: ESP32-S3 Mini
 
-  # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
-  # ---- Local mode (for development, clone repo first) ----
-  # assets_base: ""
+  # ---- External components: Remote (release / users without local clone) ----
+  # ext_components_source: "github://n-IA-hane/esphome-intercom@main"
+  # ---- External components: Local (dev, clone repo first; toggle by swapping the comment) ----
+  ext_components_source: "../../../esphome/components"
+
+  # ---- Media: Remote (release / users without local clone) ----
+  # assets_base: "https://github.com/n-IA-hane/esphome-intercom/raw/main/"
+  # ---- Media: Local (dev, clone repo first; toggle by swapping the comment) ----
+  assets_base: "../../../"
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
@@ -37,10 +53,12 @@ substitutions:
 # Package: shared VA + Intercom state machine, callbacks, switches, buttons
 # =============================================================================
 packages:
-  core:
-    url: https://github.com/n-IA-hane/esphome-intercom
-    file: packages/va_intercom.yaml
-    ref: main
+  # ---- Remote (release / users without local clone) ----
+  # core: github://n-IA-hane/esphome-intercom/packages/va_intercom.yaml@main
+  # s3_base: github://n-IA-hane/esphome-intercom/packages/platform/esp32s3_base.yaml@main
+  # ---- Local (dev, clone repo first; toggle: comment the remote block above and uncomment the block below) ----
+  core: !include ../../../packages/va_intercom.yaml
+  s3_base: !include ../../../packages/platform/esp32s3_base.yaml
 
 # =============================================================================
 # ESPHome Base
@@ -61,9 +79,7 @@ esp32:
   framework:
     type: esp-idf
     sdkconfig_options:
-      CONFIG_LWIP_MAX_SOCKETS: "16"
-      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
-      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      # Allow mbedtls to allocate its working buffers in PSRAM.
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
 
 psram:
@@ -95,11 +111,8 @@ wifi:
 # EXTERNAL COMPONENTS
 # =============================================================================
 external_components:
-  - source:
-      type: git
-      url: https://github.com/n-IA-hane/esphome-intercom
-      ref: main
-    components: [intercom_api, esp_aec]
+  - source: ${ext_components_source}
+    components: [intercom_api, esp_aec, audio_processor]
 
 # =============================================================================
 # I2S AUDIO BUSES
@@ -184,7 +197,7 @@ media_player:
       num_channels: 1
     files:
       - id: intercom_ringing_sound
-        file: ${assets_base}sounds/ringtone.flac
+        file: ${assets_base}assets/sounds/ringtone.flac
     on_announcement:
       - script.execute: update_status
     on_play:
@@ -212,7 +225,8 @@ esp_aec:
 micro_wake_word:
   microphone: mic_component
   models:
-    - model: "wakewords/hey_trowyayoh.json"
+    - model: alexa
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
 
@@ -232,7 +246,7 @@ intercom_api:
   microphone: mic_component
   speaker: intercom_speaker
   dc_offset_removal: true
-  aec_id: aec_processor
+  processor_id: aec_processor
   ringing_timeout: 30s
 
 # =============================================================================
@@ -244,7 +258,7 @@ switch:
     auto_answer:
       id: auto_answer_switch
       name: "Auto Answer"
-      restore_mode: RESTORE_DEFAULT_ON
+      restore_mode: RESTORE_DEFAULT_OFF
     aec:
       id: aec_switch
       name: "Echo Cancellation"
@@ -338,7 +352,7 @@ script:
               led->turn_on().set_rgb(0.0f, 1.0f, 0.0f).set_brightness(0.7f).set_effect("Slow Pulse").perform();
               break;
             case 6:  // VA Thinking
-              led->turn_on().set_rgb(1.0f, 0.55f, 0.0f).set_brightness(0.7f).set_effect("Fast Pulse").perform();
+              led->turn_on().set_rgb(1.0f, 1.0f, 0.0f).set_brightness(0.7f).set_effect("Fast Pulse").perform();
               break;
             case 7:  // VA Speaking
               led->turn_on().set_rgb(0.0f, 0.0f, 1.0f).set_brightness(1.0f).set_effect("None").perform();

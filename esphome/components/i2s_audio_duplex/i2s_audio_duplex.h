@@ -13,18 +13,23 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <freertos/semphr.h>
+
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <functional>
-#include <vector>
+#include <memory>
 
-// Forward declare AEC processor interface (esp_aec/aec_processor.h)
-namespace esphome {
-class AecProcessor;
-}  // namespace esphome
+#include "../audio_processor/audio_processor.h"
 
 namespace esphome {
 namespace i2s_audio_duplex {
+
+using audio_processor::AudioProcessor;
+using audio_processor::ProcessorTelemetry;
 
 // Maximum listener count for microphone/speaker reference counting
 static constexpr UBaseType_t MAX_LISTENERS = 16;
@@ -38,77 +43,96 @@ using MicDataCallback = std::function<void(const uint8_t *data, size_t len)>;
 // Same real-time constraints as MicDataCallback apply.
 using SpeakerOutputCallback = std::function<void(uint32_t frames, int64_t timestamp)>;
 
-// FIR coefficients: 32-tap (31 original + 1 zero pad), cutoff=7500Hz, fs=48kHz, Kaiser beta=8.0
-// Unity DC gain, ~35dB stopband attenuation (adequate for speech), symmetric (linear phase)
-// Padded to power-of-2 so modulo can use bitmask (& 0x1F) instead of division
+// FIR decimator parameters: 32-tap Q15, ~35 dB stopband, cutoff 7.5 kHz at 48 kHz.
+// Coefficients and esp-dsp wiring live in the .cpp via Pimpl, so consumers of this
+// header don't pay the dsps_fir.h parse cost. See FirDecimatorImpl in i2s_audio_duplex.cpp.
 static constexpr size_t FIR_NUM_TAPS = 32;
-static constexpr float FIR_COEFFS[FIR_NUM_TAPS] = {
-    4.1270231666e-05f, 2.1633893589e-04f, 1.2531119530e-04f, -9.9999988238e-04f,
-    -2.6821920740e-03f, -1.8518117881e-03f, 4.4563387256e-03f, 1.2653483833e-02f,
-    1.0683467077e-02f, -1.0893520506e-02f, -4.0743026823e-02f, -4.2934182572e-02f,
-    1.7799016112e-02f, 1.3755146771e-01f, 2.6031620059e-01f, 3.1252367847e-01f,
-    2.6031620059e-01f, 1.3755146771e-01f, 1.7799016112e-02f, -4.2934182572e-02f,
-    -4.0743026823e-02f, -1.0893520506e-02f, 1.0683467077e-02f, 1.2653483833e-02f,
-    4.4563387256e-03f, -1.8518117881e-03f, -2.6821920740e-03f, -9.9999988238e-04f,
-    1.2531119530e-04f, 2.1633893589e-04f, 4.1270231666e-05f, 0.0f,
-};
+static constexpr uint8_t MC_FIR_MAX_CH = 3;
 
-// Lightweight FIR decimator: consumes (in_count) samples at high rate,
-// produces (in_count / ratio) samples at low rate.
-// Uses float accumulation for robustness (ESP32-S3 has hardware FPU).
-// When ratio == 1, process() is a simple memcpy (zero overhead for legacy configs).
+// Forward declarations for Pimpl.
+class FirDecimatorImpl;
+class MultiChannelFirDecimatorImpl;
+
+// FIR decimator: consumes samples at high rate, produces at low rate.
+// Backed by esp-dsp dsps_fird_s16; on ESP32-S3 resolves to the _aes3 SIMD kernel.
+// Strided variants deinterleave into a shared scratch buffer before the FIR,
+// since the SIMD kernel requires contiguous input.
 class FirDecimator {
  public:
-  void init(uint32_t ratio) {
-    this->ratio_ = ratio;
-    this->reset();
-  }
+  FirDecimator();
+  ~FirDecimator();
+  FirDecimator(const FirDecimator &) = delete;
+  FirDecimator &operator=(const FirDecimator &) = delete;
 
-  void reset() {
-    memset(this->delay_line_, 0, sizeof(this->delay_line_));
-    this->delay_pos_ = 0;
-  }
+  void init(uint32_t ratio);
+  void reset();
+  // When true, process_* uses the pure-float scalar FIR (custom kernel).
+  // When false (default), uses dsps_fird_s16 (esp-dsp SIMD on supported chips).
+  void set_use_float_fir(bool b);
 
-  // Decimate in_count input samples to (in_count / ratio) output samples.
-  // in_count MUST be a multiple of ratio.
-  void process(const int16_t *in, int16_t *out, size_t in_count) {
-    if (this->ratio_ <= 1) {
-      memcpy(out, in, in_count * sizeof(int16_t));
-      return;
-    }
-
-    size_t out_count = in_count / this->ratio_;
-    for (size_t o = 0; o < out_count; o++) {
-      // Push ratio_ new samples into the delay line
-      for (uint32_t r = 0; r < this->ratio_; r++) {
-        this->delay_line_[this->delay_pos_] = static_cast<float>(*in++);
-        this->delay_pos_ = (this->delay_pos_ + 1) & (FIR_NUM_TAPS - 1);
-      }
-
-      // Convolve: FIR filter output
-      float acc = 0.0f;
-      uint32_t idx = this->delay_pos_;
-      for (size_t t = 0; t < FIR_NUM_TAPS; t++) {
-        acc += this->delay_line_[idx] * FIR_COEFFS[t];
-        idx = (idx + 1) & (FIR_NUM_TAPS - 1);
-      }
-
-      // Clamp to int16 range
-      if (acc > 32767.0f) acc = 32767.0f;
-      if (acc < -32768.0f) acc = -32768.0f;
-      out[o] = static_cast<int16_t>(acc);
-    }
-  }
+  // Contiguous int16 input.
+  void process(const int16_t *in, int16_t *out, size_t in_count);
+  // Strided int16 input: deinterleave into scratch, then SIMD FIR.
+  void process_strided(const int16_t *in, int16_t *out, size_t out_count,
+                       size_t stride, size_t offset);
+  // Strided int32 input with inline >>16 downshift.
+  void process_strided_32(const int32_t *in, int16_t *out, size_t out_count,
+                          size_t stride, size_t offset);
 
  private:
-  uint32_t ratio_{1};
-  float delay_line_[FIR_NUM_TAPS]{};
-  uint32_t delay_pos_{0};
+  std::unique_ptr<FirDecimatorImpl> impl_;
 };
 
+// Multi-channel FIR decimator: decimates N channels from TDM/stereo rx_buffer in one pass.
+// Per-channel dsps_fird_s16 (SIMD _aes3 on S3). Max 3 channels (MMR: mic1 + mic2 + ref).
+class MultiChannelFirDecimator {
+ public:
+  MultiChannelFirDecimator();
+  ~MultiChannelFirDecimator();
+  MultiChannelFirDecimator(const MultiChannelFirDecimator &) = delete;
+  MultiChannelFirDecimator &operator=(const MultiChannelFirDecimator &) = delete;
+
+  void init(uint32_t ratio, uint8_t num_channels);
+  void reset();
+  void set_use_float_fir(bool b);
+
+  // Decimate N channels from strided int16 TDM input, producing:
+  //   - mic_interleaved: [mic1, mic2, mic1, mic2, ...] (num_mic_ch interleaved, for AFE)
+  //   - mic_mono: mic1 contiguous (for callbacks/MWW/intercom)
+  //   - ref_out: ref contiguous (for AEC, may be nullptr if no ref channel)
+  // channel_offsets: slot indices in TDM frame [mic1_slot, mic2_slot, ref_slot]
+  // num_mic_ch: 1 or 2 (how many of the channels are mic, rest is ref)
+  void process_multi(const int16_t *in, size_t out_count, size_t in_stride,
+                     const uint8_t *channel_offsets,
+                     int16_t *mic_interleaved, int16_t *mic_mono,
+                     int16_t *ref_out, uint8_t num_mic_ch);
+  // Same but for 32-bit I2S input with inline >>16 downshift.
+  void process_multi_32(const int32_t *in, size_t out_count, size_t in_stride,
+                        const uint8_t *channel_offsets,
+                        int16_t *mic_interleaved, int16_t *mic_mono,
+                        int16_t *ref_out, uint8_t num_mic_ch);
+
+ private:
+  std::unique_ptr<MultiChannelFirDecimatorImpl> impl_;
+};
+
+/// Full-duplex I2S codec driver.
+///
+/// Extends the upstream i2s_audio pattern with a single shared I2S bus
+/// that carries both mic RX and speaker TX (typical for codec chips
+/// like ES8311 / ES7210). Optionally integrates an AudioProcessor (set
+/// via processor_id) for AEC/NS/AGC/SE on the mic path. The processor
+/// may be EspAec (AEC only) or EspAfe (full pipeline); both are drop-in
+/// AudioProcessor implementations.
+///
+/// Runs a single audio task that pulls I2S RX frames, optionally
+/// decimates with FirDecimator, invokes the processor, and distributes
+/// the result to registered MicDataCallback listeners. Speaker frames
+/// come in via SpeakerOutputCallback and are written to I2S TX.
 class I2SAudioDuplex : public Component {
  public:
   void setup() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
@@ -135,9 +159,9 @@ class I2SAudioDuplex : public Component {
   void set_slot_bit_width(uint8_t sbw) { this->slot_bit_width_ = sbw; }
 
   // AEC setter
-  void set_aec(AecProcessor *aec);
-  void set_aec_enabled(bool enabled) { this->aec_enabled_.store(enabled, std::memory_order_relaxed); }
-  bool is_aec_enabled() const { return this->aec_enabled_.load(std::memory_order_relaxed); }
+  void set_processor(AudioProcessor *aec);
+  void set_processor_enabled(bool enabled) { this->processor_enabled_.store(enabled, std::memory_order_relaxed); }
+  bool is_processor_enabled() const { return this->processor_enabled_.load(std::memory_order_relaxed); }
 
   // Volume control (0.0 - 1.0). Atomic: written from main loop, read from audio task.
   void set_mic_gain(float gain) { this->mic_gain_.store(gain, std::memory_order_relaxed); }
@@ -151,24 +175,45 @@ class I2SAudioDuplex : public Component {
 
   // ES8311 Digital Feedback mode: RX is stereo with L=DAC(ref), R=ADC(mic)
   void set_use_stereo_aec_reference(bool use) { this->use_stereo_aec_ref_ = use; }
-  bool get_use_stereo_aec_reference() const { return this->use_stereo_aec_ref_; }
+
+  // YAML `fir_decimator: custom | dsps_fird_s16` (default dsps_fird_s16).
+  // When custom, the FIR decimators run a pure-float scalar kernel instead of
+  // the SIMD dsps_fird_s16. Workaround for chips where the SIMD kernel is
+  // unreliable (notably ESP32-P4 RISC-V: esp-dsp issues #117/#102 produce
+  // rect-wave artifacts, which then propagate quantization noise into esp_aec
+  // adaptive filter -> musical noise on the wire). Boards that don't suffer
+  // the bug should leave this on the default for the SIMD throughput.
+  void set_fir_decimator_custom(bool b) { this->fir_decimator_custom_ = b; }
 
   // Reference channel selection: false=left (default), true=right
   void set_reference_channel_right(bool right) { this->ref_channel_right_ = right; }
-  bool get_reference_channel_right() const { return this->ref_channel_right_; }
 
   // TDM hardware reference: ES7210 in TDM mode with one slot carrying DAC feedback
   void set_use_tdm_reference(bool use) { this->use_tdm_ref_ = use; }
   void set_tdm_total_slots(uint8_t n) { this->tdm_total_slots_ = n; }
   void set_tdm_mic_slot(uint8_t slot) { this->tdm_mic_slot_ = slot; }
+  void set_secondary_tdm_mic_slot(int8_t slot) { this->tdm_second_mic_slot_ = slot; }
   void set_tdm_ref_slot(uint8_t slot) { this->tdm_ref_slot_ = slot; }
+  void set_tdm_slot_level_sensor_enabled(uint8_t slot, bool enabled) {
+    if (slot < 8) this->tdm_slot_level_sensor_enabled_[slot] = enabled;
+  }
+  float get_tdm_slot_level_dbfs(uint8_t slot) const {
+    if (slot >= 8) return -120.0f;
+    return this->tdm_slot_level_dbfs_[slot].load(std::memory_order_relaxed);
+  }
 
   // Microphone interface
   void add_mic_data_callback(MicDataCallback callback) { this->mic_callbacks_.push_back(callback); }
   void add_raw_mic_data_callback(MicDataCallback callback) { this->raw_mic_callbacks_.push_back(callback); }
-  void start_mic();
-  void stop_mic();
-  bool is_mic_running() const { return this->mic_ref_count_.load(std::memory_order_relaxed) > 0; }
+
+  // Consumer registry: each consumer (a microphone wrapper, intercom TX path,
+  // etc.) registers an opaque token. The audio task gates mic callbacks on
+  // has_mic_consumers_. Registration survives an internal stop()+start()
+  // sequence (e.g. frame_spec change), so consumers stay connected across
+  // reconfigure without having to re-register. Idempotent per token.
+  void register_mic_consumer(void *token);
+  void unregister_mic_consumer(void *token);
+  bool is_mic_running() const { return this->has_mic_consumers_.load(std::memory_order_relaxed); }
 
   // Speaker interface: data arrives at bus rate (from mixer/resampler)
   size_t play(const uint8_t *data, size_t len, TickType_t ticks_to_wait = portMAX_DELAY);
@@ -205,15 +250,24 @@ class I2SAudioDuplex : public Component {
   void set_task_core(int8_t core) { this->task_core_ = core; }
   void set_task_stack_size(uint32_t size) { this->task_stack_size_ = size; }
   void set_buffers_in_psram(bool psram) { this->buffers_in_psram_ = psram; }
+  void set_audio_stack_in_psram(bool psram) { this->audio_stack_in_psram_ = psram; }
   void set_aec_reference_mode(bool use_ring_buffer) { this->aec_use_ring_buffer_ = use_ring_buffer; }
   void set_aec_ref_buffer_ms(uint32_t ms) { this->aec_ref_buffer_ms_ = ms; }
+  void set_aec_ref_ring_in_psram(bool psram) { this->aec_ref_ring_in_psram_ = psram; }
+  void set_telemetry_log_interval_frames(uint16_t frames) { this->telemetry_log_interval_frames_ = frames; }
 
  protected:
   bool init_i2s_duplex_();
   void deinit_i2s_();
 
   static void audio_task(void *param);
+  // Top-level task entry: outer loop that spawns one audio_session_ per start()/stop()
+  // cycle. Created once in setup(), never destroyed, so subsequent cycles can't trip
+  // a FreeRTOS xTaskCreate race on a lingering TCB.
   void audio_task_();
+  // One audio session: populate ctx, enter the processing loop, and return when
+  // stop() flips duplex_running_ off or the processor's frame_spec changes.
+  void audio_session_();
 
   // Audio task context: groups all buffers, sizes, and per-frame snapshots
   // to avoid long parameter lists in the refactored processing functions.
@@ -228,25 +282,32 @@ class I2SAudioDuplex : public Component {
     bool correct_dc_offset{false};
     uint8_t tdm_total_slots{0};
     uint8_t tdm_mic_slot{0};
+    int8_t tdm_second_mic_slot{-1};
     uint8_t tdm_ref_slot{0};
+    uint8_t processor_mic_channels{1};
+    uint32_t processor_spec_revision{0};
 
     // ── Frame sizing ──
-    size_t out_frame_size{0};
+    size_t input_frame_size{0};
+    size_t output_frame_size{0};
     size_t bus_frame_size{0};
-    size_t out_frame_bytes{0};
+    size_t input_frame_bytes{0};
+    size_t processor_input_frame_bytes{0};
+    size_t output_frame_bytes{0};
     size_t bus_frame_bytes{0};
     size_t rx_frame_bytes{0};
     size_t tdm_tx_frame_bytes{0};
 
     // ── Working buffers (heap-allocated, owned by audio_task_) ──
+    // processor_mic_buffer is interleaved when a secondary mic is active
+    // (layout: [mic1[i], mic2[i]] for i in [0, rx_frames)).
+    // FIR decimation reads rx_buffer with a stride, so no separate
+    // deinterleave buffer is kept.
     int16_t *rx_buffer{nullptr};
     int16_t *mic_buffer{nullptr};
+    int16_t *processor_mic_buffer{nullptr};
     int16_t *spk_buffer{nullptr};
     int16_t *spk_ref_buffer{nullptr};
-    int16_t *deint_ref{nullptr};
-    int16_t *deint_mic{nullptr};
-    int16_t *tdm_deint_mic{nullptr};
-    int16_t *tdm_deint_ref{nullptr};
     int16_t *tdm_tx_buffer{nullptr};
     int16_t *aec_output{nullptr};
 
@@ -254,16 +315,24 @@ class I2SAudioDuplex : public Component {
     int consecutive_i2s_errors{0};
     int32_t dc_prev_input{0};
     int32_t dc_prev_output{0};
+    int32_t dc_prev_input_secondary{0};
+    int32_t dc_prev_output_secondary{0};
+    const int16_t *processor_input{nullptr};
     int16_t *output_buffer{nullptr};  // points to mic_buffer or aec_output
+    size_t current_output_frame_bytes{0};
+    size_t current_output_frame_size{0};
     bool mic_separate{false};         // true if mic_buffer != rx_buffer
 
     // ── Per-iteration snapshots from atomics ──
     float mic_gain{1.0f};
     float mic_attenuation{1.0f};
     float speaker_volume{1.0f};
-    bool aec_enabled{false};
+    bool processor_enabled{false};
+    bool processor_ready{false};  // cached: enabled && initialized (avoids virtual call per frame)
     bool speaker_running{false};
     bool speaker_paused{false};
+    bool speaker_underrun{false};
+    size_t speaker_got{0};  // bytes actually read from speaker ring buffer
     bool mic_running{false};
     uint32_t now_ms{0};
   };
@@ -272,6 +341,18 @@ class I2SAudioDuplex : public Component {
   void process_rx_path_(AudioTaskCtx &ctx);
   void process_aec_and_callbacks_(AudioTaskCtx &ctx);
   void process_tx_path_(AudioTaskCtx &ctx);
+  void update_tdm_slot_levels_(const AudioTaskCtx &ctx);
+
+  // Fill ctx.spk_ref_buffer for the mono AEC path (ring buffer or previous
+  // frame, with zero-fill fallback). TDM and stereo paths pre-fill the buffer
+  // during RX deinterleave and must not call this.
+  void fill_mono_aec_reference_(AudioTaskCtx &ctx);
+
+  // Pre-allocate audio task working buffers on first entry (worst-case sizing).
+  // Buffers persist across internal stop()+start() cycles so the task can
+  // re-enter without calling heap_caps_alloc, which fragments SPIRAM over time
+  // and causes spurious "Failed to allocate" failures on feature-toggle sequences.
+  bool allocate_audio_buffers_(AudioTaskCtx &ctx);
 
   // Pin configuration
   int lrclk_pin_{-1};
@@ -296,8 +377,8 @@ class I2SAudioDuplex : public Component {
   uint32_t decimation_ratio_{1};       // sample_rate_ / output_sample_rate_ (computed in setup)
 
   // FIR decimators for mic path
-  FirDecimator mic_decimator_;
-  FirDecimator ref_decimator_;          // Stereo mode: RX L channel ref
+  MultiChannelFirDecimator rx_decimator_;  // Multi-channel: TDM/stereo RX path
+  FirDecimator mic_decimator_;             // Fallback: mono RX without TDM/stereo
   FirDecimator play_ref_decimator_;     // Mono mode: bus-rate ref from play() decimated in audio_task
 
   // I2S handles - BOTH created from single channel for duplex
@@ -306,10 +387,23 @@ class I2SAudioDuplex : public Component {
 
   // State
   std::atomic<bool> duplex_running_{false};
-  std::atomic<int> mic_ref_count_{0};  // Reference-counted mic (multiple microphone instances)
+  // Cached presence flag read by audio_task_ on the hot path; kept in sync
+  // with mic_consumers_ (below) under mic_consumers_mutex_ on register/unregister.
+  std::atomic<bool> has_mic_consumers_{false};
+  // Opaque consumer tokens; registration survives stop()+start() by construction.
+  // Fixed-size array (cap = MAX_LISTENERS = 16) avoids std::vector + std::mutex
+  // in this public header, keeping the include footprint minimal.
+  void *mic_consumers_[MAX_LISTENERS]{};
+  size_t mic_consumer_count_{0};
+  SemaphoreHandle_t mic_consumers_mutex_{nullptr};
   std::atomic<bool> speaker_running_{false};
   std::atomic<bool> speaker_paused_{false};
-  std::atomic<bool> task_exited_{false};  // Set by audio_task_ before exit (avoids eTaskGetState UB)
+  // audio_task_shutdown_: terminal exit signal (component destruction).
+  // audio_task_idle_:     true while the task is parked in its outer wait loop
+  //                       (not owning I2S). stop() polls this to know when the
+  //                       task has released the inner processing loop.
+  std::atomic<bool> audio_task_shutdown_{false};
+  std::atomic<bool> audio_task_idle_{true};
   TaskHandle_t audio_task_handle_{nullptr};
 
   // Cross-thread buffer operation request (main thread -> audio task, avoids concurrent ring buffer access)
@@ -327,8 +421,8 @@ class I2SAudioDuplex : public Component {
   size_t speaker_buffer_size_{0};  // Actual allocated size (scales with decimation_ratio_)
 
   // AEC support
-  AecProcessor *aec_{nullptr};
-  std::atomic<bool> aec_enabled_{false};  // Runtime toggle (only enabled when aec_ is set)
+  AudioProcessor *processor_{nullptr};
+  std::atomic<bool> processor_enabled_{false};  // Runtime toggle (only enabled when processor_ is set)
   int16_t *direct_aec_ref_{nullptr};     // AEC reference from previous TX frame (bus rate, mono mode)
   bool direct_aec_ref_valid_{false};     // True after first TX frame has been saved
 
@@ -342,13 +436,18 @@ class I2SAudioDuplex : public Component {
   std::atomic<float> mic_attenuation_{1.0f};  // Pre-AEC attenuation for hot mics (0.1 = -20dB, applied BEFORE AEC)
   std::atomic<float> speaker_volume_{1.0f};   // 0.0 - 1.0 (for digital volume, keep 1.0 if codec has hardware volume)
   bool use_stereo_aec_ref_{false}; // ES8311 digital feedback: RX stereo with L=ref, R=mic
+  bool fir_decimator_custom_{false}; // YAML fir_decimator: custom (vs default dsps_fird_s16)
   bool ref_channel_right_{false};  // Which channel is AEC reference: false=L, true=R
 
   // TDM hardware reference (ES7210 in TDM mode)
   bool use_tdm_ref_{false};
   uint8_t tdm_total_slots_{4};
   uint8_t tdm_mic_slot_{0};    // TDM slot index for voice mic
+  int8_t tdm_second_mic_slot_{-1};  // Optional second mic slot for dual-mic AFE
   uint8_t tdm_ref_slot_{1};    // TDM slot index for AEC reference
+  bool tdm_slot_level_sensor_enabled_[8] = {false};
+  std::atomic<float> tdm_slot_level_dbfs_[8] = {};
+  uint8_t tdm_slot_level_divider_{0};
 
   // AEC gating: only run echo canceller while speaker has recent real audio.
   std::atomic<uint32_t> last_speaker_audio_ms_{0};
@@ -359,13 +458,26 @@ class I2SAudioDuplex : public Component {
   int8_t task_core_{0};           // Core 0: canonical Espressif AEC pattern; -1 = unpinned
   uint32_t task_stack_size_{8192};
   bool buffers_in_psram_{false};  // Non-DMA buffers in PSRAM (saves ~15KB internal RAM)
+  bool audio_stack_in_psram_{false};  // Audio task stack in PSRAM (saves ~8KB internal RAM)
+  bool aec_ref_ring_in_psram_{false};  // AEC reference ring in PSRAM (saves ~3-5 KB internal, costs ~13.6 us/frame Core 0)
+  StackType_t *audio_task_stack_{nullptr};  // Owned when audio_stack_in_psram_ is true
+  StaticTask_t audio_task_tcb_{};            // Static TCB for the permanent audio task
+  uint16_t telemetry_log_interval_frames_{128};
 
   // Error propagation: set by audio_task_ on persistent I2S failures
   std::atomic<bool> has_i2s_error_{false};
 
-  // Deferred stop cleanup: channel deletion deferred until task exits
-  std::atomic<bool> stop_cleanup_pending_{false};
-  void finish_stop_cleanup_();
+  // Pre-allocated audio task buffers (owned by component, not by ctx).
+  // Allocated once on first audio_task_ entry, sized for worst case so the
+  // task can re-enter without alloc/free cycles across reconfigures.
+  int16_t *prealloc_rx_buffer_{nullptr};
+  int16_t *prealloc_mic_buffer_{nullptr};
+  int16_t *prealloc_processor_mic_buffer_{nullptr};
+  int16_t *prealloc_spk_buffer_{nullptr};
+  int16_t *prealloc_spk_ref_buffer_{nullptr};
+  int16_t *prealloc_aec_output_{nullptr};
+  int16_t *prealloc_tdm_tx_buffer_{nullptr};
+  bool audio_buffers_allocated_{false};
 
 };
 

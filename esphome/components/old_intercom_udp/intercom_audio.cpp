@@ -12,6 +12,7 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
+#include "esphome/core/helpers.h"
 #ifdef USE_SPEAKER
 #include "esphome/components/audio/audio.h"
 #endif
@@ -48,9 +49,10 @@ void IntercomAudio::setup() {
   // Pre-allocate mic conversion buffer
   this->mic_convert_buf_.resize(FRAME_SAMPLES);
 
-  // Allocate frame buffers
-  this->rx_frame_ = (int16_t *)heap_caps_malloc(RX_MAX_BYTES, MALLOC_CAP_INTERNAL);
-  this->tx_frame_ = (int16_t *)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
+  // Allocate frame buffers (internal RAM: touched on every UDP packet / mic callback)
+  RAMAllocator<int16_t> internal_i16(RAMAllocator<int16_t>::ALLOC_INTERNAL);
+  this->rx_frame_ = internal_i16.allocate(RX_MAX_SAMPLES);
+  this->tx_frame_ = internal_i16.allocate(FRAME_SAMPLES);
   if (!this->rx_frame_ || !this->tx_frame_) {
     ESP_LOGE(TAG, "Failed to allocate frame buffers");
     this->mark_failed();
@@ -70,15 +72,15 @@ void IntercomAudio::setup() {
 #ifdef USE_ESP_AEC
   if (this->aec_ != nullptr) {
     this->speaker_ref_buffer_ = RingBuffer::create(this->buffer_size_);
-    this->aec_mic_frame_ = (int16_t *)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
-    this->aec_ref_frame_ = (int16_t *)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
-    this->aec_out_frame_ = (int16_t *)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_INTERNAL);
+    this->aec_mic_frame_ = internal_i16.allocate(FRAME_SAMPLES);
+    this->aec_ref_frame_ = internal_i16.allocate(FRAME_SAMPLES);
+    this->aec_out_frame_ = internal_i16.allocate(FRAME_SAMPLES);
     if (!this->speaker_ref_buffer_ || !this->aec_mic_frame_ || !this->aec_ref_frame_ || !this->aec_out_frame_) {
       ESP_LOGW(TAG, "AEC buffer alloc failed - disabling AEC");
       this->speaker_ref_buffer_.reset();
-      if (this->aec_mic_frame_) { heap_caps_free(this->aec_mic_frame_); this->aec_mic_frame_ = nullptr; }
-      if (this->aec_ref_frame_) { heap_caps_free(this->aec_ref_frame_); this->aec_ref_frame_ = nullptr; }
-      if (this->aec_out_frame_) { heap_caps_free(this->aec_out_frame_); this->aec_out_frame_ = nullptr; }
+      if (this->aec_mic_frame_) { internal_i16.deallocate(this->aec_mic_frame_, FRAME_SAMPLES); this->aec_mic_frame_ = nullptr; }
+      if (this->aec_ref_frame_) { internal_i16.deallocate(this->aec_ref_frame_, FRAME_SAMPLES); this->aec_ref_frame_ = nullptr; }
+      if (this->aec_out_frame_) { internal_i16.deallocate(this->aec_out_frame_, FRAME_SAMPLES); this->aec_out_frame_ = nullptr; }
       this->aec_enabled_ = false;
     } else {
       ESP_LOGI(TAG, "AEC buffers ready");
@@ -113,8 +115,11 @@ void IntercomAudio::setup() {
   }
 #endif
 
-  // Create audio task ONCE - runs forever, controlled by streaming_ flag
-  // Stack: 8KB needed for AEC processing + local buffers
+  // Create audio task ONCE - runs forever, controlled by streaming_ flag.
+  // Stack: 8KB on the internal heap (FreeRTOS dynamic task). Keeps the
+  // legacy component compatible with plain ESP32 boards without PSRAM,
+  // which is the whole point of old_intercom_udp (baby monitor, two-room
+  // direct UDP link without Home Assistant).
   BaseType_t ok = xTaskCreatePinnedToCore(
       audio_task,
       "intercom_audio",

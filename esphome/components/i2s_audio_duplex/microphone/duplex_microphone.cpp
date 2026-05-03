@@ -12,8 +12,8 @@ static const char *const TAG = "i2s_duplex.mic";
 void I2SAudioDuplexMicrophone::setup() {
   ESP_LOGCONFIG(TAG, "Setting up I2S Audio Duplex Microphone...");
 
-  // Create counting semaphore for reference counting multiple listeners
-  // Initialized to MAX_LISTENERS (all available) - taking decrements, giving increments
+  // Counting semaphore for listener refcounting (take to decrement, give
+  // to increment). Initial count == max count == MAX_LISTENERS.
   this->active_listeners_semaphore_ = xSemaphoreCreateCounting(MAX_LISTENERS, MAX_LISTENERS);
   if (this->active_listeners_semaphore_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create semaphore");
@@ -21,10 +21,12 @@ void I2SAudioDuplexMicrophone::setup() {
     return;
   }
 
-  // Event group for synchronizing start/stop transitions
+  // Event group to sync start/stop transitions.
   this->event_group_ = xEventGroupCreate();
   if (this->event_group_ == nullptr) {
     ESP_LOGE(TAG, "Failed to create event group");
+    vSemaphoreDelete(this->active_listeners_semaphore_);
+    this->active_listeners_semaphore_ = nullptr;
     this->mark_failed();
     return;
   }
@@ -95,11 +97,13 @@ void I2SAudioDuplexMicrophone::on_audio_data_(const uint8_t *data, size_t len) {
   }
 
   if (this->mute_state_) {
-    // Send silence; keeps pipeline running but no real audio leaks
-    this->audio_buffer_.assign(len, 0);
-  } else {
-    this->audio_buffer_.assign(data, data + len);
+    // Mute: drop the frame entirely. Both MWW and VoiceAssistant write incoming
+    // data to a ring buffer with no watchdog on absence; skipping dispatch is
+    // equivalent to silence at the consumer (no detection, no STT) and saves
+    // a 2 KB memset plus the downstream inference cycles on the MWW task.
+    return;
   }
+  this->audio_buffer_.assign(data, data + len);
   this->data_callbacks_.call(this->audio_buffer_);
 }
 
@@ -128,8 +132,8 @@ void I2SAudioDuplexMicrophone::loop() {
       if (this->status_has_error()) {
         break;
       }
-      ESP_LOGD(TAG, "Microphone started");
-      this->parent_->start_mic();
+      ESP_LOGI(TAG, "Microphone started");
+      this->parent_->register_mic_consumer(this);
       this->state_ = microphone::STATE_RUNNING;
       if (this->event_group_ != nullptr) {
         xEventGroupSetBits(this->event_group_, EVENT_STARTED);
@@ -140,8 +144,8 @@ void I2SAudioDuplexMicrophone::loop() {
       break;
 
     case microphone::STATE_STOPPING:
-      ESP_LOGD(TAG, "Microphone stopped");
-      this->parent_->stop_mic();
+      ESP_LOGI(TAG, "Microphone stopped");
+      this->parent_->unregister_mic_consumer(this);
       this->state_ = microphone::STATE_STOPPED;
       if (this->event_group_ != nullptr) {
         xEventGroupSetBits(this->event_group_, EVENT_STOPPED);

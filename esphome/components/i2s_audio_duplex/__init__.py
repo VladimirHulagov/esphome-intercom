@@ -10,7 +10,6 @@ If output_sample_rate is omitted, no decimation occurs (backward compatible).
 """
 import esphome.codegen as cg
 import esphome.config_validation as cv
-import esphome.final_validate as fv
 from esphome import automation, pins
 from esphome.const import CONF_ID, CONF_NUM_CHANNELS, CONF_SAMPLE_RATE
 from esphome.components.esp32 import get_esp32_variant
@@ -28,7 +27,7 @@ from esphome.components.esp32.const import (
 
 CODEOWNERS = ["@n-IA-hane"]
 DEPENDENCIES = ["esp32"]
-AUTO_LOAD = ["switch", "number"]
+AUTO_LOAD = ["switch", "number", "sensor"]
 
 CONF_I2S_LRCLK_PIN = "i2s_lrclk_pin"
 CONF_I2S_BCLK_PIN = "i2s_bclk_pin"
@@ -36,7 +35,7 @@ CONF_I2S_MCLK_PIN = "i2s_mclk_pin"
 CONF_I2S_DIN_PIN = "i2s_din_pin"
 CONF_I2S_DOUT_PIN = "i2s_dout_pin"
 CONF_OUTPUT_SAMPLE_RATE = "output_sample_rate"
-CONF_AEC_ID = "aec_id"
+CONF_PROCESSOR_ID = "processor_id"
 CONF_MIC_ATTENUATION = "mic_attenuation"
 CONF_USE_STEREO_AEC_REF = "use_stereo_aec_reference"
 CONF_REFERENCE_CHANNEL = "reference_channel"
@@ -52,6 +51,7 @@ CONF_I2S_COMM_FMT = "i2s_comm_fmt"
 CONF_USE_TDM_REFERENCE = "use_tdm_reference"
 CONF_TDM_TOTAL_SLOTS = "tdm_total_slots"
 CONF_TDM_MIC_SLOT = "tdm_mic_slot"
+CONF_TDM_MIC_SLOTS = "tdm_mic_slots"
 CONF_TDM_REF_SLOT = "tdm_ref_slot"
 CONF_I2S_AUDIO_DUPLEX_ID = "i2s_audio_duplex_id"
 CONF_TASK_PRIORITY = "task_priority"
@@ -59,17 +59,24 @@ CONF_TASK_CORE = "task_core"
 CONF_TASK_STACK_SIZE = "task_stack_size"
 CONF_TX_CHANNEL = "tx_channel"
 CONF_BUFFERS_IN_PSRAM = "buffers_in_psram"
+CONF_AEC_REF_RING_IN_PSRAM = "aec_ref_ring_in_psram"
+CONF_AUDIO_STACK_IN_PSRAM = "audio_stack_in_psram"
 CONF_AEC_REFERENCE_MODE = "aec_reference"
 CONF_AEC_REF_BUFFER_MS = "aec_reference_buffer_ms"
+CONF_TELEMETRY = "telemetry"
+CONF_TELEMETRY_LOG_INTERVAL_FRAMES = "telemetry_log_interval_frames"
+CONF_FIR_DECIMATOR = "fir_decimator"
+
+FIR_DECIMATOR_OPTIONS = ("custom", "dsps_fird_s16")
 
 i2s_audio_duplex_ns = cg.esphome_ns.namespace("i2s_audio_duplex")
 I2SAudioDuplex = i2s_audio_duplex_ns.class_("I2SAudioDuplex", cg.Component)
 StartAction = i2s_audio_duplex_ns.class_("StartAction", automation.Action)
 StopAction = i2s_audio_duplex_ns.class_("StopAction", automation.Action)
 
-# AecProcessor abstract interface (defined in esp_aec/aec_processor.h)
+# AudioProcessor abstract interface (defined in audio_processor/audio_processor.h)
 # Both esp_aec::EspAec and future esp_afe::EspAfe inherit from this.
-AecProcessor = cg.esphome_ns.class_("AecProcessor")
+AudioProcessor = cg.esphome_ns.namespace("audio_processor").class_("AudioProcessor")
 
 # I2S port count per SoC variant (from SOC_I2S_NUM in soc_caps.h)
 I2S_PORTS = {
@@ -121,15 +128,19 @@ def _validate_tdm_config(config):
 
     if use_tdm:
         total_slots = config.get(CONF_TDM_TOTAL_SLOTS, 4)
-        mic_slot = config.get(CONF_TDM_MIC_SLOT, 0)
         ref_slot = config.get(CONF_TDM_REF_SLOT, 1)
+        mic_slots = config.get(CONF_TDM_MIC_SLOTS, [config.get(CONF_TDM_MIC_SLOT, 0)])
 
-        if mic_slot == ref_slot:
-            raise cv.Invalid(
-                f"tdm_mic_slot ({mic_slot}) and tdm_ref_slot ({ref_slot}) must differ"
-            )
+        if len(set(mic_slots)) != len(mic_slots):
+            raise cv.Invalid("tdm_mic_slots must not contain duplicates")
 
-        max_slot = max(mic_slot, ref_slot)
+        for mic_slot in mic_slots:
+            if mic_slot == ref_slot:
+                raise cv.Invalid(
+                    f"tdm_mic_slots contains ref slot {ref_slot}; microphone and reference slots must differ"
+                )
+
+        max_slot = max([ref_slot, *mic_slots])
         if total_slots <= max_slot:
             raise cv.Invalid(
                 f"tdm_total_slots ({total_slots}) must be > {max_slot} "
@@ -188,7 +199,7 @@ CONFIG_SCHEMA = cv.All(
         # Output sample rate for mic/AEC/MWW/VA (decimated from bus rate)
         # If omitted, equals sample_rate (no decimation)
         cv.Optional(CONF_OUTPUT_SAMPLE_RATE): cv.int_range(min=8000, max=48000),
-        cv.Optional(CONF_AEC_ID): cv.use_id(AecProcessor),
+        cv.Optional(CONF_PROCESSOR_ID): cv.use_id(AudioProcessor),
         # Pre-AEC mic gain/attenuation: <1.0 attenuates (hot mics), >1.0 amplifies (weak mics)
         cv.Optional(CONF_MIC_ATTENUATION, default=1.0): cv.float_range(min=0.01, max=32.0),
         # ES8311 digital feedback: RX is stereo with L=DAC(reference), R=ADC(mic)
@@ -200,6 +211,10 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_USE_TDM_REFERENCE, default=False): cv.boolean,
         cv.Optional(CONF_TDM_TOTAL_SLOTS, default=4): cv.int_range(min=2, max=8),
         cv.Optional(CONF_TDM_MIC_SLOT, default=0): cv.int_range(min=0, max=7),
+        cv.Optional(CONF_TDM_MIC_SLOTS): cv.All(
+            cv.ensure_list(cv.int_range(min=0, max=7)),
+            cv.Length(min=1, max=2),
+        ),
         cv.Optional(CONF_TDM_REF_SLOT, default=1): cv.int_range(min=0, max=7),
         # Audio task tuning (advanced)
         cv.Optional(CONF_TASK_PRIORITY, default=19): cv.int_range(min=1, max=24),
@@ -208,6 +223,12 @@ CONFIG_SCHEMA = cv.All(
         # Use PSRAM for non-DMA audio buffers (saves ~15KB internal RAM).
         # Requires PSRAM. DMA buffers (I2S RX/TX) always use internal RAM.
         cv.Optional(CONF_BUFFERS_IN_PSRAM, default=False): cv.boolean,
+        # Place the audio task's own stack in PSRAM. Saves ~8KB internal RAM
+        # but increases per-frame latency because every function return has
+        # to traverse PSRAM. Only enable on boards that need the internal
+        # headroom (e.g. waveshare-s3 running 2-mic BSS plus concurrent TLS
+        # streams). Requires CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y.
+        cv.Optional(CONF_AUDIO_STACK_IN_PSRAM, default=False): cv.boolean,
         # AEC reference mode for no-codec setups (ignored if stereo/TDM ref is configured):
         #   previous_frame: use the TX frame from the previous cycle (default, ~32ms delay)
         #   ring_buffer: TYPE2-style ring buffer with configurable delay (better alignment)
@@ -216,6 +237,19 @@ CONFIG_SCHEMA = cv.All(
         ),
         # Ring buffer capacity in ms (only used with aec_reference: ring_buffer)
         cv.Optional(CONF_AEC_REF_BUFFER_MS, default=80): cv.int_range(min=32, max=500),
+        # Place AEC reference ring buffer in PSRAM. Default false = internal RAM
+        # (~13.6 us/frame faster on Core 0, costs ~3-5 KB internal). Set true to
+        # save internal RAM at the cost of Core 0 PSRAM traffic.
+        cv.Optional(CONF_AEC_REF_RING_IN_PSRAM, default=False): cv.boolean,
+        # Enable per-stage cycle counting and diagnostics (debug only, adds overhead)
+        cv.Optional(CONF_TELEMETRY, default=False): cv.boolean,
+        cv.Optional(CONF_TELEMETRY_LOG_INTERVAL_FRAMES, default=128): cv.int_range(min=1, max=8192),
+        # FIR decimator kernel selection. Default `dsps_fird_s16` (esp-dsp SIMD,
+        # `_aes3` on ESP32-S3). Set to `custom` to use a pure-float scalar
+        # implementation that bypasses the SIMD kernel; required on chips where
+        # the SIMD path is unreliable (e.g. ESP32-P4 RISC-V, esp-dsp #117/#102).
+        cv.Optional(CONF_FIR_DECIMATOR, default="dsps_fird_s16"):
+            cv.one_of(*FIR_DECIMATOR_OPTIONS, lower=True),
     }).extend(cv.COMPONENT_SCHEMA),
     _validate_sample_rates,
     _validate_tdm_config,
@@ -262,19 +296,32 @@ def _final_validate(config):
             f"APLL clock source is only available on ESP32, ESP32-S2, and ESP32-P4."
         )
 
-    # Cross-component validation: check for AEC conflict with intercom_api
     from esphome.core import CORE
     full_config = CORE.config or {}
 
+    # esp_aec and esp_afe are mutually exclusive: both provide AudioProcessor
+    has_aec = "esp_aec" in full_config
+    has_afe = "esp_afe" in full_config
+    if has_aec and has_afe:
+        raise cv.Invalid(
+            "esp_aec and esp_afe are mutually exclusive. "
+            "Use esp_afe (full AFE pipeline with AEC+NS+AGC+beamforming) "
+            "or esp_aec (standalone echo cancellation), not both."
+        )
+
+    # Cross-component validation: check for audio processor conflict with intercom_api.
+    # Both components accept processor_id; if both set it the audio processor is fed
+    # from two producers and races on every frame. Reject at validation time.
+
     intercom_configs = full_config.get("intercom_api", [])
     if intercom_configs:
-        has_duplex_aec = CONF_AEC_ID in config and config.get(CONF_AEC_ID) is not None
+        has_duplex_processor = CONF_PROCESSOR_ID in config and config.get(CONF_PROCESSOR_ID) is not None
         for ic in (intercom_configs if isinstance(intercom_configs, list) else [intercom_configs]):
-            if isinstance(ic, dict) and ic.get("aec_id") is not None and has_duplex_aec:
+            if isinstance(ic, dict) and ic.get("processor_id") is not None and has_duplex_processor:
                 raise cv.Invalid(
-                    "Both i2s_audio_duplex and intercom_api have aec_id configured. "
-                    "This causes a race condition on the AEC processor. "
-                    "Use aec_id on only ONE component (i2s_audio_duplex recommended)."
+                    "Both i2s_audio_duplex and intercom_api have processor_id configured. "
+                    "This causes a race condition on the audio processor. "
+                    "Use processor_id on only ONE component (i2s_audio_duplex recommended)."
                 )
 
     return config
@@ -335,7 +382,10 @@ async def to_code(config):
     if config[CONF_USE_TDM_REFERENCE]:
         cg.add(var.set_use_tdm_reference(True))
         cg.add(var.set_tdm_total_slots(config[CONF_TDM_TOTAL_SLOTS]))
-        cg.add(var.set_tdm_mic_slot(config[CONF_TDM_MIC_SLOT]))
+        mic_slots = config.get(CONF_TDM_MIC_SLOTS, [config[CONF_TDM_MIC_SLOT]])
+        cg.add(var.set_tdm_mic_slot(mic_slots[0]))
+        if len(mic_slots) > 1:
+            cg.add(var.set_secondary_tdm_mic_slot(mic_slots[1]))
         cg.add(var.set_tdm_ref_slot(config[CONF_TDM_REF_SLOT]))
 
     # Audio task tuning
@@ -343,17 +393,24 @@ async def to_code(config):
     cg.add(var.set_task_core(config[CONF_TASK_CORE]))
     cg.add(var.set_task_stack_size(config[CONF_TASK_STACK_SIZE]))
     cg.add(var.set_buffers_in_psram(config[CONF_BUFFERS_IN_PSRAM]))
+    cg.add(var.set_audio_stack_in_psram(config[CONF_AUDIO_STACK_IN_PSRAM]))
+    cg.add(var.set_fir_decimator_custom(config[CONF_FIR_DECIMATOR] == "custom"))
 
     # AEC reference mode (only relevant for no-codec setups)
     cg.add(var.set_aec_reference_mode(config[CONF_AEC_REFERENCE_MODE] == "ring_buffer"))
     cg.add(var.set_aec_ref_buffer_ms(config[CONF_AEC_REF_BUFFER_MS]))
+    cg.add(var.set_aec_ref_ring_in_psram(config[CONF_AEC_REF_RING_IN_PSRAM]))
 
-    # Link AEC if configured
-    if CONF_AEC_ID in config:
-        aec = await cg.get_variable(config[CONF_AEC_ID])
-        cg.add(var.set_aec(aec))
-        # Enable AEC compilation in i2s_audio_duplex
-        cg.add_define("USE_ESP_AEC")
+    # Telemetry: per-stage cycle counting and diagnostics
+    if config[CONF_TELEMETRY]:
+        cg.add_define("USE_DUPLEX_TELEMETRY")
+        cg.add(var.set_telemetry_log_interval_frames(config[CONF_TELEMETRY_LOG_INTERVAL_FRAMES]))
+
+    # Link audio processor if configured
+    if CONF_PROCESSOR_ID in config:
+        processor = await cg.get_variable(config[CONF_PROCESSOR_ID])
+        cg.add(var.set_processor(processor))
+        cg.add_define("USE_AUDIO_PROCESSOR")
 
 
 # === Actions ===

@@ -35,7 +35,7 @@ class IntercomActiveDevicesSensor(SensorEntity):
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the sensor."""
         self.hass = hass
-        self._attr_native_value = "Home Assistant"
+        self._attr_native_value = hass.config.location_name or "Home Assistant"
         self._tracked_entities: set[str] = set()
         self._unsubscribe = None
 
@@ -114,8 +114,11 @@ class IntercomActiveDevicesSensor(SensorEntity):
                 if device and device.name:
                     names.add(device.name.strip())
 
-        # Sort for stable order, prepend Home Assistant
-        active_devices = ["Home Assistant"] + sorted(names, key=str.casefold)
+        # Sort for stable order, prepend the HA instance name (location_name).
+        # The ESP devices treat contacts_[0] as the HA peer (see is_ha_destination
+        # in intercom_api), so it must always be first regardless of sort order.
+        ha_name = self.hass.config.location_name or "Home Assistant"
+        active_devices = [ha_name] + sorted(names, key=str.casefold)
 
         # Update sensor value
         new_value = ",".join(active_devices)

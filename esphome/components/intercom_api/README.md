@@ -11,7 +11,8 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 - **TCP Server** on port 6054 for audio streaming
 - **FreeRTOS Tasks** for non-blocking audio processing
 - **Finite State Machine** for call states (Idle → Ringing → Streaming)
-- **AEC Integration** via `esp_aec` component
+- **Audio Processor Integration** via `esp_aec`, or `esp_afe` when the
+  microphone path is fed by `i2s_audio_duplex`
 - **Contact Management** for ESP↔ESP calls (Full mode)
 - **Persistent Settings** saved to flash
 - **ESPHome Native Platforms** for switches, numbers, sensors
@@ -23,11 +24,12 @@ The `intercom_api` component creates a TCP server on port 6054 that handles audi
 │                      intercom_api Component                      │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐ │
 │  │   server_task   │  │    tx_task      │  │  speaker_task   │ │
-│  │   (Core 1, p7)  │  │   (Core 0, p6)  │  │   (Core 0, p4)  │ │
+│  │   (Core 1, p5)  │  │   (Core 0, p5)  │  │   (Core 0, p4)  │ │
 │  │                 │  │                 │  │                 │ │
 │  │ • TCP accept    │  │ • mic_buffer_   │  │ • speaker_buf   │ │
-│  │ • RX handling   │  │ • AEC process   │  │ • I2S write     │ │
-│  │ • Protocol FSM  │  │ • TCP send      │  │ • Scheduled     │ │
+│  │ • RX handling   │  │ • audio_proc.   │  │ • I2S write     │ │
+│  │ • Protocol FSM  │  │   process()     │  │ • AEC ref feed  │ │
+│  │                 │  │ • TCP send      │  │                 │ │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘ │
 │           │                    │                    │          │
 │           ▼                    ▼                    ▼          │
@@ -55,7 +57,9 @@ external_components:
       type: git
       url: https://github.com/n-IA-hane/esphome-intercom
       ref: main
-    components: [intercom_api, esp_aec]
+    components: [audio_processor, intercom_api, esp_aec]
+    # Or with esp_afe (full pipeline: AEC + NS + VAD + AGC):
+    # components: [audio_processor, intercom_api, esp_afe]
 
 intercom_api:
   id: intercom
@@ -71,7 +75,7 @@ intercom_api:
   mode: full                  # simple or full
   microphone: mic_component
   speaker: spk_component
-  aec_id: aec_processor       # Optional: echo cancellation
+  processor_id: aec_processor       # Optional: echo cancellation
   dc_offset_removal: true     # For mics with DC bias
   ringing_timeout: 30s        # Auto-decline timeout
 
@@ -104,11 +108,12 @@ intercom_api:
 | `mode` | string | `simple` | Operating mode: `simple` or `full` |
 | `microphone` | ID | Required | Reference to microphone component |
 | `speaker` | ID | Required | Reference to speaker component |
-| `aec_id` | ID | - | Reference to esp_aec component |
+| `processor_id` | ID | - | Reference to an audio processor. **Use `esp_aec` only** when `intercom_api` runs without `i2s_audio_duplex` in front of it (the standalone dual-bus MEMS + amp setup). `esp_afe` is type-compatible but its feed/fetch tasks need the fixed-cadence frames that only `i2s_audio_duplex` produces; pairing `esp_afe` with standalone `intercom_api` will silently fail to process audio. With `i2s_audio_duplex` in the chain both processors are valid. |
 | `aec_reference_delay_ms` | int | 80 | AEC ring buffer pre-fill delay (10-200ms). Tune for your hardware if echo cancellation is poor. |
-
 | `dc_offset_removal` | bool | false | Remove DC offset from mic signal |
 | `ringing_timeout` | time | 0s | Auto-decline after timeout (0 = disabled) |
+| `tasks_stack_in_psram` | bool | false | Place the server / tx / speaker task stacks in PSRAM (saves ~28 KB of internal heap on S3/P4 builds where AFE/MWW/LVGL compete for it). Requires PSRAM and `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"`. Leave default `false` on plain ESP32 boards without PSRAM, otherwise the tasks fail to start and the component is disabled. The full-experience S3/P4/Xiaozhi YAMLs in `yamls/full-experience/single-bus/` set this to `true`. |
+| `frame_buffers_in_psram` | bool | false | Place the working frame buffers (`aec_mic`, `aec_ref`, `aec_out`, ~3 KB total) in PSRAM. These buffers stage every audio frame fed to whichever processor (`esp_aec` or `esp_afe`) is wired via `processor_id`. Default `false` keeps them in internal RAM, saving ~20 us/frame on Core 0 (each buffer is written and read every AEC frame). Set `true` to save 3 KB of internal RAM at the cost of Core 0 PSRAM traffic; on systems without PSRAM the allocator falls back to internal automatically. The full-experience and intercom-only YAMLs ship with this `true` to replicate the historical behaviour. |
 
 ## Operating Modes
 
@@ -179,7 +184,17 @@ switch:
       id: aec_switch
       name: "Echo Cancellation"
       restore_mode: RESTORE_DEFAULT_ON
+    active:
+      id: intercom_active_switch
+      name: "Intercom Enabled"
+      restore_mode: RESTORE_DEFAULT_ON
 ```
+
+| Switch sub-key | Effect |
+|----------------|--------|
+| `auto_answer` | Auto-accept any incoming call. |
+| `aec` | Toggle the linked audio processor on or off at runtime. |
+| `active` | Master enable for the intercom. When off, the TCP server stops accepting connections and outgoing calls are blocked. Useful as a privacy switch or for night mode. |
 
 ### Number Platform
 
@@ -194,7 +209,7 @@ number:
     mic_gain:
       id: mic_gain
       name: "Mic Gain"
-      # Range: -20 to +30 dB
+      # Range: -20 to +20 dB
 ```
 
 > **Note**: When `i2s_audio_duplex` is also present, `i2s_audio_duplex` owns the `mic_gain` and `speaker_volume` number entities with full dB-scale control and persistence. In that case, `intercom_api`'s number entities serve as **fallback only** for non-duplex setups (e.g., ESP32-S3 Mini with separate I2S buses). A `FINAL_VALIDATE_SCHEMA` at compile time prevents conflicts by detecting when both components try to own the same functionality (dual AEC, dual DC offset).
@@ -358,10 +373,29 @@ Use in `if:` blocks:
 | Condition | True when |
 |-----------|-----------|
 | `is_idle` | State is Idle |
-| `is_ringing` | State is Ringing |
-| `is_calling` | State is Outgoing |
-| `is_in_call` | State is Streaming |
-| `is_incoming` | Has pending incoming call |
+| `is_ringing` | State is Ringing (incoming call, before answer) |
+| `is_calling` | State is Outgoing (waiting for the remote end to pick up) |
+| `is_answering` | State is Answering (call accepted, audio bridge being established) |
+| `is_streaming` | Audio is actively streaming both ways |
+| `is_in_call` | State is Streaming or Answering (true once a call is live) |
+| `is_incoming` | Pending incoming call (Ringing or Answering) |
+| `destination_is` | Currently selected contact name matches the `destination:` argument (Full mode) |
+
+## Triggers run on the main loop
+
+All `on_ringing`, `on_outgoing_call`, `on_answered`, `on_streaming`, `on_idle`, `on_hangup` and `on_call_failed` triggers fire from the ESPHome main loop, not from the TCP server task. Internally the component calls `Component::defer()` to hand the trigger off to the scheduler, so a lambda or action sequence attached to a trigger can safely touch any ESPHome entity, including LVGL widgets, text sensors, switches and media players, without the main-loop-only constraints that FreeRTOS tasks would hit.
+
+Concretely this means you can write:
+
+```yaml
+on_ringing:
+  - lvgl.label.update:
+      id: status_label
+      text: "Incoming call"
+  - light.turn_on: status_led
+```
+
+and the trigger will run in a context where those calls are valid, even though the call state transition itself was detected on the network task.
 
 ## Lambda API
 
@@ -386,7 +420,7 @@ id(intercom).start();
 id(intercom).stop();
 id(intercom).answer_call();
 id(intercom).set_volume(0.8f);        // 0.0 - 1.0
-id(intercom).set_mic_gain_db(6.0f);   // -20 to +30
+id(intercom).set_mic_gain_db(6.0f);   // -20 to +20
 id(intercom).set_aec_enabled(true);
 id(intercom).set_auto_answer(false);
 ```
@@ -423,7 +457,7 @@ id(intercom).set_auto_answer(false);
 - Sample rate: 16000 Hz
 - Bit depth: 16-bit signed PCM
 - Channels: Mono
-- Chunk size: 512 bytes (256 samples = 16ms)
+- Chunk size: 1024 bytes (512 samples = 32 ms)
 
 ## Auto-created Sensors
 
@@ -475,17 +509,20 @@ api:
 | Task | Core | Priority | Stack | Notes |
 |------|------|----------|-------|-------|
 | server_task | 1 | 5 | 8192 | Always created. Handles TCP RX, call FSM, YAML callbacks. |
-| tx_task | 0 | 5 | 12288 | **Only created when `aec_id` is set on `intercom_api`**. Mic→network + AEC. |
-| speaker_task | 0 | 4 | 8192 | **Only created when `aec_id` is set on `intercom_api`**. Network→speaker, AEC ref. |
+| tx_task | 0 | 5 | 12288 | **Only created when `processor_id` is set on `intercom_api`**. Mic→network + audio processing. |
+| speaker_task | 0 | 4 | 8192 | **Only created when `processor_id` is set on `intercom_api`**. Network→speaker, processor ref. |
 
-> **Task elimination**: When `intercom_api` does NOT have its own `aec_id` (the standard case, where AEC is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
+> **Task elimination**: When `intercom_api` does NOT have its own `processor_id` (the standard case, where audio processing is handled by `i2s_audio_duplex`), `tx_task` and `speaker_task` are NOT created. The server_task handles TX inline and plays audio directly via `speaker_->play()`. This saves ~32KB of internal RAM (12KB tx_task stack + 8KB speaker_task stack + 8KB speaker_buffer + 2KB audio_tx_buffer + 2KB spk_ref_scaled + semaphore). The `largest_free_block` jumps from ~12.8KB to ~25KB.
 
 ## Troubleshooting
 
 ### "Connection refused" on port 6054
 
-- Check `CONFIG_LWIP_MAX_SOCKETS` is increased (default 10 → 16)
-- Verify no other service uses port 6054
+- Verify no other service is bound to port 6054 on the device.
+- Check that the `active` switch (if you exposed it) is on.
+- Check that the device is on the network and reachable from Home Assistant.
+
+The TCP socket pool is sized automatically: `intercom_api` calls `socket.consume_sockets(N)` at validation time, so ESPHome bumps `CONFIG_LWIP_MAX_SOCKETS` to fit the intercom server plus the rest of the device's network components. You should not need to set `CONFIG_LWIP_MAX_SOCKETS` by hand.
 
 ### Audio glitches
 
@@ -495,8 +532,8 @@ api:
 
 ### AEC not working
 
-- Verify `aec_id` is linked
-- Check `esp_aec` component is configured
+- Verify `processor_id` is linked to an `esp_aec` or `esp_afe` component
+- Check the audio processor component is configured
 - Ensure AEC switch is ON
 
 ### State stuck in "Ringing"
