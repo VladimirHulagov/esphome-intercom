@@ -702,7 +702,6 @@ output:
       number: GPIO4
       inverted: true
     frequency: 5000Hz
-    bit_depth: 8
 
 # =============================================================================
 # Lights
