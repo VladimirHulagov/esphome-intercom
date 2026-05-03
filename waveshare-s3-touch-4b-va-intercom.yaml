@@ -1337,7 +1337,7 @@ lvgl:
     - id: main_page
       bg_color: 0x0D1117
       widgets:
-        - panel:
+        - obj:
             id: top_bar
             width: 480
             height: 40
@@ -1466,7 +1466,7 @@ lvgl:
                         text: ""
                         text_color: 0x888888
                         text_font: font_text
-                    - panel:
+                    - obj:
                         id: forecast_container
                         align: TOP_MID
                         y: 180
@@ -1480,7 +1480,7 @@ lvgl:
                           flex_align_cross: START
                           flex_align_track: START
                         widgets:
-                          - panel:
+                          - obj:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
@@ -1512,7 +1512,7 @@ lvgl:
                                     text: ""
                                     text_color: 0x6BA3FF
                                     text_font: font_text
-                          - panel:
+                          - obj:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
@@ -1544,7 +1544,7 @@ lvgl:
                                     text: ""
                                     text_color: 0x6BA3FF
                                     text_font: font_text
-                          - panel:
+                          - obj:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
@@ -1576,7 +1576,7 @@ lvgl:
                                     text: ""
                                     text_color: 0x6BA3FF
                                     text_font: font_text
-                          - panel:
+                          - obj:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
@@ -1608,7 +1608,7 @@ lvgl:
                                     text: ""
                                     text_color: 0x6BA3FF
                                     text_font: font_text
-                          - panel:
+                          - obj:
                               width: 84
                               height: 240
                               bg_opa: TRANSP
@@ -1640,7 +1640,7 @@ lvgl:
                                     text: ""
                                     text_color: 0x6BA3FF
                                     text_font: font_text
-        - panel:
+        - obj:
             id: va_listening_group
             width: 480
             height: 440
@@ -1662,7 +1662,7 @@ lvgl:
                   text_font: font_text
             on_click:
               - voice_assistant.stop:
-        - panel:
+        - obj:
             id: va_thinking_group
             width: 480
             height: 440
@@ -1693,7 +1693,7 @@ lvgl:
                   text_font: font_text
             on_click:
               - voice_assistant.stop:
-        - panel:
+        - obj:
             id: va_replying_group
             width: 480
             height: 440
@@ -1724,7 +1724,7 @@ lvgl:
                   text_font: font_text
             on_click:
               - voice_assistant.stop:
-        - panel:
+        - obj:
             id: va_error_group
             width: 480
             height: 440
@@ -1745,7 +1745,7 @@ lvgl:
                   text_font: font_text
             on_click:
               - voice_assistant.start:
-        - panel:
+        - obj:
             id: va_muted_group
             width: 480
             height: 440
@@ -1779,7 +1779,7 @@ lvgl:
                         text_font: font_btn
                   on_click:
                     - switch.turn_off: mute
-        - panel:
+        - obj:
             id: ic_ringing_in_group
             width: 480
             height: 440
@@ -1836,7 +1836,7 @@ lvgl:
                         text_font: font_btn
                   on_click:
                     - button.press: decline_button
-        - panel:
+        - obj:
             id: ic_outgoing_group
             width: 480
             height: 440
@@ -1877,7 +1877,7 @@ lvgl:
                         text_font: font_btn
                   on_click:
                     - button.press: call_button
-        - panel:
+        - obj:
             id: ic_in_call_group
             width: 480
             height: 440
