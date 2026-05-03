@@ -73,7 +73,7 @@ substitutions:
   voice_assist_timer_finished_phase_id: "20"
 
   font_glyphsets: "GF_Latin_Core"
-  font_glyphsets_extra: "GF_Latin_Core"
+  font_cyrillic_glyphs: 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя'
   font_family: Figtree
 
 # =============================================================================
@@ -1118,6 +1118,7 @@ font:
     size: 20
     glyphsets:
       - ${font_glyphsets}
+    glyphs: ${font_cyrillic_glyphs}
   - file:
       type: gfonts
       family: ${font_family}
@@ -1126,6 +1127,7 @@ font:
     size: 30
     glyphsets:
       - ${font_glyphsets}
+    glyphs: ${font_cyrillic_glyphs}
   - file:
       type: gfonts
       family: Roboto
@@ -1134,6 +1136,7 @@ font:
     size: 36
     glyphsets:
       - GF_Latin_Core
+    glyphs: ${font_cyrillic_glyphs}
   - file:
       type: gfonts
       family: Roboto
@@ -1142,6 +1145,7 @@ font:
     size: 24
     glyphsets:
       - GF_Latin_Core
+    glyphs: ${font_cyrillic_glyphs}
   - file:
       type: gfonts
       family: ${font_family}
@@ -1149,7 +1153,8 @@ font:
     id: font_btn
     size: 22
     glyphsets:
-      - ${font_glyphsets_extra}
+      - ${font_glyphsets}
+    glyphs: ${font_cyrillic_glyphs}
   - file:
       type: gfonts
       family: "Roboto Mono"
