@@ -1286,22 +1286,22 @@ display:
       width: 480
       height: 480
     data_pins:
-      - number: 10
-      - number: 11
-      - number: 12
-      - number: 13
-      - number: 14
+      - number: 40
+      - number: 41
+      - number: 42
+      - number: 2
+      - number: 1
       - number: 21
       - number: 8
       - number: 18
       - number: 45
       - number: 38
       - number: 39
-      - number: 40
-      - number: 41
-      - number: 42
-      - number: 2
-      - number: 1
+      - number: 10
+      - number: 11
+      - number: 12
+      - number: 13
+      - number: 14
     update_interval: never
     auto_clear_enabled: false
 
