@@ -1315,7 +1315,7 @@ lvgl:
   byte_order: little_endian
   log_level: WARN
   pages:
-     - id: color_test_page
+    - id: color_test_page
       bg_color: 0x000000
       widgets:
         - obj:
