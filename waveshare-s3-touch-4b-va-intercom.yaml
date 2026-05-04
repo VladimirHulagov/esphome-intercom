@@ -212,7 +212,41 @@ esphome:
         - light.turn_on: backlight
     - priority: 800
       then:
-        - lvgl.page.show: color_test_page
+        - lambda: |-
+            auto *disp = id(main_display);
+            int w = disp->get_width();
+            int h = disp->get_height();
+            ESP_LOGI("fb_test", "Display %dx%d, drawing direct pixel test", w, h);
+
+            disp->draw_pixel_at(60, 120, Color(255, 0, 0));
+            disp->draw_pixel_at(180, 120, Color(0, 255, 0));
+            disp->draw_pixel_at(300, 120, Color(0, 0, 255));
+            disp->draw_pixel_at(420, 120, Color(255, 255, 255));
+
+            for (int x = 0; x < 120; x++)
+              for (int y = 200; y < 300; y++)
+                disp->draw_pixel_at(x, y, Color(255, 0, 0));
+            for (int x = 120; x < 240; x++)
+              for (int y = 200; y < 300; y++)
+                disp->draw_pixel_at(x, y, Color(0, 255, 0));
+            for (int x = 240; x < 360; x++)
+              for (int y = 200; y < 300; y++)
+                disp->draw_pixel_at(x, y, Color(0, 0, 255));
+            for (int x = 360; x < 480; x++)
+              for (int y = 200; y < 300; y++)
+                disp->draw_pixel_at(x, y, Color(255, 255, 255));
+
+            for (int x = 0; x < 160; x++)
+              for (int y = 320; y < 420; y++)
+                disp->draw_pixel_at(x, y, Color(0, 0, 0));
+            for (int x = 160; x < 320; x++)
+              for (int y = 320; y < 420; y++)
+                disp->draw_pixel_at(x, y, Color(128, 128, 128));
+            for (int x = 320; x < 480; x++)
+              for (int y = 320; y < 420; y++)
+                disp->draw_pixel_at(x, y, Color(255, 165, 0));
+
+            ESP_LOGI("fb_test", "Direct pixel test drawn");
 
 interval:
   - interval: 10s
