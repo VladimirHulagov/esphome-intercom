@@ -70,7 +70,7 @@ class ST7701Init : public esphome::Component, public esphome::i2c::I2CDevice {
 
     cmd(0xFF, {0x77, 0x01, 0x00, 0x00, 0x00});
     cmd(0x36, {0x00});
-    cmd(0x3A, {0x55});
+    cmd(0x3A, {0x66});
     cmd(0x21, {});
     esphome::delay(120);
     cmd(0x29, {});
