@@ -1312,6 +1312,7 @@ lvgl:
     - touch
   buffer_size: 10%
   color_depth: 16
+  byte_order: little_endian
   log_level: WARN
   pages:
     - id: color_test_page
