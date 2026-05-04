@@ -20,8 +20,8 @@
 #   - Speaker: MX1.25 2P 8Ω 2W
 #   - Buttons: BOOT (GPIO0), PWRKEY (TCA9554)
 #
-# I2C:  SDA=GPIO39, SCL=GPIO40
-# I2S:  MCLK=GPIO5, DIN=GPIO6, LRCLK=GPIO7, DOUT=GPIO15, BCLK=GPIO18
+# I2C:  SDA=GPIO47, SCL=GPIO48
+# I2S:  MCLK=GPIO5, DIN=GPIO6, LRCLK=GPIO7, DOUT=GPIO15, BCLK=GPIO16
 #
 # Audio pipeline (i2s_audio_duplex at 48kHz, ES7210 TDM + AEC):
 #
@@ -202,23 +202,14 @@ esphome:
                   value: 'false'
     - priority: -100
       then:
-        - lambda: |-
-            ESP_LOGI("heap_diag", "=== HEAP AT PRIORITY -100 ===");
-            ESP_LOGI("heap_diag", "Free heap: %u, Free internal: %u, Free DMA: %u, Largest DMA block: %u",
-              esp_get_free_heap_size(),
-              heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-              heap_caps_get_free_size(MALLOC_CAP_DMA),
-              heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
         - light.turn_on: backlight
     - priority: 800
       then:
-        - lvgl.page.show: color_test_page
+        - lvgl.page.show: initializing_page
 
 interval:
   - interval: 10s
     then:
-      - lambda: |-
-          ESP_LOGI("bl_mon", "GPIO4=%d", gpio_get_level(GPIO_NUM_4));
       - script.execute: draw_display
   - interval: 30s
     then:
@@ -758,7 +749,6 @@ script:
     mode: restart
     then:
       - lambda: |-
-          return; // TEMP: disabled for color test
           lv_obj_t* active_scr = lv_disp_get_scr_act(nullptr);
           bool wifi_ok = wifi::global_wifi_component && wifi::global_wifi_component->is_connected();
           bool api_ok = api::global_api_server && api::global_api_server->is_connected();
@@ -1315,153 +1305,6 @@ lvgl:
   byte_order: little_endian
   log_level: WARN
   pages:
-    - id: color_test_page
-      bg_color: 0x000000
-      widgets:
-        - obj:
-            x: 0
-            y: 0
-            width: 160
-            height: 120
-            bg_color: 0xFF0000
-        - label:
-            x: 45
-            y: 40
-            text: "RED"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 160
-            y: 0
-            width: 160
-            height: 120
-            bg_color: 0x00FF00
-        - label:
-            x: 40
-            y: 40
-            text: "GRN"
-            text_color: 0x000000
-            text_font: font_title
-        - obj:
-            x: 320
-            y: 0
-            width: 160
-            height: 120
-            bg_color: 0x0000FF
-        - label:
-            x: 45
-            y: 40
-            text: "BLU"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 0
-            y: 120
-            width: 160
-            height: 120
-            bg_color: 0xFFFFFF
-        - label:
-            x: 40
-            y: 160
-            text: "WHT"
-            text_color: 0x000000
-            text_font: font_title
-        - obj:
-            x: 160
-            y: 120
-            width: 160
-            height: 120
-            bg_color: 0x000000
-        - label:
-            x: 35
-            y: 160
-            text: "BLK"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 320
-            y: 120
-            width: 160
-            height: 120
-            bg_color: 0xFF8000
-        - label:
-            x: 40
-            y: 160
-            text: "ORG"
-            text_color: 0x000000
-            text_font: font_title
-        - obj:
-            x: 0
-            y: 240
-            width: 160
-            height: 120
-            bg_color: 0xFFFF00
-        - label:
-            x: 40
-            y: 280
-            text: "YEL"
-            text_color: 0x000000
-            text_font: font_title
-        - obj:
-            x: 160
-            y: 240
-            width: 160
-            height: 120
-            bg_color: 0xFF00FF
-        - label:
-            x: 40
-            y: 280
-            text: "MAG"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 320
-            y: 240
-            width: 160
-            height: 120
-            bg_color: 0x00FFFF
-        - label:
-            x: 40
-            y: 280
-            text: "CYN"
-            text_color: 0x000000
-            text_font: font_title
-        - obj:
-            x: 0
-            y: 360
-            width: 160
-            height: 120
-            bg_color: 0x808080
-        - label:
-            x: 40
-            y: 400
-            text: "GRY"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 160
-            y: 360
-            width: 160
-            height: 120
-            bg_color: 0x800000
-        - label:
-            x: 40
-            y: 400
-            text: "DRD"
-            text_color: 0xFFFFFF
-            text_font: font_title
-        - obj:
-            x: 320
-            y: 360
-            width: 160
-            height: 120
-            bg_color: 0x000080
-        - label:
-            x: 40
-            y: 400
-            text: "DBL"
-            text_color: 0xFFFFFF
-            text_font: font_title
     - id: initializing_page
       bg_color: 0x000000
       widgets:

@@ -65,10 +65,9 @@ but only 16 data pins are routed (5B+6G+5R).
 | GT911 touch | ✅ Working |
 | Backlight (GPIO4 LEDC) | ✅ Working (inverted) |
 | Speaker amp (TCA9554 EXIO3) | ✅ Working |
-| Display (ST7701 RGB) | ✅ Working — ST7701Init via TCA9554 + st7701s RGB |
+| Display (ST7701 RGB) | ✅ Working — correct colors with R↔B swap |
 | LVGL UI | ✅ Working — Russian text, system pages, tileview, VA/IC groups |
 | WiFi | ✅ Working |
-| **Display colors** | 🔴 **Broken** — wrong colors, BLK not black |
 
 ### Display Solution
 
@@ -80,136 +79,27 @@ sequence via I2C bit-bang SPI through TCA9554 at HARDWARE priority (before displ
 setup). Then ESPHome's `st7701s` platform takes over the RGB DPI peripheral only,
 using dummy SPI pins (GPIO43/44) so the real display isn't disturbed.
 
+**Color fix — R↔B pixel swap:**
+The Waveshare board routes DPI data pins as:
+- Pixel bits [4:0] → GPIO10-14 → ST7701 Red[4:0]
+- Pixel bits [10:5] → GPIO21-39 → ST7701 Green[5:0]
+- Pixel bits [15:11] → GPIO40-1 → ST7701 Blue[4:0]
+
+In RGB565, bits [4:0]=Blue, [15:11]=Red — so pixel Blue→display Red, pixel Red→display Blue.
+Fixed by swapping R↔B in `st7701s.cpp` `draw_pixels_at`:
+```cpp
+p16[i] = ((p & 0x1F) << 11) | (p & 0x07E0) | ((p >> 11) & 0x1F);
+```
+
+**ESPHome LVGL colors are 24-bit `0xRRGGBB`**, NOT raw RGB565. Use `0xFF0000` for red,
+`0x00FF00` for green, `0x0000FF` for blue. Values like `0xF800` are interpreted as
+`0x00F800` = green, not RGB565 red.
+
 **Key files:**
 - `includes/st7701_init.h` — ST7701Init component (I2CDevice + bit-bang SPI)
 - Dummy SPI bus: GPIO43(CLK), GPIO44(MOSI/CS)
 - `st7701s` with `spi_id: dummy_spi`, no `init_sequence`, no `reset_pin`
-
-### Display Color Debug — All Attempts
-
-**Data pins order** (DPI peripheral: D[4:0]=Blue, D[10:5]=Green, D[15:11]=Red):
-
-| Test | data_pins order | Init key params | Result |
-|------|----------------|-----------------|--------|
-| 1 | Waveshare `[10,11,12,13,14,21,8,18,45,38,39,40,41,42,2,1]` | 0xB8=0x21, COLMOD=0x50 (pg 0x13), no INVON | Warm/pinkish |
-| 2 | Waveshare same | Same + INVON (0x21) | Green-blue/cyan |
-| 3 | BGR swap `[1,40,41,42,2,21,8,18,45,38,39,10,11,12,13,14]` | 0xB8=0x20, COLMOD=0x50, no INVON | Pinkish, B bits scrambled |
-| 4 | BGR swap same | 0xB8=0x20, COLMOD=0x55, no INVON | Same as #3, COLMOD didn't help |
-| 5 | Corrected `[40,41,42,2,1,21,8,18,45,38,39,10,11,12,13,14]` | 0xB8=0x20, COLMOD=0x55, INVON | Cornflower/lime/khaki |
-
-**Detailed color results per test:**
-
-**Test 1** — Waveshare pins, 0xB8=0x21, COLMOD=0x50 (pg 0x13), no INVON:
-- R(0xF800) → Лиловый (lilac/purple)
-- G(0x07E0) → Жёлтый (yellow)
-- B(0x001F) → Светло-розовый (light pink)
-- W(0xFFFF) → Бежевый (beige)
-- BLK(0x0000) → Белый (white)
-- GRY(0x7BEF) → Бледно-сиреневый (pale lilac)
-- ORG(0xFD20) → Бледно-жёлтый (pale yellow)
-
-**Test 2** — Waveshare pins + INVON:
-- User: "всё стало зелёно-голубым" (green-blue/cyan overall)
-
-**Test 3** — `[1,40,41,42,2,21,8,18,45,38,39,10,11,12,13,14]`, 0xB8=0x20, COLMOD=0x50, no INVON:
-- R(0xF800) → Светло-фисташковый (light pistachio)
-- G(0x07E0) → Фуксия (fuchsia)
-- B(0x001F) → Светло-розовый (light pink)
-- W(0xFFFF) → Розовый (pink)
-- BLK(0x0000) → Бело-розовый (white-pink)
-- GRY(0x7BEF) → Фиолетовый (purple)
-- ORG(0xFD20) → Бежево-розовый (beige-pink)
-- **Note:** GPIO1=B4(MSB) as D0(LSB) — blue bits scrambled
-
-**Test 4** — Same as #3 but COLMOD=0x55:
-- R(0xF800) → Бежово-розовый (beige-pink) [changed]
-- Rest same as #3 — COLMOD change had minimal effect
-
-**Test 5** — `[40,41,42,2,1,21,8,18,45,38,39,10,11,12,13,14]`, 0xB8=0x20, COLMOD=0x55, INVON:
-- R(0xF800) → Васильковый (cornflower blue)
-- G(0x07E0) → Салатовый (lime)
-- B(0x001F) → Хаки (khaki)
-- W(0xFFFF) → Светло-зелёный (light green)
-- BLK(0x0000) → Хаки (khaki)
-- GRY(0x7BEF) → Салатовый (lime)
-- ORG(0xFD20) → Васильковый (cornflower blue)
-- **Note:** R and ORG same color, G and GRY same, B and BLK same — display shows ~3 colors
-
-### Official Waveshare BSP Reference (Critical Findings)
-
-**Source:** `waveshareteam/Waveshare-ESP32-components` → `bsp/esp32_s3_touch_lcd_4b/`
-
-**BSP pin mapping (CONFIRMED — matches our data_pins):**
-```
-DATA0=GPIO40 (B0), DATA1=GPIO41 (B1), DATA2=GPIO42 (B2), DATA3=GPIO2 (B3), DATA4=GPIO1 (B4)
-DATA5=GPIO21 (G0), DATA6=GPIO8 (G1), DATA7=GPIO18 (G2), DATA8=GPIO45 (G3), DATA9=GPIO38 (G4), DATA10=GPIO39 (G5)
-DATA11=GPIO10 (R0), DATA12=GPIO11 (R1), DATA13=GPIO12 (R2), DATA14=GPIO13 (R3), DATA15=GPIO14 (R4)
-```
-
-**BSP display config:**
-- `BSP_LCD_BITS_PER_PIXEL = 16` (DPI sends 16-bit RGB565)
-- `BSP_LCD_BIT_PER_PIXEL = 18` (panel configured for 18-bit RGB666)
-- `BSP_LCD_BIGENDIAN = 1`
-- `BSP_LCD_COLOR_FORMAT = ESP_LCD_COLOR_FORMAT_RGB565`
-- `rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB` (in panel dev config)
-- `BSP_LCD_DATA_WIDTH = 16` (16 data pins)
-
-**BSP init sequence (CRITICAL DIFFERENCES from ours):**
-1. **SLPOUT (0x11) sent FIRST** — before any config registers
-2. **COLMOD = 0x66** (RGB666/18-bit), NOT 0x50 or 0x55
-3. **Page 0x00** for MADCTL/COLMOD/INVON (not page 0x13)
-4. **INVON (0x21)** included
-5. **0xB8 = 0x21** (not 0x20)
-6. **0xC2 (pg 0x10) = 0x21,0x08** (not 0x31,0x05)
-7. **0xCD (pg 0x10) = 0x08** (not 0x00)
-8. **0xB1 (pg 0x11) = 0x30** (not 0x32)
-9. **0xB2 (pg 0x11) = 0x87** (not 0x07)
-10. **0xC2 (pg 0x11) has 20ms delay**
-11. **No page 0x13 access** — no 0xE5 command in page 0x13
-
-**BSP full init sequence:**
-```
-0x11 (SLPOUT)                    ← FIRST, with 120ms delay
-0xFF → 0x77,0x01,0x00,0x00,0x10  (page 0x10)
-0xC0 → 0x3B,0x00
-0xC1 → 0x0D,0x02
-0xC2 → 0x21,0x08                 ← different: was 0x31,0x05
-0xCD → 0x08                      ← different: was 0x00
-0xB0 → 0x00,0x11,0x18,0x0E,0x11,0x06,0x07,0x08,0x07,0x22,0x04,0x12,0x0F,0xAA,0x31,0x18
-0xB1 → 0x00,0x11,0x19,0x0E,0x12,0x07,0x08,0x08,0x08,0x22,0x04,0x11,0x11,0xA9,0x32,0x18
-0xFF → 0x77,0x01,0x00,0x00,0x11  (page 0x11)
-0xB0 → 0x60
-0xB1 → 0x30                      ← different: was 0x32
-0xB2 → 0x87                      ← different: was 0x07
-0xB3 → 0x80
-0xB5 → 0x49
-0xB7 → 0x85
-0xB8 → 0x21                      ← BSP uses 0x21 (not 0x20)
-0xC1 → 0x78
-0xC2 → 0x78                      ← with 20ms delay
-0xE0 → 0x00,0x1B,0x02
-0xE1 → 0x08,0xA0,0x00,0x00,0x07,0xA0,0x00,0x00,0x00,0x44,0x44
-0xE2 → 0x11,0x11,0x44,0x44,0xED,0xA0,0x00,0x00,0xEC,0xA0,0x00,0x00
-0xE3 → 0x00,0x00,0x11,0x11
-0xE4 → 0x44,0x44
-0xE5 → 0x0A,0xE9,0xD8,0xA0,0x0C,0xEB,0xD8,0xA0,0x0E,0xED,0xD8,0xA0,0x10,0xEF,0xD8,0xA0
-0xE6 → 0x00,0x00,0x11,0x11
-0xE7 → 0x44,0x44
-0xE8 → 0x09,0xE8,0xD8,0xA0,0x0B,0xEA,0xD8,0xA0,0x0D,0xEC,0xD8,0xA0,0x0F,0xEE,0xD8,0xA0
-0xEB → 0x02,0x00,0xE4,0xE4,0x88,0x00,0x40
-0xEC → 0x3C,0x00
-0xED → 0xAB,0x89,0x76,0x54,0x02,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x20,0x45,0x67,0x98,0xBA
-0xFF → 0x77,0x01,0x00,0x00,0x00  (page 0x00)  ← NOT page 0x13!
-0x36 → 0x00                      (MADCTL)
-0x3A → 0x66                      (COLMOD RGB666)  ← NOT 0x50 or 0x55
-0x21                             (INVON)  ← with 120ms delay
-0x29                             (DISPON)
-```
-
-**BSP uses `rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB`** — this tells the ESP-IDF
-st7701 panel driver to swap R↔B in the frame buffer. In ESPHome, we use raw DPI
-(default BGR element order), so NO swap is needed. The data_pins order
-`[40,41,42,2,1,21,8,18,45,38,39,10,11,12,13,14]` is CORRECT for ESPHome.
+- Docker: `/esphome/esphome/components/st7701s/st7701s.cpp` — R↔B swap patch
 
 ### LVGL UI Architecture
 
@@ -294,6 +184,9 @@ Figtree font does NOT support Cyrillic on Google Fonts — use Roboto or Noto Sa
 - data_pins: `[40,41,42,2,1,21,8,18,45,38,39,10,11,12,13,14]` — B0-B4,G0-G5,R0-R4 (confirmed by BSP)
 - ESPHome uses default DPI BGR element order (no `rgb_ele_order` — that's BSP-only)
 - Panel is 18-bit RGB666 but only 16 DPI pins (R5/B5 floating)
+- **R↔B swap in `st7701s.cpp`** — compensates for Waveshare routing (pixel Blue→display Red)
+- **ESPHome LVGL colors are 24-bit `0xRRGGBB`**, not raw RGB565
+- **INVON enabled** in init — required for correct gamma, does NOT invert RGB data
 
 ### To Flash
 
@@ -317,9 +210,7 @@ sudo PYTHONPATH=/home/lacitis/.local/lib/python3.12/site-packages /usr/local/bin
 
 ### Next Steps
 
-- **Fix init sequence to match official Waveshare BSP** — SLPOUT first, COLMOD=0x66, page 0x00, correct register values
 - Verify weather data loads from HA (requires HA connection)
 - Test VA (voice assistant) flow end-to-end
 - Test intercom call flow end-to-end
-- Clean up debug code (heap diagnostics, I2S logging, interval monitor, color_test_page)
 - Consider PCF85063 RTC integration for clock persistence
