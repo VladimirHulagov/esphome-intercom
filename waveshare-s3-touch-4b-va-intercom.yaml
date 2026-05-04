@@ -1271,7 +1271,7 @@ display:
     spi_id: dummy_spi
     init_sequence: []
     color_order: RGB
-    invert_colors: true
+    invert_colors: false
     pclk_pin: GPIO9
     de_pin: GPIO17
     hsync_pin: GPIO46

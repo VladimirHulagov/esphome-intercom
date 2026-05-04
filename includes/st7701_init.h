@@ -71,7 +71,8 @@ class ST7701Init : public esphome::Component, public esphome::i2c::I2CDevice {
     cmd(0xFF, {0x77, 0x01, 0x00, 0x00, 0x00});
     cmd(0x36, {0x00});
     cmd(0x3A, {0x66});
-    cmd(0x21, {});
+    // INVON (0x21) removed — ESPHome raw DPI sends non-inverted RGB565,
+    // unlike BSP which compensates via rgb_ele_order swap
     esphome::delay(120);
     cmd(0x29, {});
 
