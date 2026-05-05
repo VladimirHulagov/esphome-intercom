@@ -257,12 +257,34 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: DEBUG
   logs:
     i2c: WARN
     display: INFO
     spi: INFO
     intercom_api: DEBUG
+    main: WARN
+    component: WARN
+    sensor: WARN
+    switch: WARN
+    number: WARN
+    text_sensor: WARN
+    button: WARN
+    gpio: WARN
+    wifi: INFO
+    api: WARN
+    ota: WARN
+    ethernet: WARN
+    network: WARN
+    mdns: WARN
+    sntp: WARN
+    lvgl: WARN
+    touchscreen: WARN
+    gt911: WARN
+    light: WARN
+    binary_sensor: WARN
+    uart: WARN
+    micro_wake_word: INFO
 
 network:
   enable_high_performance: true
