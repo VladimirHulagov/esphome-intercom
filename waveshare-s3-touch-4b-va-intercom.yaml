@@ -262,6 +262,7 @@ logger:
     i2c: WARN
     display: INFO
     spi: INFO
+    intercom_api: DEBUG
 
 network:
   enable_high_performance: true
