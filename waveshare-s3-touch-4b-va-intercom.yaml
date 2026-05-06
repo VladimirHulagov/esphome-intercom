@@ -171,17 +171,19 @@ esphome:
               return;
             }
             reg01 &= ~0x3F;
-            if (!id(es7210_adc).write_byte(0x01, reg01) ||
-                !id(es7210_adc).write_byte(0x12, 0x02)) {
-              ESP_LOGE("es7210_tdm", "Failed to write clock/TDM registers");
+            if (!id(es7210_adc).write_byte(0x01, reg01)) {
+              ESP_LOGE("es7210_tdm", "Failed to write clock registers");
               return;
             }
+            // NOTE: reg 0x12 (TDM mode) intentionally NOT written.
+            // ES7210 stays in STD I2S stereo mode to match use_stereo_aec_reference.
+            // TDM mode was causing mic zeros because ESP32 I2S peripheral runs STD stereo.
             if (!id(es7210_adc).write_byte(0x45, 0x1A) ||
                 !id(es7210_adc).write_byte(0x46, 0x10)) {
               ESP_LOGE("es7210_tdm", "Failed to write MIC gain registers");
               return;
             }
-            ESP_LOGI("es7210_tdm", "TDM config applied: clk=0x%02X, MIC3 gain=30dB", reg01);
+            ESP_LOGI("es7210_tdm", "ES7210 clock config applied: clk=0x%02X, MIC3 gain=30dB (STD I2S mode)", reg01);
 
         # Restore ES8311 volume
         - lambda: |-
