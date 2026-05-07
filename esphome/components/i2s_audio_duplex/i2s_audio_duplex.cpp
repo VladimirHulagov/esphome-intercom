@@ -466,7 +466,7 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 #endif  // SOC_I2S_SUPPORTS_TDM
 
 // Audio parameters
-static const size_t DMA_BUFFER_COUNT = 4;  // Reduced from 8: 4 slots * 16-bit * 480 frames * 4 bufs = 30KB/channel
+static const size_t DMA_BUFFER_COUNT = 2;  // Reduced from 8: 4 slots * 16-bit * 480 frames * 4 bufs = 30KB/channel
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
 // Base buffer scaled by decimation_ratio_. At ratio=3 this provides ~256ms capacity,
 // sufficient for stability while avoiding excessive latency from large playback backlogs.
@@ -542,6 +542,19 @@ void I2SAudioDuplex::setup() {
   // exercised yet, which is enough to push waveshare-s3 below the threshold
   // that the esp-sr BSS init + HTTPS TLS streaming need.
   ESP_LOGI(TAG, "I2S Audio Duplex ready (speaker_buf=%u bytes)", (unsigned)this->speaker_buffer_size_);
+
+  // Eagerly create I2S channels to claim DMA buffers BEFORE AFE/esp-sr
+  // allocates its internal buffers.  AFE setup() runs at PROCESSOR priority
+  // (later than this HARDWARE-priority setup()), and esp-skainet can consume
+  // ~246 KB of DMA-capable internal RAM.  By reserving the I2S DMA buffers
+  // early we guarantee the duplex path gets what it needs (~15 KB) and AFE
+  // adapts to whatever remains.  start() will see the channels already exist
+  // and skip the init, going straight to i2s_channel_enable().
+  if (!this->init_i2s_duplex_()) {
+    ESP_LOGE(TAG, "Early I2S channel init failed — will retry on start()");
+    // Don't mark_failed(): start() will attempt init again when the mic
+    // consumer registers, at which point AFE may have released memory.
+  }
 }
 
 void I2SAudioDuplex::set_processor(AudioProcessor *processor) {
@@ -672,7 +685,7 @@ bool I2SAudioDuplex::init_i2s_duplex_() {
   // DMA latency at 16 kHz vs 85 ms at 48 kHz with the same constant, exceeding
   // the AEC filter tail at low sample rates. esp-skainet boards use the same
   // ~10 ms/descriptor pattern (e.g. 160 frames/desc at 16 kHz).
-  uint32_t dma_frame_num = std::max<uint32_t>(64, (this->sample_rate_ * 10) / 1000);
+  uint32_t dma_frame_num = std::max<uint32_t>(64, (this->sample_rate_ * 3) / 1000);
   if (max_bytes_per_frame > 0) {
     uint32_t max_frames = 4092 / max_bytes_per_frame;
     if (dma_frame_num > max_frames) {
@@ -949,16 +962,20 @@ void I2SAudioDuplex::start() {
       return;
     }
   } else {
+    // Channels may already be enabled (early init in setup()).
+    // disable+enable is idempotent and avoids ESP_ERR_INVALID_STATE.
     if (this->tx_handle_) {
+      i2s_channel_disable(this->tx_handle_);
       esp_err_t err = i2s_channel_enable(this->tx_handle_);
       if (err != ESP_OK) {
-        ESP_LOGW(TAG, "TX channel re-enable failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "TX channel enable failed: %s", esp_err_to_name(err));
       }
     }
     if (this->rx_handle_) {
+      i2s_channel_disable(this->rx_handle_);
       esp_err_t err = i2s_channel_enable(this->rx_handle_);
       if (err != ESP_OK) {
-        ESP_LOGW(TAG, "RX channel re-enable failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "RX channel enable failed: %s", esp_err_to_name(err));
       }
     }
   }
