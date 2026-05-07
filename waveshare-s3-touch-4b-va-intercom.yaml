@@ -240,17 +240,6 @@ esp32:
       CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
       CONFIG_SPIRAM_RODATA: "y"
       CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
-      CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
-      CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN: "16384"
-      # Hardware AES needs contiguous DMA memory; BSS + I2S DMA exhaust
-      # internal heap, so fall back to software AES (S3 @ 240MHz ~1.5 MB/s).
-      CONFIG_MBEDTLS_HARDWARE_AES: "n"
-      # Move WiFi/lwip buffers to PSRAM: recovers ~40-80KB internal RAM.
-      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: "y"
-      # IRAM -> flash: frees ~30KB DRAM (PSRAM instruction cache compensates).
-      CONFIG_ESP_WIFI_IRAM_OPT: "n"
-      CONFIG_ESP_WIFI_RX_IRAM_OPT: "n"
-      CONFIG_ESP_PHY_IRAM_OPT: "n"
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "15"
       CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY: "y"
 
