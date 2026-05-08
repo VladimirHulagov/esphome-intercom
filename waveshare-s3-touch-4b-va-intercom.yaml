@@ -39,9 +39,9 @@ substitutions:
   friendly_name: Waveshare 86 Box
 
   # ---- Remote mode (for users, just download and flash) ----
-  assets_base: "https://github.com/VladimirHulagov/esphome-intercom/raw/main/"
+  # assets_base: "https://github.com/VladimirHulagov/esphome-intercom/raw/main/"
   # ---- Local mode (for development, clone repo first) ----
-  # assets_base: ""
+  assets_base: "/config/esphome-intercom/"
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
@@ -472,7 +472,7 @@ media_player:
 micro_wake_word:
   microphone: mic_main
   models:
-    - model: "/config/esphome-intercom/assets/wakewords/hey_trowyayoh.json"
+    - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
 
