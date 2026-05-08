@@ -1136,30 +1136,50 @@ font:
     id: font_text
     size: 20
     glyphs:
+      - '!"%()+=,.:/-?°'
+      - "0123456789"
+      - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      - "abcdefghijklmnopqrstuvwxyz"
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
   - file: "/config/esphome-intercom/fonts/Roboto-600.ttf"
     id: font_title
     size: 30
     glyphs:
+      - '!"%()+=,.:/-?°'
+      - "0123456789"
+      - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      - "abcdefghijklmnopqrstuvwxyz"
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
   - file: "/config/esphome-intercom/fonts/Roboto-500.ttf"
     id: font_state
     size: 36
     glyphs:
+      - '!"%()+=,.:/-?°'
+      - "0123456789"
+      - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      - "abcdefghijklmnopqrstuvwxyz"
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
   - file: "/config/esphome-intercom/fonts/Roboto-400.ttf"
     id: font_info
     size: 24
     glyphs:
+      - '!"%()+=,.:/-?°'
+      - "0123456789"
+      - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      - "abcdefghijklmnopqrstuvwxyz"
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
   - file: "/config/esphome-intercom/fonts/Roboto-600.ttf"
     id: font_btn
     size: 22
     glyphs:
+      - '!"%()+=,.:/-?°'
+      - "0123456789"
+      - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      - "abcdefghijklmnopqrstuvwxyz"
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
   - file: "/config/esphome-intercom/fonts/RobotoMono-400.ttf"
