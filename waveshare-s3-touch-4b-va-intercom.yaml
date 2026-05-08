@@ -273,8 +273,8 @@ network:
   enable_high_performance: true
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+  ssid: "WLAN_IOT"
+  password: "zuki28_1w"
   on_connect:
     - logger.log: "WiFi connected!"
     - script.execute: draw_display
@@ -371,8 +371,8 @@ i2s_audio_duplex:
   i2s_lrclk_pin: GPIO7
   i2s_bclk_pin: GPIO16
   i2s_mclk_pin: GPIO5
-  i2s_din_pin: GPIO6
-  i2s_dout_pin: GPIO15
+  i2s_din_pin: GPIO15  # ES7210 SDOUT1 (ASDOUT) — mic ADC data IN to ESP32
+  i2s_dout_pin: GPIO6  # ES8311 DSDIN — DAC data OUT from ESP32 to speaker
   i2s_num: 1
   sample_rate: 48000
   output_sample_rate: 16000
