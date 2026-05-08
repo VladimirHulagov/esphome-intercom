@@ -1136,7 +1136,7 @@ font:
     id: font_text
     size: 20
     glyphs:
-      - '!"%()+=,.:/-?°'
+      - ' !"#$%&''()*+=,.:/;<=>?@[\]^_`{|}~-°'
       - "0123456789"
       - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
       - "abcdefghijklmnopqrstuvwxyz"
@@ -1146,7 +1146,7 @@ font:
     id: font_title
     size: 30
     glyphs:
-      - '!"%()+=,.:/-?°'
+      - ' !"#$%&''()*+=,.:/;<=>?@[\]^_`{|}~-°'
       - "0123456789"
       - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
       - "abcdefghijklmnopqrstuvwxyz"
@@ -1156,7 +1156,7 @@ font:
     id: font_state
     size: 36
     glyphs:
-      - '!"%()+=,.:/-?°'
+      - ' !"#$%&''()*+=,.:/;<=>?@[\]^_`{|}~-°'
       - "0123456789"
       - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
       - "abcdefghijklmnopqrstuvwxyz"
@@ -1166,7 +1166,7 @@ font:
     id: font_info
     size: 24
     glyphs:
-      - '!"%()+=,.:/-?°'
+      - ' !"#$%&''()*+=,.:/;<=>?@[\]^_`{|}~-°'
       - "0123456789"
       - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
       - "abcdefghijklmnopqrstuvwxyz"
@@ -1176,7 +1176,7 @@ font:
     id: font_btn
     size: 22
     glyphs:
-      - '!"%()+=,.:/-?°'
+      - ' !"#$%&''()*+=,.:/;<=>?@[\]^_`{|}~-°'
       - "0123456789"
       - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
       - "abcdefghijklmnopqrstuvwxyz"
