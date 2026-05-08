@@ -79,9 +79,7 @@ substitutions:
 # =============================================================================
 packages:
   core:
-    url: https://github.com/VladimirHulagov/esphome-intercom
     file: packages/va_intercom.yaml
-    ref: main
 
 # =============================================================================
 # ESPHome Base
@@ -475,6 +473,7 @@ micro_wake_word:
     - model: "${assets_base}assets/wakewords/hey_trowyayoh.json"
       probability_cutoff: ${wake_word_probability_cutoff}
       sliding_window_size: ${wake_word_sliding_window_size}
+    # model: alexa (not available)
 
 # =============================================================================
 # Voice Assistant
@@ -1134,74 +1133,41 @@ text_sensor:
 # Font
 # =============================================================================
 font:
-  - file:
-      type: gfonts
-      family: ${font_family}
-      weight: 300
+  - file: "/config/esphome-intercom/fonts/Roboto-300.ttf"
     id: font_text
     size: 20
-    glyphsets:
-      - GF_Latin_Core
-      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-  - file:
-      type: gfonts
-      family: ${font_family}
-      weight: 600
+  - file: "/config/esphome-intercom/fonts/Roboto-600.ttf"
     id: font_title
     size: 30
-    glyphsets:
-      - GF_Latin_Core
-      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 500
+  - file: "/config/esphome-intercom/fonts/Roboto-500.ttf"
     id: font_state
     size: 36
-    glyphsets:
-      - GF_Latin_Core
-      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-  - file:
-      type: gfonts
-      family: Roboto
-      weight: 400
+  - file: "/config/esphome-intercom/fonts/Roboto-400.ttf"
     id: font_info
     size: 24
-    glyphsets:
-      - GF_Latin_Core
-      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-  - file:
-      type: gfonts
-      family: ${font_family}
-      weight: 600
+  - file: "/config/esphome-intercom/fonts/Roboto-600.ttf"
     id: font_btn
     size: 22
-    glyphsets:
-      - GF_Latin_Core
-      - GF_Cyrillic_Core
     glyphs:
       - "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
       - "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
-  - file:
-      type: gfonts
-      family: "Roboto Mono"
-      weight: 400
+  - file: "/config/esphome-intercom/fonts/RobotoMono-400.ttf"
     id: font_clock
     size: 48
     glyphs: '0123456789: '
-  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+  - file: "/config/esphome-intercom/fonts/materialdesignicons-webfont.ttf"
     id: font_icon
     size: 48
     glyphs:
@@ -1224,7 +1190,6 @@ font:
       - "\U000F071A"
       - "\U000F05A9"
       - "\U000F05AA"
-  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
     id: font_icon_sm
     size: 24
     glyphs:
