@@ -1190,6 +1190,7 @@ font:
       - "\U000F071A"
       - "\U000F05A9"
       - "\U000F05AA"
+  - file: "/config/esphome-intercom/fonts/materialdesignicons-webfont.ttf"
     id: font_icon_sm
     size: 24
     glyphs:
