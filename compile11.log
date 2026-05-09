@@ -1,0 +1,70 @@
+INFO ESPHome 2026.4.3
+INFO Reading configuration /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml...
+WARNING The 'custom_components' folder is deprecated and will be removed in 2026.6.0. Please use 'external_components' instead. See https://esphome.io/components/external_components.html for more information.
+WARNING GPIO0 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO46 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO3 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO45 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+INFO Generating C++ source...
+INFO Applying optimized lwip settings: 65KB TCP windows, 64 mailbox sizes
+INFO Applying optimized WiFi settings: 64 RX buffers, 64 TX buffers
+INFO Using user-provided CONFIG_LWIP_MAX_SOCKETS: 16
+INFO Compiling app... Build path: /config/esphome-intercom/.esphome/build/waveshare-86box
+Processing [36m[1mwaveshare-86box[0m (board: esp32-s3-devkitc-1; framework: espidf; platform: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip)
+[1m--------------------------------------------------------------------------------[0m
+Library Manager: Installing [36mkahrendt/ESPMicroSpeechFeatures @ 1.1.0[0m
+[?25lDownloading  [------------------------------------]    0%[?25lDownloading  [##########--------------------------]   29%[?25lDownloading  [#####################---------------]   58%[?25lDownloading  [###############################-----]   88%[?25lDownloading  [####################################]  100%[?25h
+[?25lUnpacking  [------------------------------------]    0%[?25lUnpacking  [------------------------------------]    2%[?25lUnpacking  [#-----------------------------------]    4%[?25lUnpacking  [##----------------------------------]    7%[?25lUnpacking  [###---------------------------------]    9%[?25lUnpacking  [####--------------------------------]   11%[?25lUnpacking  [#####-------------------------------]   14%[?25lUnpacking  [######------------------------------]   16%[?25lUnpacking  [######------------------------------]   19%[?25lUnpacking  [#######-----------------------------]   21%[?25lUnpacking  [########----------------------------]   23%[?25lUnpacking  [#########---------------------------]   26%[?25lUnpacking  [##########--------------------------]   28%[?25lUnpacking  [###########-------------------------]   30%[?25lUnpacking  [############------------------------]   33%[?25lUnpacking  [############------------------------]   35%[?25lUnpacking  [#############-----------------------]   38%[?25lUnpacking  [##############----------------------]   40%[?25lUnpacking  [###############---------------------]   42%[?25lUnpacking  [################--------------------]   45%[?25lUnpacking  [#################-------------------]   47%[?25lUnpacking  [##################------------------]   50%[?25lUnpacking  [##################------------------]   52%[?25lUnpacking  [###################-----------------]   54%[?25lUnpacking  [####################----------------]   57%[?25lUnpacking  [#####################---------------]   59%[?25lUnpacking  [######################--------------]   61%[?25lUnpacking  [#######################-------------]   64%[?25lUnpacking  [########################------------]   66%[?25lUnpacking  [########################------------]   69%[?25lUnpacking  [#########################-----------]   71%[?25lUnpacking  [##########################----------]   73%[?25lUnpacking  [###########################---------]   76%[?25lUnpacking  [############################--------]   78%[?25lUnpacking  [#############################-------]   80%[?25lUnpacking  [##############################------]   83%[?25lUnpacking  [##############################------]   85%[?25lUnpacking  [###############################-----]   88%[?25lUnpacking  [################################----]   90%[?25lUnpacking  [#################################---]   92%[?25lUnpacking  [##################################--]   95%[?25lUnpacking  [###################################-]   97%[?25lUnpacking  [####################################]  100%[?25h
+Library Manager: [32mESPMicroSpeechFeatures@1.1.0 has been installed![0m
+[0mHARDWARE: ESP32S3 240MHz, 320KB RAM, 16MB Flash
+[0m - contrib-piohome @ 3.4.4 
+[0m - framework-espidf @ 3.50504.0 (5.5.4) 
+[0m - tool-cmake @ 4.0.3 
+[0m - tool-esp-rom-elfs @ 2024.10.11 
+[0m - tool-esptoolpy @ 5.2.0 
+[0m - tool-ninja @ 1.13.1 
+[0m - tool-scons @ 4.40801.0 (4.8.1) 
+[0m - tool-xtensa-esp-elf-gdb @ 16.3.0+20250913 
+[0m - toolchain-xtensa-esp-elf @ 14.2.0+20260121
+[33mUsing Python 3.12.10 environment at: /root/.platformio/penv/.espidf-5.5.4
+[0mReading CMake configuration...
+[0mGenerating assembly for certificate bundle...
+[0m[33mCouldn't extract information for data/ota from the partition table
+[0m[33m
+[0m[33mTraceback (most recent call last):
+[0m[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py", line 227, in from_csv
+[0m[33m    res.append(PartitionDefinition.from_csv(line, line_no + 1))
+[0m               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py", line 461, in from_csv
+[0m[33m    raise InputError("Size field can't be empty")
+[0m[33mgen_esp32part.InputError: Size field can't be empty
+[0m[33m
+[0m[33mDuring handling of the above exception, another exception occurred:
+[0m[33m
+[0m[33mTraceback (most recent call last):
+[0m[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/parttool.py", line 411, in <module>
+[0m[33m    main()
+[0m[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/parttool.py", line 380, in main
+[0m[33m    target = ParttoolTarget(**target_args)
+[0m             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/parttool.py", line 96, in __init__
+[0m[33m    partition_table, _ = gen.PartitionTable.from_file(f)
+[0m                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py", line 208, in from_file
+[0m[33m    return cls.from_csv(str_data), False
+[0m           ^^^^^^^^^^^^^^^^^^^^^^
+[33m  File "/root/.platformio/packages/framework-espidf/components/partition_table/gen_esp32part.py", line 229, in from_csv
+[0m[33m    raise InputError(
+[0m[31mgen_esp32part.InputError: Error at line 7: Size field can't be empty
+[0m[33mPlease check extra_partition_subtypes.inc file in build/config directory
+[0m[33m
+[0m========================= [[31m[1mFAILED[0m] Took 62.96 seconds =========================[0m
+DONE_EXIT=1
