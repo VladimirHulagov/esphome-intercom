@@ -266,6 +266,10 @@ logger:
     i2c: WARN
     display: INFO
     spi: INFO
+    speaker: VERBOSE
+    mixer: VERBOSE
+    resampler: VERBOSE
+    media_player: VERBOSE
 
 network:
   enable_high_performance: true
@@ -407,13 +411,13 @@ speaker:
     source_speakers:
       - id: media_speaker_mix
         timeout: 10s
-        buffer_duration: 40ms
+        buffer_duration: 200ms
       - id: tts_speaker_mix
         timeout: 10s
-        buffer_duration: 40ms
+        buffer_duration: 200ms
       - id: intercom_speaker_mix
         timeout: 10s
-        buffer_duration: 30ms
+        buffer_duration: 100ms
 
   - platform: resampler
     id: media_speaker
