@@ -1,0 +1,24 @@
+INFO ESPHome 2026.4.3
+INFO Reading configuration /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml...
+WARNING The 'custom_components' folder is deprecated and will be removed in 2026.6.0. Please use 'external_components' instead. See https://esphome.io/components/external_components.html for more information.
+Failed config
+
+logger: [source /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml:263]
+  hardware_uart: USB_SERIAL_JTAG
+  level: INFO
+  logs: 
+    i2c: WARN
+    display: INFO
+    spi: INFO
+    
+    The configured log level for speaker (VERBOSE) must not be less severe than the global log level (INFO).
+    speaker: VERBOSE
+    
+    The configured log level for mixer (VERBOSE) must not be less severe than the global log level (INFO).
+    mixer: VERBOSE
+    
+    The configured log level for resampler (VERBOSE) must not be less severe than the global log level (INFO).
+    resampler: VERBOSE
+    
+    The configured log level for media_player (VERBOSE) must not be less severe than the global log level (INFO).
+    media_player: VERBOSE

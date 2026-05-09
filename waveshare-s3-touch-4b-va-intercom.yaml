@@ -261,15 +261,15 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: DEBUG
   logs:
     i2c: WARN
     display: INFO
     spi: INFO
-    speaker: VERBOSE
-    mixer: VERBOSE
-    resampler: VERBOSE
-    media_player: VERBOSE
+    speaker: DEBUG
+    mixer: DEBUG
+    resampler: DEBUG
+    media_player: DEBUG
 
 network:
   enable_high_performance: true
