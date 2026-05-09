@@ -49,7 +49,7 @@ substitutions:
 
   # ES8311 DAC volume mapping (0-100% -> min-max float)
   volume_min: "0.15"
-  volume_max: "1.0"
+  volume_max: "0.5"
 
   mic_id: mic_main
 
@@ -1243,7 +1243,7 @@ touchscreen:
     on_touch:
       - lambda: |-
           ESP_LOGD("touch", "Touch: x=%d y=%d", touch.x, touch.y);
-    update_interval: 100ms
+    update_interval: 50ms
 
 # =============================================================================
 # Display (ST7701 RGB 480x480)
