@@ -39,9 +39,9 @@ substitutions:
   friendly_name: Waveshare 86 Box
 
   # ---- Remote mode (for users, just download and flash) ----
-  # assets_base: "https://github.com/VladimirHulagov/esphome-intercom/raw/main/"
+  assets_base: "https://github.com/VladimirHulagov/esphome-intercom/raw/main/"
   # ---- Local mode (for development, clone repo first) ----
-  assets_base: "/config/esphome-intercom/"
+  # assets_base: "/config/esphome-intercom/"
 
   # Wake word sensitivity (per-device tuning)
   wake_word_probability_cutoff: "0.60"
@@ -49,7 +49,7 @@ substitutions:
 
   # ES8311 DAC volume mapping (0-100% -> min-max float)
   volume_min: "0.15"
-  volume_max: "0.75"
+  volume_max: "1.0"
 
   mic_id: mic_main
 

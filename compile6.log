@@ -1,0 +1,26 @@
+INFO ESPHome 2026.4.3
+INFO Reading configuration /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml...
+WARNING The 'custom_components' folder is deprecated and will be removed in 2026.6.0. Please use 'external_components' instead. See https://esphome.io/components/external_components.html for more information.
+INFO Cloning https://github.com/VladimirHulagov/esphome-intercom@main
+INFO Fetching main
+WARNING GPIO0 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+Failed config
+
+font: [source /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml:1135]
+  
+  Found duplicate glyph: = (b'=').
+  - file: /config/esphome-intercom/fonts/Roboto-300.ttf
+    id: font_text
+    size: 20
+    glyphs: 
+      -  !"#$%&'()*+=,.:/;<=>?@[\]^_`{|}~-°
+      - 0123456789
+      - ABCDEFGHIJKLMNOPQRSTUVWXYZ
+      - abcdefghijklmnopqrstuvwxyz
+      - АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ
+      - абвгдеёжзийклмнопрстуфхцчшщъыьэюя
+  - file: /config/esphome-intercom/fonts/Roboto-600.ttf
+    id: font_title
+DONE_EXIT=2
