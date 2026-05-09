@@ -317,7 +317,7 @@ i2c:
     sda: GPIO47
     scl: GPIO48
     scan: false
-    frequency: 100kHz
+    frequency: 400kHz
     sda_pullup_enabled: true
     scl_pullup_enabled: true
 
@@ -1243,7 +1243,7 @@ touchscreen:
     on_touch:
       - lambda: |-
           ESP_LOGD("touch", "Touch: x=%d y=%d", touch.x, touch.y);
-    update_interval: 20ms
+    update_interval: 100ms
 
 # =============================================================================
 # Display (ST7701 RGB 480x480)

@@ -1,0 +1,117 @@
+INFO ESPHome 2026.4.3
+INFO Reading configuration /config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml...
+WARNING The 'custom_components' folder is deprecated and will be removed in 2026.6.0. Please use 'external_components' instead. See https://esphome.io/components/external_components.html for more information.
+WARNING GPIO0 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO46 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO3 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+WARNING GPIO45 is a strapping PIN and should only be used for I/O with care.
+Attaching external pullup/down resistors to strapping pins can cause unexpected failures.
+See https://esphome.io/guides/faq/#why-am-i-getting-a-warning-about-strapping-pins
+INFO Generating C++ source...
+INFO Applying optimized lwip settings: 65KB TCP windows, 64 mailbox sizes
+INFO Applying optimized WiFi settings: 64 RX buffers, 64 TX buffers
+INFO Using user-provided CONFIG_LWIP_MAX_SOCKETS: 16
+INFO Compiling app... Build path: /config/esphome-intercom/.esphome/build/waveshare-86box
+Processing [36m[1mwaveshare-86box[0m (board: esp32-s3-devkitc-1; framework: espidf; platform: https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip)
+[1m--------------------------------------------------------------------------------[0m
+[0mHARDWARE: ESP32S3 240MHz, 320KB RAM, 16MB Flash
+[0m - contrib-piohome @ 3.4.4 
+[0m - framework-espidf @ 3.50504.0 (5.5.4) 
+[0m - tool-cmake @ 4.0.3 
+[0m - tool-esp-rom-elfs @ 2024.10.11 
+[0m - tool-esptoolpy @ 5.2.0 
+[0m - tool-ninja @ 1.13.1 
+[0m - tool-scons @ 4.40801.0 (4.8.1) 
+[0m - tool-xtensa-esp-elf-gdb @ 16.3.0+20250913 
+[0m - toolchain-xtensa-esp-elf @ 14.2.0+20260121
+[33mUsing Python 3.12.10 environment at: /root/.platformio/penv/.espidf-5.5.4
+[0mReading CMake configuration...
+[0mDependency Graph
+[0m|-- ESPMicroSpeechFeatures @ 1.1.0
+[0mCompiling .pioenvs/waveshare-86box/src/esphome/core/application.cpp.o
+[0mCompiling .pioenvs/waveshare-86box/src/main.cpp.o
+[0m[33m[01m[K/config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml:[m[K In lambda function:
+[0m[33m[01m[K/config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml:653:30:[m[K [01;35m[Kwarning: [m[K'[01m[Kbool ArduinoJson::V742HB22::JsonObjectConst::[01;32m[KcontainsKey[m[K(TChar*) const [35m[K[with TChar = const char][m[K[m[K' is deprecated: use obj["key"].is<T>() instead [[01;35m[K-Wdeprecated-declarations[m[K]
+[0m[33m  653 |               [01;35m[K      if (day.containsKey("c[m[Kondition"))
+[0m      |                     [01;35m[K~~~~~~~~~^~~~~~~~~~~~~[m[K
+[33mIn file included from [01m[Kmanaged_components/bblanchon__arduinojson/src/ArduinoJson/Object/JsonObject.hpp:7[m[K,
+[0m[33m                 from [01m[Kmanaged_components/bblanchon__arduinojson/src/ArduinoJson.hpp:39[m[K,
+[0m[33m                 from [01m[Kmanaged_components/bblanchon__arduinojson/src/ArduinoJson.h:9[m[K,
+[0m[33m                 from [01m[Ksrc/esphome/components/json/json_util.h:14[m[K,
+[0m[33m                 from [01m[Ksrc/esphome/core/string_ref.h:11[m[K,
+[0m[33m                 from [01m[Ksrc/esphome/core/application.h:17[m[K,
+[0m[33m                 from [01m[Ksrc/esphome/components/api/api_frame_helper.h:14[m[K,
+[0m[33m                 from [01m[Ksrc/esphome/components/api/api_connection.h:5[m[K,
+[0m[33m                 from [01m[Ksrc/esphome.h:4[m[K,
+[0m[33m                 from [01m[Ksrc/main.cpp:3[m[K:
+[0m[33m[01m[Kmanaged_components/bblanchon__arduinojson/src/ArduinoJson/Object/JsonObjectConst.hpp:85:8:[m[K [01;36m[Knote: [m[Kdeclared here
+[0m[33m   85 |   bool [01;36m[KcontainsKey[m[K(TChar* key) const {
+[0m      |        [01;36m[K^~~~~~~~~~~[m[K
+[33m[01m[K/config/esphome-intercom/waveshare-s3-touch-4b-va-intercom.yaml:655:30:[m[K [01;35m[Kwarning: [m[K'[01m[Kbool ArduinoJson::V742HB22::JsonObjectConst::[01;32m[KcontainsKey[m[K(TChar*) const [35m[K[with TChar = const char][m[K[m[K' is deprecated: use obj["key"].is<T>() instead [[01;35m[K-Wdeprecated-declarations[m[K]
+[0m[33m  655 |               [01;35m[K      if (day.containsKey("tem[m[Kperature"))
+[0m      |                     [01;35m[K~~~~~~~~~^~~~~~~~~~~~~~~[m[K
+[33m[01m[Kmanaged_components/bblanchon__arduinojson/src/ArduinoJson/Object/JsonObjectConst.hpp:85:8:[m[K [01;36m[Knote: [m[Kdeclared here
+[0m[33m   85 |   bool [01;36m[KcontainsKey[m[K(TChar* key) const {
+[0m      |        [01;36m[K^~~~~~~~~~~[m[K
+[0mLinking .pioenvs/waveshare-86box/firmware.elf
+[33m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o):(.literal.read_models_form_spiffs+0x24): warning: closedir is not implemented and will always fail
+[0m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o): note: the message above does not take linker garbage collection into account
+[0m[33m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o):(.literal.read_models_form_spiffs+0xc): warning: opendir is not implemented and will always fail
+[0m[33m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o):(.literal.read_models_form_spiffs+0x18): warning: readdir is not implemented and will always fail
+[0m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o): note: the message above does not take linker garbage collection into account
+[0m/root/.platformio/packages/toolchain-xtensa-esp-elf/bin/../lib/gcc/xtensa-esp-elf/14.2.0/../../../../xtensa-esp-elf/bin/ld: .pioenvs/waveshare-86box/esp-idf/espressif__esp-sr/libespressif__esp-sr.a(model_path.c.o): note: the message above does not take linker garbage collection into account
+[0m                            Memory Type Usage Summary                             
+[0m┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Memory Type/Section ┃ Used [bytes] ┃ Used [%] ┃ Remain [bytes] ┃ Total [bytes] ┃
+[0m┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ Flash Code          │      1605640 │          │                │               │
+[0m│    .text            │      1605640 │          │                │               │
+[0m│ Flash Data          │       506376 │          │                │               │
+[0m│    .rodata          │       506120 │          │                │               │
+[0m│    .appdesc         │          256 │          │                │               │
+[0m│ DIRAM               │       117027 │    34.24 │         224733 │        341760 │
+[0m│    .text            │        48807 │    14.28 │                │               │
+[0m│    .bss             │        38768 │    11.34 │                │               │
+[0m[33mTotal image size: 2206507 bytes (.bin may be padded larger)
+[0m│    .data            │        29300 │     8.57 │                │               │
+[0m│    .noinit          │          152 │     0.04 │                │               │
+[0m│ IRAM                │        16384 │    100.0 │              0 │         16384 │
+[0m│    .text            │        15356 │    93.73 │                │               │
+[0m│    .vectors         │         1028 │     6.27 │                │               │
+[0m[33mNote: The reported total sizes may be smaller than those in the technical reference manual due to reserved memory and application configuration. The total flash size available for the application is not included by default, as it cannot be reliably determined due to the presence of other data like the bootloader, partition table, and application partition size.
+[0m└─────────────────────┴──────────────┴──────────┴────────────────┴───────────────┘
+[0mRAM:   [==        ]  20.8% (used 68220 bytes from 327680 bytes)
+[0mFlash: [===       ]  27.1% (used 2206251 bytes from 8126464 bytes)
+[0mBuilding .pioenvs/waveshare-86box/firmware.bin
+[0mCreating ESP32-S3 image...
+[0mSuccessfully created ESP32-S3 image.
+[0mCreating binary "firmware.factory.bin" with:
+[0m    Offset   | File
+[0m -  0x0      | bootloader.bin
+[0m -  0x8000   | partitions.bin
+[0m -  0x9000   | ota_data_initial.bin
+[0m -  0x10000  | firmware.bin
+Successfully created combined binary image.
+[0msign_firmware([".pioenvs/waveshare-86box/firmware.bin"], [".pioenvs/waveshare-86box/firmware.elf"])
+[0mmerge_factory_bin([".pioenvs/waveshare-86box/firmware.bin"], [".pioenvs/waveshare-86box/firmware.elf"])
+[0mInfo: bootloader.bin not found - skipping
+[0mInfo: partition-table.bin not found - skipping
+[0mInfo: ota_data_initial.bin not found - skipping
+[0mInfo: waveshare-86box.bin not found - skipping
+[0mUsing FLASH_EXTRA_IMAGES from PlatformIO environment
+[0mMerging binaries into /config/esphome-intercom/.esphome/build/waveshare-86box/.pioenvs/waveshare-86box/firmware.factory.bin
+[0mMerging binaries with esptool
+[0mSHA digest in image updated.
+[0mWrote 0x22abc0 bytes to file '/config/esphome-intercom/.esphome/build/waveshare-86box/.pioenvs/waveshare-86box/firmware.factory.bin', ready to flash to offset 0x0.
+[0mSuccessfully created /config/esphome-intercom/.esphome/build/waveshare-86box/.pioenvs/waveshare-86box/firmware.factory.bin
+[0mesp32_copy_ota_bin([".pioenvs/waveshare-86box/firmware.bin"], [".pioenvs/waveshare-86box/firmware.elf"])
+[0mCopied firmware to /config/esphome-intercom/.esphome/build/waveshare-86box/.pioenvs/waveshare-86box/firmware.ota.bin
+[0m========================= [[32m[1mSUCCESS[0m] Took 44.26 seconds =========================[0m
+INFO Build Info: config_hash=0xd3fa155b build_time_str=2026-05-10 02:09:03 +0300
+INFO Successfully compiled program.
