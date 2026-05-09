@@ -357,8 +357,8 @@ esp_afe:
   aec_filter_length: 4
   se_enabled: true
   ns_enabled: true
-  vad_enabled: false
-  agc_enabled: true
+  vad_enabled: true
+  agc_enabled: false
   task_priority: 19
   feed_buf_in_psram: true
   feed_ring_in_psram: true
@@ -413,7 +413,7 @@ speaker:
         buffer_duration: 100ms
       - id: intercom_speaker_mix
         timeout: 10s
-        buffer_duration: 100ms
+        buffer_duration: 30ms
 
   - platform: resampler
     id: media_speaker
