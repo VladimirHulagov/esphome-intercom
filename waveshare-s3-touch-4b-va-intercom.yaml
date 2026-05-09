@@ -407,10 +407,10 @@ speaker:
     source_speakers:
       - id: media_speaker_mix
         timeout: 10s
-        buffer_duration: 100ms
+        buffer_duration: 40ms
       - id: tts_speaker_mix
         timeout: 10s
-        buffer_duration: 100ms
+        buffer_duration: 40ms
       - id: intercom_speaker_mix
         timeout: 10s
         buffer_duration: 30ms
