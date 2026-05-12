@@ -253,6 +253,7 @@ psram:
 api:
   on_client_connected:
     - logger.log: "API client connected"
+    - lambda: 'id(intercom).publish_entity_states();'
     - script.execute: fetch_weather
     - script.execute: draw_display
 
@@ -1014,7 +1015,7 @@ switch:
       id: auto_answer_switch
       name: Auto Answer
       icon: mdi:phone-in-talk
-      restore_mode: RESTORE_DEFAULT_OFF
+      restore_mode: ALWAYS_ON
 
   # AEC switch
   - platform: i2s_audio_duplex
