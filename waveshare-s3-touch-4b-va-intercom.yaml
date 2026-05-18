@@ -252,7 +252,7 @@ psram:
 
 api:
   encryption:
-    key: "gDjC+cn/hvkWcLsg70H4YXtXAXhCRLq2pb1hvpnCAT4="
+    key: "xtN9xG5BRrtFfYOT/OirkwJeqTIdZqytZUy7TXw7UXo="
   on_client_connected:
     - logger.log: "API client connected"
     - lambda: 'id(intercom).publish_entity_states();'
