@@ -1023,7 +1023,7 @@ void IntercomApi::server_task_() {
       // Inline TX: when no tx_task exists, read mic_buffer and send from server_task
       // Cannot call send() from mic callback (runs in audio_task prio 19 on Core 0)
       // so we use mic_buffer as the bridge, same as tx_task does
-      if (!this->has_intercom_processor_() &&
+      if (this->tx_task_handle_ == nullptr &&
           this->active_.load(std::memory_order_acquire) &&
           this->client_.streaming.load(std::memory_order_acquire) &&
           client_fd >= 0) {
