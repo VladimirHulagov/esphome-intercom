@@ -264,7 +264,7 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: INFO
+  level: DEBUG
   logs:
     i2c: WARN
     display: INFO
