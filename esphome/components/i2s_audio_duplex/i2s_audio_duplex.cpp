@@ -466,7 +466,7 @@ static i2s_tdm_slot_config_t get_tdm_slot_config(uint8_t fmt, i2s_data_bit_width
 #endif  // SOC_I2S_SUPPORTS_TDM
 
 // Audio parameters
-static const size_t DMA_BUFFER_COUNT = 8;  // Restored: 4 slots * 16-bit * 480 frames * 4 bufs = 30KB/channel, fits in 112KB free internal RAM
+static const size_t DMA_BUFFER_COUNT = 2;  // 2 DMA buffers — more causes OOM with LVGL+AFE+API
 static const size_t DEFAULT_FRAME_SIZE = 256;  // samples per frame at output rate (used when no AEC)
 // Base buffer scaled by decimation_ratio_. At ratio=3 this provides ~256ms capacity,
 // sufficient for stability while avoiding excessive latency from large playback backlogs.
