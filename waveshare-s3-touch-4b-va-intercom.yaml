@@ -360,6 +360,7 @@ esp_afe:
   ns_enabled: true
   vad_enabled: true
   agc_enabled: false
+  ringbuf_size: 16
   task_priority: 19
   feed_buf_in_psram: true
   feed_ring_in_psram: true
