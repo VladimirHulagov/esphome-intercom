@@ -165,7 +165,8 @@ Figtree font does NOT support Cyrillic on Google Fonts — use Roboto or Noto Sa
 - Do NOT delete `.esphome/external_components/86fcf02e/` — upstream has API changes
 - LVGL `buffer_size: 10%` (not 25%) to free internal DMA memory for I2S
 - **CRITICAL:** `includes/st7701_init.h` must be manually synced: `sudo cp esphome-intercom/includes/st7701_init.h esphome/includes/st7701_init.h`
-- OTA flash: `docker exec esphome esphome run esp32-s3-smart-86-box-hall.yaml --no-logs`
+- OTA flash: `docker exec -e http_proxy= -e https_proxy= -e HTTP_PROXY= -e HTTPS_PROXY= esphome esphome run esp32-s3-smart-86-box-hall.yaml --no-logs`
+  - **CRITICAL:** Must pass empty proxy env vars (`-e http_proxy= ...`). Without this, PlatformIO library manager gets `HTTPClientError` when checking/installing noise-c and other deps, even though they're already cached locally. The container inherits proxy env from Docker that confuses PIO's HTTP client.
 - Device IP: `10.1.30.57`
 - Must `docker exec esphome esphome clean ...` + `sudo rm -rf .../packages` before each build to avoid PlatformIO cache errors
 

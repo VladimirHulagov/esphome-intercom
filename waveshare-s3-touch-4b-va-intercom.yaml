@@ -356,7 +356,7 @@ esp_afe:
   mode: low_cost
   mic_num: 2
   aec_filter_length: 4
-  se_enabled: true
+  se_enabled: false
   ns_enabled: true
   vad_enabled: true
   agc_enabled: false
