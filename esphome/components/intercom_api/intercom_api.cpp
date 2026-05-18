@@ -1477,6 +1477,9 @@ void IntercomApi::handle_message_(const MessageHeader &header, const uint8_t *da
         // Enable audio flow, but don't set STREAMING yet - wait for first audio
         this->client_.streaming.store(true, std::memory_order_release);
         this->state_ = ConnectionState::STREAMING;
+        ESP_LOGD(TAG, "NO_RING START: active=%d streaming=%d socket=%d mic_src=%p",
+                 this->active_.load(), this->client_.streaming.load(),
+                 this->client_.socket.load(), this->microphone_source_);
         this->send_message_(this->client_.socket.load(), MessageType::PONG);
       } else if (this->auto_answer_) {
         // Auto-answer ON: start streaming immediately, skip INCOMING/RINGING states
@@ -1687,6 +1690,12 @@ void IntercomApi::accept_client_() {
 // === Microphone Callback ===
 
 void IntercomApi::on_microphone_data_(const uint8_t *data, size_t len) {
+  static int mic_dbg_cnt = 0;
+  if (++mic_dbg_cnt % 100 == 0 || mic_dbg_cnt <= 3) {
+    ESP_LOGD(TAG, "mic_cb: len=%zu active=%d socket=%d streaming=%d",
+             len, this->active_.load(), this->client_.socket.load(),
+             this->client_.streaming.load());
+  }
   if (!this->active_.load(std::memory_order_acquire) ||
       this->client_.socket.load() < 0 ||
       !this->client_.streaming.load()) {
