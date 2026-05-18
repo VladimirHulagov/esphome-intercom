@@ -251,6 +251,8 @@ psram:
   speed: 80MHz
 
 api:
+  encryption:
+    key: "gDjC+cn/hvkWcLsg70H4YXtXAXhCRLq2pb1hvpnCAT4="
   on_client_connected:
     - logger.log: "API client connected"
     - lambda: 'id(intercom).publish_entity_states();'
