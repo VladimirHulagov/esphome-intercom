@@ -264,13 +264,11 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
   logs:
     i2c: WARN
     display: INFO
     spi: INFO
-    intercom_api: DEBUG
-    i2s_duplex: DEBUG
 
 network:
   enable_high_performance: true
