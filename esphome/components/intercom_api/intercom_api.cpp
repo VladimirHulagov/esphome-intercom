@@ -1028,17 +1028,6 @@ void IntercomApi::server_task_() {
           this->client_.streaming.load(std::memory_order_acquire) &&
           client_fd >= 0) {
         // Drain mic_buffer: send all available chunks
-        static int itx_cnt = 0;
-        static int itx_buf_avail_log = 0;
-        size_t avail = this->mic_buffer_->available();
-        if (avail >= AUDIO_CHUNK_SIZE) {
-          itx_buf_avail_log++;
-        }
-        if (++itx_cnt % 200 == 0) {
-          ESP_LOGI(TAG, "inline_tx: buf=%zu active=%d streaming=%d fd=%d tx_task=%p itx_avail=%d",
-                   avail, this->active_.load(), this->client_.streaming.load(),
-                   client_fd, this->tx_task_handle_, itx_buf_avail_log);
-        }
         while (this->mic_buffer_->available() >= AUDIO_CHUNK_SIZE) {
           uint8_t audio_chunk[AUDIO_CHUNK_SIZE];
           size_t read = this->mic_buffer_->read(audio_chunk, AUDIO_CHUNK_SIZE, 0);
