@@ -451,11 +451,11 @@ media_player:
     internal: false
     task_stack_in_psram: true
     media_pipeline:
-      speaker: hw_speaker
+      speaker: media_speaker
       sample_rate: 48000
       format: FLAC
     announcement_pipeline:
-      speaker: hw_speaker
+      speaker: tts_speaker
       sample_rate: 48000
       format: FLAC
     files:
