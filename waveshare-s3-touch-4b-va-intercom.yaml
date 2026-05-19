@@ -269,6 +269,13 @@ logger:
     i2c: WARN
     display: INFO
     spi: INFO
+    i2s_duplex: DEBUG
+    i2s_audio_duplex: DEBUG
+    mixer: DEBUG
+    resampler: DEBUG
+    intercom_api: DEBUG
+    speaker: DEBUG
+    audio_processor: DEBUG
 
 network:
   enable_high_performance: true
