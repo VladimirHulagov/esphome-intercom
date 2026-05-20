@@ -49,7 +49,7 @@ substitutions:
 
   # ES8311 DAC volume mapping (0-100% -> min-max float)
   volume_min: "0.15"
-  volume_max: "0.63"
+  volume_max: "0.3"
 
   mic_id: mic_main
 
