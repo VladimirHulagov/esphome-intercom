@@ -478,12 +478,12 @@ media_player:
 # =============================================================================
 # Micro Wake Word
 # =============================================================================
-micro_wake_word:
-  microphone: mic_main
-  models:
-    - model: hey_jarvis
-      probability_cutoff: ${wake_word_probability_cutoff}
-      sliding_window_size: ${wake_word_sliding_window_size}
+#micro_wake_word:
+#  microphone: mic_main
+#  models:
+#    - model: hey_jarvis
+#      probability_cutoff: ${wake_word_probability_cutoff}
+#      sliding_window_size: ${wake_word_sliding_window_size}
 
 # =============================================================================
 # Voice Assistant
@@ -491,7 +491,7 @@ micro_wake_word:
 voice_assistant:
   microphone: mic_main
   media_player: speaker_media_player
-  micro_wake_word: mww
+  #micro_wake_word: mww  # TEMP DISABLED
   noise_suppression_level: 2
   auto_gain: 31dBFS
   volume_multiplier: 2.0
