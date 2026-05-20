@@ -49,7 +49,7 @@ substitutions:
 
   # ES8311 DAC volume mapping (0-100% -> min-max float)
   volume_min: "0.15"
-  volume_max: "1.0"
+  volume_max: "0.63"
 
   mic_id: mic_main
 
@@ -264,7 +264,7 @@ ota:
 
 logger:
   hardware_uart: USB_SERIAL_JTAG
-  level: DEBUG
+  level: INFO
   logs:
     i2c: WARN
     display: INFO
